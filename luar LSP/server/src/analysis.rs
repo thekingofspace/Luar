@@ -49,6 +49,14 @@ pub struct FileAnalysis {
     pub module_vars: HashMap<String, String>,
 
     pub docs: HashMap<String, String>,
+
+    pub signatures: HashMap<String, FnSig>,
+}
+
+#[derive(Clone, Default)]
+pub struct FnSig {
+    pub params: Vec<String>,
+    pub ret: String,
 }
 
 #[derive(Clone, Default)]
@@ -76,11 +84,13 @@ pub fn analyze_file(text: &str) -> Option<FileAnalysis> {
     for s in &stmts {
         collect(s, &mut fa);
     }
+    scan_generic_results(text, &mut fa.vars);
     scan_annotations(text, &mut fa.vars);
     scan_functions(text, &mut fa.functions);
     scan_aliases(text, &mut fa.alias_targets);
     fa.class_ranges = brace_class_ranges(text);
     fa.docs = scan_docs(text);
+    fa.signatures = scan_signatures(text);
     inject_prelude_classes(&mut fa);
     Some(fa)
 }
@@ -233,6 +243,7 @@ fn scan_aliases(text: &str, targets: &mut HashMap<String, String>) {
 pub fn line_scan(text: &str) -> FileAnalysis {
     let mut fa = FileAnalysis::default();
     scan_vars_lines(text, &mut fa.vars);
+    scan_generic_results(text, &mut fa.vars);
     scan_annotations(text, &mut fa.vars);
     scan_functions(text, &mut fa.functions);
     scan_aliases(text, &mut fa.alias_targets);
@@ -241,6 +252,7 @@ pub fn line_scan(text: &str) -> FileAnalysis {
     scan_module_vars_lines(text, &mut fa.module_vars);
     fa.class_ranges = brace_class_ranges(text);
     fa.docs = scan_docs(text);
+    fa.signatures = scan_signatures(text);
     inject_prelude_classes(&mut fa);
     fa
 }
@@ -529,6 +541,15 @@ fn scan_vars_lines(text: &str, vars: &mut HashMap<String, VarInfo>) {
                         param(vars, &p.trim().chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect::<String>());
                     }
                 }
+
+                if let Some((fname, _)) = read_ident(rest.trim_start()) {
+                    vars.entry(fname.to_string()).or_insert(VarInfo {
+                        ty: "function".into(),
+                        mutable: false,
+                        global: line.trim_start().starts_with("pub"),
+                        literals: Vec::new(),
+                    });
+                }
             }
         }
 
@@ -572,13 +593,21 @@ fn scan_vars_lines(text: &str, vars: &mut HashMap<String, VarInfo>) {
             if name.is_empty() {
                 continue;
             }
-            let ty = if let Some(colon) = part.find(':') {
+            let mut ty: String = if let Some(colon) = part.find(':') {
                 part[colon + 1..].split('=').next().unwrap_or("").trim().chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').collect()
             } else if idx == 0 {
                 infer_rhs(rhs)
             } else {
                 String::new()
             };
+            if ty.is_empty() && idx == 0 {
+                let src: String = rhs.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                if !src.is_empty() && src == rhs.trim() {
+                    if let Some(vi) = vars.get(&src) {
+                        ty = vi.ty.clone();
+                    }
+                }
+            }
             vars.entry(name).or_insert(VarInfo { ty, mutable, global, literals: Vec::new() });
         }
     }
@@ -622,6 +651,82 @@ fn scan_functions(text: &str, funcs: &mut HashMap<String, String>) {
             }
         }
     }
+}
+
+fn scan_generic_results(text: &str, vars: &mut HashMap<String, VarInfo>) {
+    let chars_ident = |c: char| c.is_alphanumeric() || c == '_';
+    for line in text.lines() {
+        let raw = line.trim_start();
+        let t = strip_mods(raw);
+        let Some((name, after)) = read_ident(t) else { continue };
+        let Some(rhs) = after.trim_start().strip_prefix('=') else { continue };
+        let rb: Vec<char> = rhs.chars().collect();
+        let mut i = 0;
+        while i < rb.len() {
+            if rb[i] == '<' && i > 0 && chars_ident(rb[i - 1]) {
+                let mut j = i + 1;
+                let mut depth = 1;
+                while j < rb.len() && depth > 0 {
+                    match rb[j] {
+                        '<' => depth += 1,
+                        '>' => depth -= 1,
+                        _ => {}
+                    }
+                    if depth == 0 {
+                        break;
+                    }
+                    j += 1;
+                }
+                let after_close: String = rb.get(j + 1..).map(|s| s.iter().collect()).unwrap_or_default();
+                if after_close.trim_start().starts_with('(') {
+                    let inner: String = rb[i + 1..j].iter().collect();
+                    let chosen = inner
+                        .split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty() && *s != "_")
+                        .next_back()
+                        .map(|s| s.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').collect::<String>());
+                    if let Some(ty) = chosen.filter(|s| !s.is_empty()) {
+                        let entry = vars.entry(name.to_string()).or_insert_with(|| VarInfo {
+                            ty: String::new(),
+                            mutable: raw.starts_with("local"),
+                            global: raw.starts_with("pub"),
+                            literals: Vec::new(),
+                        });
+                        entry.ty = ty;
+                    }
+                    break;
+                }
+                i = j;
+            }
+            i += 1;
+        }
+    }
+}
+
+pub fn scan_signatures(text: &str) -> HashMap<String, FnSig> {
+    let mut out = HashMap::new();
+    for line in text.lines() {
+        let Some(fpos) = find_word(line, "function") else { continue };
+        let after = line[fpos + "function".len()..].trim_start();
+        let Some((name, rest)) = read_ident(after) else { continue };
+        let last = name.rsplit(['.', ':']).next().unwrap_or(name);
+        let Some(open) = rest.find('(') else { continue };
+        let Some(close) = rest[open..].find(')').map(|c| open + c) else { continue };
+        let params: Vec<String> = rest[open + 1..close]
+            .split(',')
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect();
+        let tail = rest[close + 1..].trim_start();
+        let ret = tail.strip_prefix(':').map(|r| resolve_return_type(r.trim_start())).unwrap_or_default();
+        out.entry(last.to_string()).or_insert(FnSig { params, ret });
+    }
+    out
+}
+
+pub fn find_signature<'a>(files: &[&'a FileAnalysis], current: &'a FileAnalysis, name: &str) -> Option<&'a FnSig> {
+    current.signatures.get(name).or_else(|| files.iter().find_map(|f| f.signatures.get(name)))
 }
 
 pub const TYPE_FUNCS: &[&str] = &[
@@ -718,11 +823,24 @@ fn collect(s: &Stmt, fa: &mut FileAnalysis) {
             let mutable = matches!(mutability, luar::ast::Mutability::Mutable);
             let global = matches!(visibility, luar::ast::Visibility::Pub);
             for (i, n) in names.iter().enumerate() {
-                let ty = inits.get(i).and_then(infer).unwrap_or_default();
-                if let Some(path) = inits.get(i).and_then(require_path) {
+                let init = inits.get(i);
+                let mut ty = init.and_then(infer).unwrap_or_default();
+                let mut literals = Vec::new();
+                if let Some(Expr::Name(src)) = init {
+                    if let Some(vi) = fa.vars.get(src) {
+                        if ty.is_empty() {
+                            ty = vi.ty.clone();
+                        }
+                        literals = vi.literals.clone();
+                    }
+                    if let Some(path) = fa.module_vars.get(src).cloned() {
+                        fa.module_vars.insert(n.clone(), path);
+                    }
+                }
+                if let Some(path) = init.and_then(require_path) {
                     fa.module_vars.insert(n.clone(), path);
                 }
-                fa.vars.insert(n.clone(), VarInfo { ty, mutable, global, literals: Vec::new() });
+                fa.vars.insert(n.clone(), VarInfo { ty, mutable, global, literals });
             }
 
             inits.iter().for_each(|e| collect_expr(e, fa));

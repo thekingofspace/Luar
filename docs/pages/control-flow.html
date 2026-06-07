@@ -40,3 +40,25 @@ has its own <code>end</code>, and the whole switch is closed by a final
     <span class="kw">return</span> <span class="str">"unknown"</span>
   <span class="kw">end</span>
 <span class="kw">end</span></code></pre>
+
+<h3 id="switch-vs-elseif">Why switch and case instead of a chain of elseif</h3>
+<p>You could write the same logic as a long <code>if / elseif</code> chain, but a
+<code>switch</code> is usually the better tool when you are branching on the
+value of one thing.</p>
+<ul>
+<li><b>It states your intent.</b> A switch says "I am choosing a branch based on
+this one value." A pile of <code>elseif</code> lines does not; a reader has to
+check that every condition really tests the same subject.</li>
+<li><b>The subject is written once.</b> With <code>elseif</code> you repeat
+<code>state ==</code> on every line, which is easy to get wrong (a typo can
+silently test the wrong variable). A switch names the subject a single time.</li>
+<li><b>It is an expression.</b> A switch can be assigned straight to a variable
+or returned, so you do not need a temporary variable that each branch reassigns.</li>
+<li><b>The editor helps more.</b> Because the subject's type is known, the editor
+can suggest the values to match (for example the variants of an enum or the
+allowed strings of a literal type), and the checker can flag a duplicate case.</li>
+</ul>
+<p>Reach for <code>if / elseif</code> when the branches test genuinely different
+conditions (different variables, ranges, or compound expressions). Reach for
+<code>switch</code> when you are comparing one value against a set of
+possibilities.</p>

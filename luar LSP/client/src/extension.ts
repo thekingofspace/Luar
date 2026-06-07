@@ -49,7 +49,8 @@ function blockAlreadyClosed(
     const trimmed = text.trim();
     if (trimmed === "") continue;
     const lineIndent = (text.match(/^[ \t]*/) || [""])[0];
-    if (lineIndent.length > indent.length) continue;
+    if (lineIndent.length > indent.length) continue; // inside this block's body
+    if (lineIndent.length < indent.length) return false; // an enclosing block closed first; ours is missing
     return /^(end|else|elseif)\b/.test(trimmed) || trimmed.startsWith("}");
   }
   return false;
@@ -95,6 +96,7 @@ function registerAutoEnd(context: ExtensionContext): void {
 
     const ifMatch = /^\s*(if|elseif)\b(.*)$/.exec(code);
     const loopMatch = /^\s*(while|for)\b(.*)$/.exec(code);
+    const caseMatch = /^\s*(case|default)\b/.test(code);
     const endsOpener =
       /(?:\bthen|\bdo|\belse)$/.test(code) ||
 
@@ -107,6 +109,9 @@ function registerAutoEnd(context: ExtensionContext): void {
       addEnd = ifMatch[1] === "if" && !closed;
     } else if (loopMatch && !/\b(do|end)\b/.test(code) && looksComplete(loopMatch[2])) {
       keyword = "do";
+      addEnd = !closed;
+    } else if (caseMatch && !/\bend\b/.test(code)) {
+      keyword = "";
       addEnd = !closed;
     } else if (endsOpener && !/\bend\b/.test(code)) {
       keyword = "";

@@ -109,19 +109,19 @@
           "match": "\\b(true|false|nil)\\b"
         },
         {
+          "comment": "Global library namespaces, coloured only when used as a namespace (followed by a dot), so `string` as a type is not mistaken for the string library",
+          "name": "support.class.global.luar",
+          "match": "\\b(coroutine|math|string|table|bit32|os)\\b(?=\\s*\\.)"
+        },
+        {
           "comment": "Primitive type names + type functions",
           "name": "support.type.luar",
-          "match": "\\b(boolean|number|thread|any|unknown|never|void|classof|typeof|returnof|paramsof|keyof|valueof|indexof|nameof|elementof|instanceof|awaited|nonnil|nonnull|optional|readonly|writable|mutable|partial|required|deep|shallow|unwrap|default|valuefrom)\\b"
+          "match": "\\b(boolean|number|string|table|thread|any|unknown|never|void|classof|typeof|returnof|paramsof|keyof|valueof|indexof|nameof|elementof|instanceof|awaited|nonnil|nonnull|optional|readonly|writable|mutable|partial|required|deep|shallow|unwrap|default|valuefrom)\\b"
         },
         {
           "comment": "self / super",
           "name": "variable.language.luar",
           "match": "\\b(self|super)\\b"
-        },
-        {
-          "comment": "Global library namespaces (coroutine, math, ...) — special colour",
-          "name": "support.class.global.luar",
-          "match": "\\b(coroutine|math|string|table|bit32|os)\\b"
         },
         {
           "comment": "Built-in functions",

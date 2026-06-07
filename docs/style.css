@@ -58,6 +58,15 @@ nav.sidebar a {
 }
 nav.sidebar a:hover { background: var(--code-bg); text-decoration: none; }
 nav.sidebar a.active { background: var(--code-bg); color: var(--accent); font-weight: 600; }
+nav.sidebar a.repo {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  text-align: center;
+  margin: 0 0 18px;
+  color: var(--accent);
+  font-weight: 600;
+}
+nav.sidebar a.repo:hover { background: var(--accent); color: var(--bg); text-decoration: none; }
 nav.sidebar .group { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin: 18px 0 6px; }
 
 main {

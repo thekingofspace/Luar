@@ -93,6 +93,8 @@ impl Backend {
                         existing.class_ranges = scan.class_ranges;
                         existing.enums = scan.enums;
                         existing.docs = scan.docs;
+                        existing.signatures = scan.signatures;
+                        existing.module_vars = scan.module_vars;
 
                         analysis::merge_classes(&mut existing.classes, scan.classes);
                     }
@@ -427,7 +429,12 @@ fn is_type_ctx(upto: &str) -> bool {
 
     let head = upto.trim_start();
     const DECL: &[&str] = &["local ", "const ", "pub ", "public ", "private ", "protected ", "static ", "type "];
-    DECL.iter().any(|k| head.starts_with(k)) || head.contains('(')
+    if DECL.iter().any(|k| head.starts_with(k)) {
+        return true;
+    }
+
+    head.contains('(')
+        && ["function", "constructor", "operator", "get ", "set "].iter().any(|k| head.contains(k))
 }
 
 fn directive_completion(upto: &str) -> Option<Vec<CompletionItem>> {
@@ -687,6 +694,103 @@ fn resolve_receiver(files: &[&FileAnalysis], current: &FileAnalysis, recv: &str,
     }
     if analysis::is_class(files, recv) {
         return Some(recv.to_string());
+    }
+    None
+}
+
+const BUILTIN_SIGS: &[(&str, &[&str], &str)] = &[
+    ("print", &["..."], ""),
+    ("type", &["value"], "string"),
+    ("tostring", &["value"], "string"),
+    ("tonumber", &["value"], "number"),
+    ("pcall", &["fn", "..."], "boolean"),
+    ("ipairs", &["t"], ""),
+    ("pairs", &["t"], ""),
+    ("next", &["t", "key"], ""),
+    ("setmetatable", &["t", "meta"], "table"),
+    ("getmetatable", &["t"], "table"),
+    ("rawget", &["t", "key"], ""),
+    ("rawset", &["t", "key", "value"], "table"),
+    ("rawequal", &["a", "b"], "boolean"),
+    ("rawlen", &["t"], "number"),
+    ("require", &["path"], ""),
+    ("collectgarbage", &[], ""),
+    ("instanceof", &["value", "Class"], "boolean"),
+    ("classname", &["valueOrClass"], "string"),
+    ("classof", &["value"], ""),
+    ("superclass", &["valueOrClass"], ""),
+    ("methodsof", &["valueOrClass"], "table"),
+    ("isabstract", &["valueOrClass"], "boolean"),
+    ("run", &["frames"], ""),
+    ("spawn", &["Class", "..."], ""),
+    ("format", &["fmt", "..."], "string"),
+    ("sub", &["s", "i", "j"], "string"),
+    ("upper", &["s"], "string"),
+    ("lower", &["s"], "string"),
+    ("rep", &["s", "n"], "string"),
+    ("reverse", &["s"], "string"),
+    ("byte", &["s", "i"], "number"),
+    ("char", &["..."], "string"),
+    ("find", &["s", "sub"], ""),
+    ("contains", &["s", "sub"], "boolean"),
+    ("startswith", &["s", "prefix"], "boolean"),
+    ("endswith", &["s", "suffix"], "boolean"),
+    ("trim", &["s"], "string"),
+    ("split", &["s", "sep"], "table"),
+    ("len", &["s"], "number"),
+    ("insert", &["t", "value"], ""),
+    ("remove", &["t", "pos"], ""),
+    ("concat", &["t", "sep"], "string"),
+    ("sort", &["t", "compare"], ""),
+    ("keys", &["t"], "table"),
+    ("pack", &["..."], "table"),
+    ("unpack", &["t"], ""),
+    ("abs", &["x"], "number"),
+    ("floor", &["x"], "number"),
+    ("ceil", &["x"], "number"),
+    ("round", &["x"], "number"),
+    ("sqrt", &["x"], "number"),
+    ("max", &["..."], "number"),
+    ("min", &["..."], "number"),
+    ("clamp", &["x", "lo", "hi"], "number"),
+    ("random", &["m", "n"], "number"),
+    ("pow", &["x", "y"], "number"),
+    ("sign", &["x"], "number"),
+    ("create", &["fn"], ""),
+    ("resume", &["co", "..."], ""),
+    ("yield", &["..."], ""),
+    ("status", &["co"], "string"),
+];
+
+fn call_context(upto: &str) -> Option<(String, u32)> {
+    let chars: Vec<char> = upto.chars().collect();
+    let mut depth = 0i32;
+    let mut commas = 0u32;
+    let mut i = chars.len();
+    while i > 0 {
+        i -= 1;
+        let c = chars[i];
+        if c == ')' || c == ']' || c == '}' {
+            depth += 1;
+        } else if depth > 0 && (c == '(' || c == '[' || c == '{') {
+            depth -= 1;
+        } else if c == '(' {
+            let name: String = chars[..i]
+                .iter()
+                .rev()
+                .take_while(|c| c.is_alphanumeric() || **c == '_' || **c == '.' || **c == ':')
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let name = name.rsplit(['.', ':']).next().unwrap_or(&name).to_string();
+            return (!name.is_empty()).then_some((name, commas));
+        } else if c == '[' || c == '{' {
+            return None;
+        } else if c == ',' && depth == 0 {
+            commas += 1;
+        }
     }
     None
 }
@@ -1040,6 +1144,11 @@ impl LanguageServer for Backend {
                 }),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 inlay_hint_provider: Some(OneOf::Left(true)),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".into(), ",".into()]),
+                    retrigger_characters: Some(vec![",".into()]),
+                    work_done_progress_options: Default::default(),
+                }),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
                         legend: SemanticTokensLegend {
@@ -1135,6 +1244,10 @@ impl LanguageServer for Backend {
 
         if let Some((recv, op)) = member_access(&upto) {
 
+            if op == ':' && is_type_ctx(&upto) {
+                return Ok(Some(CompletionResponse::Array(type_items(&files, current))));
+            }
+
             if let Some(class) = resolve_receiver(&files, current, &recv, pos.line) {
                 return Ok(Some(CompletionResponse::Array(member_items(&files, &class, op))));
             }
@@ -1153,9 +1266,7 @@ impl LanguageServer for Backend {
                 }
             }
 
-            if op == ':'
-                && (is_type_ctx(&upto) || analysis::find_var(&files, current, &recv).is_none())
-            {
+            if op == ':' && analysis::find_var(&files, current, &recv).is_none() {
                 return Ok(Some(CompletionResponse::Array(type_items(&files, current))));
             }
 
@@ -1232,6 +1343,53 @@ impl LanguageServer for Backend {
         Ok(hover_text(&files, current, &word, &uri).map(|value| Hover {
             contents: HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value }),
             range: None,
+        }))
+    }
+
+    async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        let p = params.text_document_position_params;
+        let uri = p.text_document.uri;
+        let text = self.docs.lock().unwrap().get(&uri).cloned().unwrap_or_default();
+        let line = text.lines().nth(p.position.line as usize).unwrap_or("").to_string();
+        let upto: String = line.chars().take(p.position.character as usize).collect();
+        let Some((name, active)) = call_context(&upto) else { return Ok(None) };
+
+        let cache = self.cache.lock().unwrap();
+        let files: Vec<&FileAnalysis> = cache.values().collect();
+        let empty = FileAnalysis::default();
+        let current = cache.get(&uri).unwrap_or(&empty);
+
+        let (params, ret_ty): (Vec<String>, String) =
+            if let Some(sig) = analysis::find_signature(&files, current, &name) {
+                (sig.params.clone(), sig.ret.clone())
+            } else if let Some((_, p, r)) = BUILTIN_SIGS.iter().find(|(n, _, _)| *n == name) {
+                (p.iter().map(|s| s.to_string()).collect(), r.to_string())
+            } else {
+                return Ok(None);
+            };
+
+        let ret = if ret_ty.is_empty() { String::new() } else { format!(": {ret_ty}") };
+        let label = format!("{name}({}){ret}", params.join(", "));
+        let parameters: Vec<ParameterInformation> = params
+            .iter()
+            .map(|p| ParameterInformation {
+                label: ParameterLabel::Simple(p.clone()),
+                documentation: None,
+            })
+            .collect();
+        let documentation = current.docs.get(&name).map(|d| {
+            Documentation::MarkupContent(MarkupContent { kind: MarkupKind::Markdown, value: d.clone() })
+        });
+        let active_parameter = Some((active as usize).min(params.len().saturating_sub(1)) as u32);
+        Ok(Some(SignatureHelp {
+            signatures: vec![SignatureInformation {
+                label,
+                documentation,
+                parameters: Some(parameters),
+                active_parameter,
+            }],
+            active_signature: Some(0),
+            active_parameter,
         }))
     }
 

@@ -1,8 +1,19 @@
-class Game {
-  public Test:boolean = true
-  private Terra = false
-  
-  public function TestField()
-    
+--#disable UnusedVariable
+--#disable UnusedParameter
+--#disable EmptyBlock
+
+class Entity {
+  public ID:nonnil<string> = nil
+
+  operator +(var)
+    return self.ID .. var
+  end
+
+  constructor()
+    self.ID = "t"
   end
 }
+
+local Far = Entity()
+
+print(Far + "test")

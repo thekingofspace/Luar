@@ -285,3 +285,36 @@ lifecycle the runtime drives for you.</li>
 <li><a href="#types">Type system</a> - using class names as types.</li>
 <li><a href="#enums">Enums</a> - named constants that pair well with classes.</li>
 </ul>
+
+<h3 id="classes-vs-metatables">Why classes instead of raw tables and metatables</h3>
+<p>Under the hood, objects are tables with a metatable, and you can build objects
+by hand with <code>setmetatable</code> and <code>__index</code> (see
+<a href="#metamethods">Metatables</a>). For most code, a <code>class</code> is
+the better choice, because it gives you the same machinery with far less
+ceremony and far more help.</p>
+<ul>
+<li><b>Less boilerplate.</b> Inheritance, the constructor, method lookup, and the
+back-link from an instance to its type are all set up for you. Doing the same
+with metatables means wiring up <code>__index</code> chains and copying defaults
+by hand, which is repetitive and easy to get subtly wrong.</li>
+<li><b>Real access control.</b> Classes enforce <code>private</code> and
+<code>protected</code> at run time. Plain tables expose every field to everyone,
+so there is nothing stopping outside code from reaching in and breaking your
+object's assumptions.</li>
+<li><b>Safety checks.</b> The language verifies that <code>override</code> really
+overrides something, that abstract methods get implemented, that a
+<code>final</code> class is not extended, and that a class actually
+<code>implements</code> the interfaces it claims. A hand-rolled metatable gives
+you none of these.</li>
+<li><b>The editor understands it.</b> Because a class is a declared shape, the
+editor can complete its fields and methods, show its types on hover, and follow
+inheritance and mixins. A raw table assembled at run time is mostly opaque to
+tooling.</li>
+<li><b>Clear intent.</b> <code>class Dog extends Animal</code> says exactly what
+you mean. A metatable with an <code>__index</code> pointing at another table is a
+pattern a reader has to decode.</li>
+</ul>
+<p>Use metatables directly when you need a behavior a class does not model, such
+as a custom <code>__index</code> function that computes values on demand, a
+<code>__call</code> handler, or a proxy. For ordinary objects with fields,
+methods, and inheritance, use a class.</p>

@@ -14,4 +14,29 @@ other modules.</p>
 <span class="kw">enum</span> <span class="typ">Color</span> { Yellow }           <span class="com">-- 3</span>
 
 <span class="kw">pub enum</span> <span class="typ">GameState</span> { Menu Playing Paused }   <span class="com">-- visible to other files</span></code></pre>
-<p>An enum name can be used as a type: <code>local s: GameState = GameState.Menu</code>.</p>
+<h3>Using an enum as a type</h3>
+<p>An enum name is also a type. Annotating a variable, field, or parameter with
+an enum name says it should hold one of that enum's variants. This documents your
+intent and lets the editor offer the variants when you assign or compare. The
+value is still just the underlying number at run time.</p>
+<pre><code><span class="kw">pub enum</span> <span class="typ">GameState</span> { Menu Playing Paused }
+
+<span class="com">-- a variable typed as the enum</span>
+<span class="kw">local</span> state: <span class="typ">GameState</span> = <span class="typ">GameState</span>.Menu
+
+<span class="com">-- a class field typed as the enum</span>
+<span class="kw">class</span> <span class="typ">Game</span> {
+  <span class="kw">public</span> state: <span class="typ">GameState</span> = <span class="typ">GameState</span>.Menu
+  <span class="kw">function</span> <span class="fn">start</span>() self.state = <span class="typ">GameState</span>.Playing <span class="kw">end</span>
+}
+
+<span class="com">-- a parameter typed as the enum</span>
+<span class="kw">function</span> <span class="fn">describe</span>(s: <span class="typ">GameState</span>)
+  <span class="kw">return</span> <span class="kw">switch</span>(s)
+    <span class="kw">case</span> <span class="typ">GameState</span>.Menu     <span class="kw">return</span> <span class="str">"in the menu"</span> <span class="kw">end</span>
+    <span class="kw">case</span> <span class="typ">GameState</span>.Playing  <span class="kw">return</span> <span class="str">"playing"</span> <span class="kw">end</span>
+    <span class="kw">default</span>                 <span class="kw">return</span> <span class="str">"paused"</span> <span class="kw">end</span>
+  <span class="kw">end</span>
+<span class="kw">end</span>
+
+<span class="fn">print</span>(describe(state))   <span class="com">-- in the menu</span></code></pre>
