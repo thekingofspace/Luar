@@ -1,0 +1,60 @@
+<h1 id="functions">Functions</h1>
+
+<h3>Declaring functions</h3>
+<pre><code><span class="kw">function</span> <span class="fn">add</span>(a, b)
+  <span class="kw">return</span> a + b
+<span class="kw">end</span>
+
+<span class="kw">local function</span> <span class="fn">helper</span>()
+  <span class="kw">return</span> <span class="num">1</span>
+<span class="kw">end</span></code></pre>
+
+<h3>Closures</h3>
+<pre><code><span class="kw">local</span> make = <span class="kw">function</span>(start)
+  <span class="kw">local</span> n = start
+  <span class="kw">return</span> <span class="kw">function</span>()
+    n += <span class="num">1</span>
+    <span class="kw">return</span> n
+  <span class="kw">end</span>
+<span class="kw">end</span>
+
+<span class="kw">local</span> next = make(<span class="num">10</span>)
+<span class="fn">print</span>(next())   <span class="com">-- 11</span>
+<span class="fn">print</span>(next())   <span class="com">-- 12</span></code></pre>
+
+<h3>Multiple returns and varargs</h3>
+<pre><code><span class="kw">function</span> <span class="fn">minmax</span>(a, b)
+  <span class="kw">if</span> a &lt; b <span class="kw">then</span> <span class="kw">return</span> a, b <span class="kw">end</span>
+  <span class="kw">return</span> b, a
+<span class="kw">end</span>
+
+<span class="kw">function</span> <span class="fn">sum</span>(...)
+  <span class="kw">local</span> total = <span class="num">0</span>
+  <span class="kw">for</span> _, n <span class="kw">in</span> <span class="fn">ipairs</span>({ ... }) <span class="kw">do</span> total += n <span class="kw">end</span>
+  <span class="kw">return</span> total
+<span class="kw">end</span></code></pre>
+
+<h3>Call sugar</h3>
+<p>When a function takes a single string or table literal, the parentheses are
+optional.</p>
+<pre><code><span class="fn">print</span> <span class="str">"hello"</span>              <span class="com">-- print("hello")</span>
+configure { debug = <span class="kw">true</span> }   <span class="com">-- configure({ debug = true })</span></code></pre>
+
+<h3>Generic parameters</h3>
+<pre><code><span class="kw">local function</span> <span class="fn">identity</span>&lt;T&gt;(x)
+  <span class="kw">return</span> x
+<span class="kw">end</span></code></pre>
+<p>Generic parameters are used by the editor and scrubbed before execution.</p>
+
+<h3>Documentation comments</h3>
+<p>A comment directly above a function documents it. Markdown such as
+<code>**bold**</code> is rendered in the hover box, and lines beginning with
+<code>@</code> are highlighted as tags.</p>
+<pre><code><span class="com">-- Clamp a number into the range [lo, hi].</span>
+<span class="com">-- @param value the number to clamp</span>
+<span class="com">-- @return number</span>
+<span class="kw">function</span> <span class="fn">clamp</span>(value, lo, hi)
+  <span class="kw">if</span> value &lt; lo <span class="kw">then</span> <span class="kw">return</span> lo <span class="kw">end</span>
+  <span class="kw">if</span> value &gt; hi <span class="kw">then</span> <span class="kw">return</span> hi <span class="kw">end</span>
+  <span class="kw">return</span> value
+<span class="kw">end</span></code></pre>

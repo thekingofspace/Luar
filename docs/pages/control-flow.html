@@ -1,0 +1,42 @@
+<h1 id="control-flow">Control flow</h1>
+
+<h3>if / elseif / else</h3>
+<pre><code><span class="kw">if</span> score &gt; <span class="num">90</span> <span class="kw">then</span>
+  <span class="fn">print</span>(<span class="str">"A"</span>)
+<span class="kw">elseif</span> score &gt; <span class="num">80</span> <span class="kw">then</span>
+  <span class="fn">print</span>(<span class="str">"B"</span>)
+<span class="kw">else</span>
+  <span class="fn">print</span>(<span class="str">"C"</span>)
+<span class="kw">end</span></code></pre>
+<p>Every value is truthy except <code>false</code> and <code>nil</code>.</p>
+
+<h3>while and for</h3>
+<pre><code><span class="kw">while</span> n &gt; <span class="num">0</span> <span class="kw">do</span>
+  n -= <span class="num">1</span>
+<span class="kw">end</span>
+
+<span class="kw">for</span> i = <span class="num">1</span>, <span class="num">10</span> <span class="kw">do</span> <span class="fn">print</span>(i) <span class="kw">end</span>
+<span class="kw">for</span> i = <span class="num">10</span>, <span class="num">1</span>, <span class="num">-1</span> <span class="kw">do</span> <span class="fn">print</span>(i) <span class="kw">end</span>   <span class="com">-- explicit step</span>
+
+<span class="kw">for</span> index, value <span class="kw">in</span> <span class="fn">ipairs</span>(list) <span class="kw">do</span> <span class="fn">print</span>(index, value) <span class="kw">end</span>
+<span class="kw">for</span> key, value <span class="kw">in</span> <span class="fn">pairs</span>(map) <span class="kw">do</span> <span class="fn">print</span>(key, value) <span class="kw">end</span></code></pre>
+<p>Name an unused loop variable <code>_</code> to silence UnusedLoopVariable.
+<code>break</code> exits the innermost loop.</p>
+
+<h3>switch</h3>
+<p><code>switch</code> is an expression. The first <code>case</code> whose value
+equals the subject runs, and a <code>return</code> inside it becomes the value of
+the switch. An optional <code>default</code> runs when no case matches. Each case
+has its own <code>end</code>, and the whole switch is closed by a final
+<code>end</code>.</p>
+<pre><code><span class="kw">local</span> label = <span class="kw">switch</span>(state)
+  <span class="kw">case</span> <span class="str">"idle"</span>
+    <span class="kw">return</span> <span class="str">"waiting"</span>
+  <span class="kw">end</span>
+  <span class="kw">case</span> <span class="str">"run"</span>
+    <span class="kw">return</span> <span class="str">"working"</span>
+  <span class="kw">end</span>
+  <span class="kw">default</span>
+    <span class="kw">return</span> <span class="str">"unknown"</span>
+  <span class="kw">end</span>
+<span class="kw">end</span></code></pre>

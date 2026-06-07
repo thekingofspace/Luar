@@ -1,0 +1,141 @@
+<h1 id="tables">Tables</h1>
+<p>Tables are the general-purpose structure: arrays, maps, and objects are all
+tables. Arrays are 1-based.</p>
+<pre><code><span class="kw">local</span> array = { <span class="num">10</span>, <span class="num">20</span>, <span class="num">30</span> }
+<span class="kw">local</span> map = { name = <span class="str">"luar"</span>, version = <span class="num">1</span> }
+<span class="kw">local</span> mixed = { <span class="num">1</span>, <span class="num">2</span>, [<span class="num">10</span>] = <span class="str">"ten"</span>, label = <span class="str">"x"</span> }
+
+<span class="fn">print</span>(array[<span class="num">1</span>])     <span class="com">-- 10</span>
+<span class="fn">print</span>(map.name)     <span class="com">-- "luar"  (sugar for map["name"])</span>
+<span class="fn">print</span>(#array)       <span class="com">-- 3</span></code></pre>
+
+<h3>Metatables</h3>
+<p>A metatable is a second table that controls how the first table behaves. By
+itself a plain table just stores keys and values. Attach a metatable to it, and
+you can change what happens when someone reads a missing key, calls the table,
+turns it into a string, or uses it with an operator like <code>+</code>.</p>
+<p>Set a metatable with <code>setmetatable(t, meta)</code> and read it back with
+<code>getmetatable(t)</code>. The special fields you put in the metatable are
+called metamethods, and their names all begin with two underscores.</p>
+<pre><code><span class="kw">local</span> base = { greet = <span class="kw">function</span>() <span class="kw">return</span> <span class="str">"hi"</span> <span class="kw">end</span> }
+<span class="kw">local</span> obj = <span class="fn">setmetatable</span>({}, { __index = base })
+<span class="fn">print</span>(obj.greet())   <span class="com">-- found through __index</span></code></pre>
+
+<h2 id="metamethods">Metamethods in full</h2>
+<p>Each metamethod below lists when it runs, the arguments your function
+receives, and what it should return. Classes are built on this machinery: when
+you write <code>operator +</code> or <code>operator tostring</code> in a class,
+those become the matching metamethods for you, so you rarely set them by hand on
+instances. See <a href="#classes">Operator overloading</a>.</p>
+
+<h3>__index: reading a missing key</h3>
+<p>Runs when you read a key the table does not actually have. It can be either a
+table or a function.</p>
+<ul>
+<li>If <code>__index</code> is a <b>table</b>, the missing key is looked up in
+that table instead. This is how inheritance-style fallback works.</li>
+<li>If <code>__index</code> is a <b>function</b>, it is called as
+<code>__index(t, key)</code> and whatever it returns becomes the result. Return
+<code>nil</code> for "no value".</li>
+</ul>
+<pre><code><span class="kw">local</span> defaults = { color = <span class="str">"black"</span> }
+<span class="kw">local</span> a = <span class="fn">setmetatable</span>({}, { __index = defaults })
+<span class="fn">print</span>(a.color)   <span class="com">-- black   (not in a, fell back to defaults)</span>
+
+<span class="kw">local</span> b = <span class="fn">setmetatable</span>({}, {
+  __index = <span class="kw">function</span>(t, key) <span class="kw">return</span> <span class="str">`missing: {key}`</span> <span class="kw">end</span>,
+})
+<span class="fn">print</span>(b.anything)   <span class="com">-- missing: anything</span></code></pre>
+
+<h3>__newindex: assigning a missing key</h3>
+<p>Runs when you assign to a key the table does not already have. It is called as
+<code>__newindex(t, key, value)</code>. The plain assignment does not happen on
+its own; your function decides what to do (store it elsewhere, validate it,
+reject it). To store it on the original table anyway, use <code>rawset(t, key,
+value)</code>, which bypasses the metamethod.</p>
+<pre><code><span class="kw">local</span> readonly = <span class="fn">setmetatable</span>({}, {
+  __newindex = <span class="kw">function</span>(t, key, value)
+    <span class="fn">print</span>(<span class="str">`blocked write to {key}`</span>)
+  <span class="kw">end</span>,
+})
+readonly.x = <span class="num">1</span>   <span class="com">-- blocked write to x  (x is never actually set)</span></code></pre>
+
+<h3>__call: calling the table</h3>
+<p>Runs when you use the table as if it were a function:
+<code>t(arg1, arg2)</code>. It is called as <code>__call(t, arg1, arg2, ...)</code>,
+with the table itself as the first argument, and its return values become the
+call's results.</p>
+<pre><code><span class="kw">local</span> adder = <span class="fn">setmetatable</span>({ base = <span class="num">10</span> }, {
+  __call = <span class="kw">function</span>(self, n) <span class="kw">return</span> self.base + n <span class="kw">end</span>,
+})
+<span class="fn">print</span>(adder(<span class="num">5</span>))   <span class="com">-- 15</span></code></pre>
+
+<h3>__tostring: turning the table into text</h3>
+<p>Runs when <code>tostring(t)</code> or <code>print(t)</code> needs a string for
+the table. It is called as <code>__tostring(t)</code> and must return a string.</p>
+<pre><code><span class="kw">local</span> point = <span class="fn">setmetatable</span>({ x = <span class="num">1</span>, y = <span class="num">2</span> }, {
+  __tostring = <span class="kw">function</span>(t) <span class="kw">return</span> <span class="str">`({t.x}, {t.y})`</span> <span class="kw">end</span>,
+})
+<span class="fn">print</span>(point)   <span class="com">-- (1, 2)</span></code></pre>
+
+<h3>__len: the length operator</h3>
+<p>Runs when you take the length with <code>#t</code>. It is called as
+<code>__len(t)</code> and should return a number.</p>
+<pre><code><span class="kw">local</span> bag = <span class="fn">setmetatable</span>({ count = <span class="num">7</span> }, {
+  __len = <span class="kw">function</span>(t) <span class="kw">return</span> t.count <span class="kw">end</span>,
+})
+<span class="fn">print</span>(#bag)   <span class="com">-- 7</span></code></pre>
+
+<h3>__eq, __lt, __le: comparison</h3>
+<p>These let two tables be compared.</p>
+<ul>
+<li><code>__eq(a, b)</code> runs for <code>a == b</code> (and the opposite for
+<code>~=</code>). It only applies when both sides are tables. Return a boolean.</li>
+<li><code>__lt(a, b)</code> runs for <code>a &lt; b</code>. The greater-than form
+<code>a &gt; b</code> is handled by swapping the operands, so you do not write a
+separate one.</li>
+<li><code>__le(a, b)</code> runs for <code>a &lt;= b</code>, and <code>&gt;=</code>
+is derived the same way.</li>
+</ul>
+<pre><code><span class="kw">local</span> meta = {
+  __eq = <span class="kw">function</span>(a, b) <span class="kw">return</span> a.id == b.id <span class="kw">end</span>,
+  __lt = <span class="kw">function</span>(a, b) <span class="kw">return</span> a.id &lt; b.id <span class="kw">end</span>,
+}
+<span class="kw">local</span> a = <span class="fn">setmetatable</span>({ id = <span class="num">1</span> }, meta)
+<span class="kw">local</span> b = <span class="fn">setmetatable</span>({ id = <span class="num">2</span> }, meta)
+<span class="fn">print</span>(a &lt; b, a &gt; b)   <span class="com">-- true  false</span></code></pre>
+
+<h3>Arithmetic and concatenation</h3>
+<p>These run when a table is used with an arithmetic operator or
+<code>..</code>. Each is called as <code>f(a, b)</code> with the two operands;
+either operand may be the one carrying the metamethod. Return the result value.</p>
+<table>
+<tr><th>Metamethod</th><th>Operator</th><th>Called as</th></tr>
+<tr><td><code>__add</code></td><td><code>a + b</code></td><td><code>__add(a, b)</code></td></tr>
+<tr><td><code>__sub</code></td><td><code>a - b</code></td><td><code>__sub(a, b)</code></td></tr>
+<tr><td><code>__mul</code></td><td><code>a * b</code></td><td><code>__mul(a, b)</code></td></tr>
+<tr><td><code>__div</code></td><td><code>a / b</code></td><td><code>__div(a, b)</code></td></tr>
+<tr><td><code>__mod</code></td><td><code>a % b</code></td><td><code>__mod(a, b)</code></td></tr>
+<tr><td><code>__pow</code></td><td><code>a ^ b</code></td><td><code>__pow(a, b)</code></td></tr>
+<tr><td><code>__concat</code></td><td><code>a .. b</code></td><td><code>__concat(a, b)</code></td></tr>
+<tr><td><code>__unm</code></td><td><code>-a</code> (unary minus)</td><td><code>__unm(a)</code></td></tr>
+</table>
+<pre><code><span class="kw">local</span> Vec = {
+  __add = <span class="kw">function</span>(a, b) <span class="kw">return</span> <span class="fn">setmetatable</span>({ x = a.x + b.x }, <span class="fn">getmetatable</span>(a)) <span class="kw">end</span>,
+  __unm = <span class="kw">function</span>(a) <span class="kw">return</span> <span class="fn">setmetatable</span>({ x = -a.x }, <span class="fn">getmetatable</span>(a)) <span class="kw">end</span>,
+}
+<span class="kw">local</span> p = <span class="fn">setmetatable</span>({ x = <span class="num">1</span> }, Vec)
+<span class="kw">local</span> q = <span class="fn">setmetatable</span>({ x = <span class="num">4</span> }, Vec)
+<span class="fn">print</span>((p + q).x)   <span class="com">-- 5</span></code></pre>
+
+<h3>Raw access: bypassing metamethods</h3>
+<p>Sometimes you want to touch the table directly and ignore its metatable. The
+raw functions do exactly that: <code>rawget(t, key)</code> reads without
+<code>__index</code>, <code>rawset(t, key, value)</code> writes without
+<code>__newindex</code>, <code>rawlen(t)</code> takes the length without
+<code>__len</code>, and <code>rawequal(a, b)</code> compares without
+<code>__eq</code>.</p>
+
+<div class="note">The host program can attach native (Rust) functions as
+metamethods, so behavior like a custom <code>__index</code> can be driven from
+outside the language. See the <a href="#host-api">Host API</a>.</div>

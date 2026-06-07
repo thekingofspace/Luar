@@ -1,0 +1,52 @@
+<h1 id="builtins">Global builtins</h1>
+<table>
+<tr><th>Function</th><th>Purpose</th></tr>
+<tr><td><code>print(...)</code></td><td>Print values separated by tabs.</td></tr>
+<tr><td><code>type(v)</code></td><td>The type name of a value.</td></tr>
+<tr><td><code>tostring(v)</code></td><td>A string for a value, honoring a tostring overload.</td></tr>
+<tr><td><code>tonumber(v)</code></td><td>A number parsed from a value, or nil.</td></tr>
+<tr><td><code>pcall(fn, ...)</code></td><td>Call fn, catching errors; returns ok plus results or the error.</td></tr>
+<tr><td><code>ipairs(t)</code>, <code>pairs(t)</code>, <code>next(t, k)</code></td><td>Iteration.</td></tr>
+<tr><td><code>setmetatable(t, m)</code>, <code>getmetatable(t)</code></td><td>Metatables.</td></tr>
+<tr><td><code>rawget</code>, <code>rawset</code>, <code>rawequal</code>, <code>rawlen</code></td><td>Bypass metamethods.</td></tr>
+<tr><td><code>require(path)</code></td><td>Load and run a module.</td></tr>
+<tr><td><code>collectgarbage()</code></td><td>Run the garbage collector now.</td></tr>
+<tr><td><code>instanceof</code>, <code>classname</code>, <code>classof</code>, <code>superclass</code>, <code>methodsof</code>, <code>isabstract</code></td><td>Class reflection (see <a href="#classes">Classes</a>).</td></tr>
+<tr><td><code>run(frames)</code>, <code>spawn(Class, ...)</code></td><td>Drive MonoBehaviour subclasses.</td></tr>
+</table>
+
+<h3 id="overriding-globals">Overriding globals</h3>
+<p>The builtins are ordinary global bindings, so you can replace them with your
+own. This is useful for logging, sandboxing, or adapting LUAR to a host program.
+There are two ways, depending on how far the change should reach.</p>
+
+<h4>Replace it everywhere with pub</h4>
+<p>Declaring a <code>pub</code> binding with the same name replaces the builtin in
+the shared global scope, so every file sees your version. Capture the original
+first if you still need it.</p>
+<pre><code><span class="kw">pub const</span> realPrint = <span class="fn">print</span>
+<span class="kw">pub</span> <span class="fn">print</span> = <span class="kw">function</span>(...)
+  realPrint(<span class="str">"[log]"</span>, ...)
+<span class="kw">end</span>
+
+<span class="fn">print</span>(<span class="str">"hi"</span>)   <span class="com">-- [log]  hi</span></code></pre>
+<p>The same works for any global, including <code>require</code>:</p>
+<pre><code><span class="kw">pub const</span> realRequire = <span class="fn">require</span>
+<span class="kw">pub</span> <span class="fn">require</span> = <span class="kw">function</span>(path)
+  realPrint(<span class="str">`requiring {path}`</span>)
+  <span class="kw">return</span> realRequire(path)
+<span class="kw">end</span></code></pre>
+
+<h4>Override it just for one file or block with local</h4>
+<p>A <code>local</code> binding with the builtin's name shadows it only inside the
+current scope. The rest of the program is unaffected. Capture the original into
+another local if you want to call through to it.</p>
+<pre><code><span class="kw">local</span> realPrint = <span class="fn">print</span>
+<span class="kw">local</span> <span class="fn">print</span> = <span class="kw">function</span>(x) realPrint(<span class="str">"LOG: "</span> .. <span class="fn">tostring</span>(x)) <span class="kw">end</span>
+
+<span class="fn">print</span>(<span class="str">"hello"</span>)   <span class="com">-- LOG: hello   (only in this scope)</span></code></pre>
+
+<h4>From the host (Rust)</h4>
+<p>An embedding program can install or replace any global from Rust with
+<code>set_global_fn</code> or <code>set_global</code>. See the
+<a href="#host-api">Host API</a>.</p>

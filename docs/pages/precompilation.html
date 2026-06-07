@@ -1,0 +1,11 @@
+<h1 id="precompilation">Precompilation</h1>
+<p>A program can be precompiled to a compact binary that loads and runs on the
+full interpreter, so every language feature works from precompiled code.</p>
+<pre><code>compile script.luar script.luarc   <span class="com"># produce a .luarc</span>
+run script.luarc                   <span class="com"># run it</span></code></pre>
+<p>From Rust:</p>
+<pre><code><span class="kw">let</span> bytes = luar::precompile_source(src)?;   <span class="com">// serialize</span>
+<span class="kw">let</span> interp = luar::run_precompiled(&amp;bytes)?;  <span class="com">// load and run</span></code></pre>
+<p>A <code>.luarc</code> file is the parsed, type-scrubbed program. Because it runs
+on the interpreter, classes, enums, mixins, operators, MonoBehaviour, and the
+standard library all behave exactly as they do from source.</p>

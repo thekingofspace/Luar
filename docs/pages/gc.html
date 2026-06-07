@@ -1,0 +1,13 @@
+<h1 id="gc">Garbage collection</h1>
+<p>LUAR manages memory automatically. Heap objects (tables, functions, classes,
+interfaces, and coroutines) are reference-counted, and a tracing mark-and-sweep
+collector reclaims objects that are no longer reachable, including reference
+cycles that plain counting would miss.</p>
+<ul>
+<li>The collector traces from the active scope chain, the module root, and the
+shared global scope, marking everything reachable and freeing the rest.</li>
+<li>Collection runs automatically as the program allocates.</li>
+<li>You can force a collection at any point with <code>collectgarbage()</code>.</li>
+<li>Assigning <code>nil</code> to a binding (even an immutable one) drops its
+reference, which lets the value be collected if nothing else holds it.</li>
+</ul>

@@ -1,0 +1,91 @@
+<h1 id="scope">Scope</h1>
+<p>Scope is the part of a program where a name is visible. When you declare a
+variable, it can be seen from its declaration to the end of the block it lives
+in, and no further. Understanding scope is how you reason about which variable a
+name refers to and when a value can be freed.</p>
+
+<h3>Blocks make scopes</h3>
+<p>A block is a region of code introduced by a keyword and closed by
+<code>end</code> (or <code>}</code> for a class body). The body of an
+<code>if</code>, <code>while</code>, <code>for</code>, <code>do</code>, a
+function, a class method, and each <code>case</code> of a <code>switch</code> is
+its own block, and therefore its own scope.</p>
+<pre><code><span class="kw">local</span> a = <span class="num">1</span>
+<span class="kw">do</span>
+  <span class="kw">local</span> b = <span class="num">2</span>     <span class="com">-- b lives only inside this do block</span>
+  <span class="fn">print</span>(a, b)      <span class="com">-- 1  2  (a is visible from the outer scope)</span>
+<span class="kw">end</span>
+<span class="fn">print</span>(a)          <span class="com">-- 1</span>
+<span class="com">-- print(b) here would be an error: b is out of scope</span></code></pre>
+
+<h3>Inner scopes can see outer ones</h3>
+<p>Code in an inner block can read and write variables declared in any enclosing
+block. The visibility flows inward, not outward.</p>
+<pre><code><span class="kw">local</span> total = <span class="num">0</span>
+<span class="kw">for</span> i = <span class="num">1</span>, <span class="num">3</span> <span class="kw">do</span>
+  total = total + i   <span class="com">-- the loop body can see and update total</span>
+<span class="kw">end</span>
+<span class="fn">print</span>(total)         <span class="com">-- 6</span></code></pre>
+
+<h3>Shadowing</h3>
+<p>If you declare a new variable in an inner scope using a name that already
+exists in an outer scope, the inner one hides (shadows) the outer one for the
+rest of that block. The outer variable is untouched and comes back into view when
+the inner block ends. The static checker warns about this with
+ShadowedVariable, because it is sometimes a mistake.</p>
+<pre><code><span class="kw">local</span> n = <span class="num">1</span>
+<span class="kw">do</span>
+  <span class="kw">local</span> n = <span class="num">2</span>   <span class="com">-- a new variable that shadows the outer n</span>
+  <span class="fn">print</span>(n)      <span class="com">-- 2</span>
+<span class="kw">end</span>
+<span class="fn">print</span>(n)        <span class="com">-- 1  (the outer n was never changed)</span></code></pre>
+
+<h3>Loop variables</h3>
+<p>The variables of a <code>for</code> loop are scoped to the loop body. They do
+not exist after the loop ends. If you do not use a loop variable, name it
+<code>_</code> to say so on purpose and silence the UnusedLoopVariable check.</p>
+<pre><code><span class="kw">for</span> _, value <span class="kw">in</span> <span class="fn">ipairs</span>(list) <span class="kw">do</span>
+  <span class="fn">print</span>(value)
+<span class="kw">end</span></code></pre>
+
+<h3>Function and module scope</h3>
+<p>A function's parameters and the variables declared in its body are local to
+that function. At the top level of a file, declarations live in the file's
+(module) scope, which is private to that file unless you mark them
+<code>pub</code>.</p>
+<pre><code><span class="com">-- in one file</span>
+<span class="kw">const</span> SECRET = <span class="str">"hidden"</span>     <span class="com">-- private to this file</span>
+<span class="kw">pub const</span> VERSION = <span class="str">"1.0"</span>  <span class="com">-- shared with any file that requires this one</span></code></pre>
+<p>See <a href="#variables">Variables</a> for the difference between
+<code>local</code>, <code>const</code>, and <code>pub</code>, and
+<a href="#modules">Modules</a> for how <code>pub</code> crosses file
+boundaries.</p>
+
+<h3>Closures capture their scope</h3>
+<p>A function created inside another function remembers the variables that were
+in scope where it was created, even after the outer function has returned. This
+captured environment is what makes a closure. Each call that creates a closure
+gets its own copy of those captured variables.</p>
+<pre><code><span class="kw">local function</span> <span class="fn">counter</span>(start)
+  <span class="kw">local</span> n = start
+  <span class="kw">return</span> <span class="kw">function</span>()
+    n += <span class="num">1</span>       <span class="com">-- still has access to n after counter returned</span>
+    <span class="kw">return</span> n
+  <span class="kw">end</span>
+<span class="kw">end</span>
+
+<span class="kw">local</span> a = <span class="fn">counter</span>(<span class="num">0</span>)
+<span class="kw">local</span> b = <span class="fn">counter</span>(<span class="num">10</span>)
+<span class="fn">print</span>(a(), a(), b())   <span class="com">-- 1  2  11  (a and b have separate copies of n)</span></code></pre>
+
+<h3>Scope and the garbage collector</h3>
+<p>When a scope ends, its local variables are no longer reachable through that
+scope. If nothing else refers to the value (no closure, no table, no global
+holds it), the garbage collector is free to reclaim it. Assigning
+<code>nil</code> to a binding also drops its reference early. See
+<a href="#gc">Garbage collection</a>.</p>
+
+<h3>self and super inside methods</h3>
+<p>Inside a class method, two names are always in scope: <code>self</code>, the
+object the method was called on, and <code>super</code>, used to reach the
+parent class. Neither exists outside a method. See <a href="#classes">Classes</a>.</p>

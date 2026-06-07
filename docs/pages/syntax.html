@@ -1,0 +1,101 @@
+<h1 id="syntax">Syntax</h1>
+
+<h3>Comments</h3>
+<pre><code><span class="com">-- a line comment runs to the end of the line</span>
+
+<span class="com">--[[
+  a block comment can
+  span many lines
+]]</span></code></pre>
+<p>A comment directly above a declaration becomes its documentation and is shown
+on hover. A line beginning with <code>--#</code> is a Ferrite directive, not a
+normal comment.</p>
+
+<h3>Literals</h3>
+<pre><code><span class="kw">nil</span>               <span class="com">-- the absence of a value</span>
+<span class="kw">true</span>  <span class="kw">false</span>      <span class="com">-- booleans</span>
+<span class="num">42</span>    <span class="num">-7</span>         <span class="com">-- integers</span>
+<span class="num">3.14</span>  <span class="num">1.0e3</span>      <span class="com">-- floats</span>
+<span class="str">"text"</span>  <span class="str">'text'</span>    <span class="com">-- strings (double or single quotes)</span></code></pre>
+
+<h3 id="strings">Strings</h3>
+<p>LUAR has three kinds of string. If you have not used a language with these
+before, here is what each one is for.</p>
+
+<h4>1. Quoted strings</h4>
+<p>The everyday string. Use double quotes <code>"..."</code> or single quotes
+<code>'...'</code> (they behave the same). A backslash starts an escape
+sequence, which is a short code for a character you cannot easily type, like a
+newline.</p>
+<pre><code><span class="kw">local</span> a = <span class="str">"hello"</span>
+<span class="kw">local</span> b = <span class="str">'it is fine to use single quotes'</span>
+<span class="kw">local</span> c = <span class="str">"line one\nline two"</span>   <span class="com">-- \n is a newline</span></code></pre>
+<p>The supported escape sequences:</p>
+<table>
+<tr><th>Escape</th><th>Meaning</th></tr>
+<tr><td><code>\n</code></td><td>Newline.</td></tr>
+<tr><td><code>\t</code></td><td>Tab.</td></tr>
+<tr><td><code>\r</code></td><td>Carriage return.</td></tr>
+<tr><td><code>\0</code></td><td>The null character.</td></tr>
+<tr><td><code>\a \b \f \v \e</code></td><td>Bell, backspace, form feed, vertical tab, escape.</td></tr>
+<tr><td><code>\\</code></td><td>A literal backslash.</td></tr>
+<tr><td><code>\"</code> <code>\'</code> <code>\`</code></td><td>A literal quote or backtick.</td></tr>
+<tr><td><code>\xHH</code></td><td>A byte written as two hexadecimal digits, for example <code>\x41</code> is <code>A</code>.</td></tr>
+<tr><td><code>\u{...}</code></td><td>A Unicode code point, for example <code>\u{1F600}</code>.</td></tr>
+<tr><td><code>\</code> then a newline</td><td>A line continuation: the backslash and newline are dropped.</td></tr>
+</table>
+<p>Any other escape, such as <code>\z</code>, just produces the character after
+the backslash.</p>
+
+<h4>2. Multiline strings</h4>
+<p>Wrap text in double square brackets <code>[[ ... ]]</code> to write a string
+that spans many lines with no escaping at all. Everything between the brackets
+is taken literally, so quotes and backslashes need no escaping. A single newline
+right after the opening <code>[[</code> is dropped, which keeps the first line
+clean.</p>
+<pre><code><span class="kw">local</span> text = <span class="str">[[
+This can span
+many lines. "Quotes" and \backslashes are literal here.
+]]</span></code></pre>
+<p>If your text itself contains <code>]]</code>, use a longer bracket with equals
+signs. The string ends only on a matching close bracket with the same number of
+equals signs.</p>
+<pre><code><span class="kw">local</span> tricky = <span class="str">[==[ contains ]] safely ]==]</span></code></pre>
+
+<h4>3. Interpolated strings</h4>
+<p>Wrap text in backticks <code>` ... `</code> to build a string with values
+spliced into it. Anything inside curly braces <code>{ }</code> is an expression
+that is evaluated and inserted as text. This is usually cleaner than joining
+pieces with <code>..</code>.</p>
+<pre><code><span class="kw">local</span> name = <span class="str">"world"</span>
+<span class="kw">local</span> count = <span class="num">3</span>
+<span class="fn">print</span>(<span class="str">`Hello {name}, you have {count} messages`</span>)
+<span class="fn">print</span>(<span class="str">`{count} doubled is {count * 2}`</span>)
+<span class="fn">print</span>(<span class="str">`upper: {string.upper(name)}`</span>)</code></pre>
+<p>The expression in <code>{ }</code> can be anything: a variable, arithmetic, a
+function call, a field access. Each value is converted to text with
+<code>tostring</code>, so any value type works. To write a literal brace, escape
+it with <code>\{</code> or <code>\}</code>. Interpolated strings can span
+multiple lines and support all the escape sequences above.</p>
+<pre><code><span class="kw">local</span> s = <span class="str">`a literal brace: \{not interpolated\}, but {name} is`</span></code></pre>
+
+<h3>Operators</h3>
+<table>
+<tr><th>Group</th><th>Operators</th></tr>
+<tr><td>Arithmetic</td><td><code>+ - * / % ^</code></td></tr>
+<tr><td>Concatenation</td><td><code>..</code></td></tr>
+<tr><td>Comparison</td><td><code>== ~= &lt; &lt;= &gt; &gt;=</code></td></tr>
+<tr><td>Logical</td><td><code>and or not</code> (short-circuit, yield operand values)</td></tr>
+<tr><td>Length / unary minus</td><td><code>#x</code>, <code>-x</code></td></tr>
+<tr><td>Compound assignment</td><td><code>+= -= *= /= %= ..=</code></td></tr>
+</table>
+
+<div class="note">A bare expression is only a statement when it is a call (including the call
+sugar forms) or a <code>switch</code>. A value on a line by itself, such as
+<code>1 + 1</code>, is a syntax error.</div>
+
+<h3>Keywords</h3>
+<pre><code>local const pub public private protected static abstract final override export
+function class interface enum type extends mixin implements constructor operator
+get set if then elseif else end for while do in break return switch case default
+and or not self super true false nil</code></pre>

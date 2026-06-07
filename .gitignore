@@ -1,0 +1,40 @@
+# Rust build output
+/target/
+**/target/
+*.rs.bk
+*.pdb
+
+# Cargo lockfiles for the embeddable library crates (keep for binaries only)
+# (left tracked by default; uncomment if you prefer to ignore them)
+# Cargo.lock
+
+# Node / VS Code extension
+node_modules/
+**/node_modules/
+out/
+**/out/
+*.vsix
+*.tsbuildinfo
+.npm/
+
+# Compiled language-server binaries (built from source)
+luar LSP/bin/server.exe
+luar LSP/bin/luar-lsp-server
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode-test/
+
+# Logs and scratch
+*.log
+/tmp/
+scratch/
+
+# GitHub Pages local build
+docs/_site/
+docs/.jekyll-cache/
+docs/.jekyll-metadata

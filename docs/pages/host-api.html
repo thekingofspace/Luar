@@ -1,0 +1,156 @@
+<h1 id="host-api">Host API (Rust)</h1>
+<p>LUAR is built to be embedded in a Rust program. You create an interpreter,
+inject globals, tables, native functions, and classes from Rust, run LUAR code
+against them, and read values back out. This section is a complete guide for
+building those things from the host side.</p>
+
+<h3>The Interpreter</h3>
+<p>The <code>Interpreter</code> is the entry point. It owns the global scope and
+keeps all state between calls, so you can run several pieces of code and have
+them see each other.</p>
+<pre><code><span class="kw">use</span> luar::{Interpreter, Value};
+
+<span class="kw">let mut</span> i = Interpreter::new();   <span class="com">// builtins and the standard library are preloaded</span>
+i.run_source(<span class="str">"print(1 + 2)"</span>)?;       <span class="com">// run some code; state persists</span>
+i.run_source(<span class="str">"print(1 + 2)"</span>)?;       <span class="com">// the next call sees everything the first set up</span></code></pre>
+<p>Convenience free functions for one-shot use:</p>
+<pre><code><span class="kw">let</span> interp = luar::eval_source(<span class="str">"print(\"hi\")"</span>)?;   <span class="com">// parse + run, returns the interpreter</span>
+<span class="kw">let</span> value  = Interpreter::load_module(<span class="str">"return 42"</span>)?;  <span class="com">// run as a module, return its value</span></code></pre>
+
+<h3>Executing code</h3>
+<table>
+<tr><th>Method</th><th>What it does</th></tr>
+<tr><td><code>i.run_source(src)</code></td><td>Parse and run <code>src</code> in this interpreter. Returns any top-level <code>return</code> values.</td></tr>
+<tr><td><code>i.call_value(&amp;callable, args)</code></td><td>Call a LUAR function or native value from Rust and get its results.</td></tr>
+<tr><td><code>luar::eval_source(src)</code></td><td>Run in a fresh interpreter and return it.</td></tr>
+<tr><td><code>luar::run_precompiled(&amp;bytes)</code></td><td>Run a precompiled <code>.luarc</code> program.</td></tr>
+</table>
+<pre><code><span class="com">// run code, then call a function it defined</span>
+i.run_source(<span class="str">"function double(x) return x * 2 end"</span>)?;
+<span class="kw">let</span> f = i.get_global(<span class="str">"double"</span>).unwrap();
+<span class="kw">let</span> out = i.call_value(&amp;f, <span class="kw">vec!</span>[Value::int(<span class="num">21</span>)])?;   <span class="com">// [Value::Int(42)]</span></code></pre>
+
+<h3>Creating globals</h3>
+<p>Globals are visible to all code you run. Use <code>set_global</code> for a
+reassignable binding and <code>set_global_const</code> for an immutable one.</p>
+<pre><code>i.set_global(<span class="str">"score"</span>, Value::int(<span class="num">0</span>));             <span class="com">// local-like, reassignable</span>
+i.set_global_const(<span class="str">"VERSION"</span>, Value::str(<span class="str">"1.0"</span>));  <span class="com">// const</span>
+
+i.run_source(<span class="str">"score = score + 10  print(VERSION)"</span>)?;</code></pre>
+<p>Read a global back, and remove or clear one:</p>
+<pre><code><span class="kw">let</span> score = i.get_global(<span class="str">"score"</span>);   <span class="com">// Option&lt;Value&gt;</span>
+i.force_set(<span class="str">"score"</span>, Value::int(<span class="num">0</span>)); <span class="com">// set even if it is const, returns true if it existed</span>
+i.nil_value(<span class="str">"score"</span>);                <span class="com">// set to nil and free what it held</span>
+i.remove_global(<span class="str">"score"</span>);            <span class="com">// remove the binding entirely</span></code></pre>
+
+<h3>Creating native functions</h3>
+<p>A native function is a Rust function with the signature
+<code>fn(&amp;mut Interpreter, Vec&lt;Value&gt;) -&gt; Result&lt;Vec&lt;Value&gt;, String&gt;</code>.
+It receives the call arguments and returns result values (or an error message).
+Expose one as a global with <code>set_global_fn</code>.</p>
+<pre><code>i.set_global_fn(<span class="str">"shout"</span>, |_i, args| {
+    <span class="kw">let</span> s = args.first().map(|v| v.to_string()).unwrap_or_default();
+    Ok(<span class="kw">vec!</span>[Value::str(&amp;s.to_uppercase())])
+});
+
+i.run_source(<span class="str">"print(shout(\"hi\"))"</span>)?;   <span class="com">// HI</span></code></pre>
+
+<h3>Creating tables and native libraries</h3>
+<p>Build a table with <code>create_table</code>, then fill it with
+<code>set_field</code> (any value) and <code>set_native</code> (a native
+function). This is how you expose a library table such as your own
+<code>math</code> or <code>net</code>.</p>
+<pre><code><span class="kw">let</span> net = i.create_table();
+net.set_field(Value::str(<span class="str">"version"</span>), Value::int(<span class="num">1</span>))?;
+net.set_native(<span class="str">"get"</span>, |_i, args| {
+    <span class="kw">let</span> url = args.first().map(|v| v.to_string()).unwrap_or_default();
+    <span class="com">// ... do real work here ...</span>
+    Ok(<span class="kw">vec!</span>[Value::str(&amp;format!(<span class="str">"fetched {url}"</span>))])
+});
+i.set_global_const(<span class="str">"net"</span>, net);
+
+i.run_source(<span class="str">"print(net.get(\"x\"))  print(net.version)"</span>)?;</code></pre>
+<p>You can also drive behavior with native metamethods. Attach
+<code>__index</code>, <code>__newindex</code>, <code>__call</code>, or
+<code>__tostring</code> to a metatable so host code runs when LUAR indexes,
+calls, or stringifies an object.</p>
+<pre><code><span class="kw">let</span> meta = i.create_table();
+meta.set_native(<span class="str">"__index"</span>, |_i, args| {
+    <span class="kw">let</span> key = args.get(<span class="num">1</span>).map(|v| v.to_string()).unwrap_or_default();
+    Ok(<span class="kw">vec!</span>[Value::str(&amp;format!(<span class="str">"dynamic:{key}"</span>))])
+});
+<span class="kw">let</span> obj = i.create_table();
+obj.set_metatable(meta)?;
+i.set_global_const(<span class="str">"obj"</span>, obj);
+i.run_source(<span class="str">"print(obj.anything)"</span>)?;   <span class="com">// dynamic:anything</span></code></pre>
+
+<h3 id="native-classes">Creating classes</h3>
+<p>Define a class whose fields, methods, operators, getters, setters, and
+constructor are native Rust code with <code>NativeClassBuilder</code>, then
+register it as a global with <code>define_class</code>. Scripts can then call
+the class to construct instances and call its methods.</p>
+<p>Every native callable on a class receives the instance as its first argument
+(this is <code>self</code>), followed by the call arguments.</p>
+<pre><code><span class="kw">use</span> luar::{Interpreter, NativeClassBuilder, Value};
+
+<span class="kw">let mut</span> i = Interpreter::new();
+i.define_class(
+    NativeClassBuilder::new(<span class="str">"Counter"</span>)
+        .field(<span class="str">"count"</span>, Value::int(<span class="num">0</span>))             <span class="com">// default field value</span>
+        .constructor(|_i, args| {                       <span class="com">// args[0] is self, then user args</span>
+            <span class="kw">let</span> start = args.get(<span class="num">1</span>).cloned().unwrap_or(Value::int(<span class="num">0</span>));
+            args[<span class="num">0</span>].set_field(Value::str(<span class="str">"count"</span>), start)?;
+            Ok(<span class="kw">vec!</span>[])
+        })
+        .method(<span class="str">"bump"</span>, |_i, args| {                   <span class="com">// called as c:bump()</span>
+            <span class="kw">let</span> this = &amp;args[<span class="num">0</span>];
+            <span class="kw">let</span> n = this.field(&amp;Value::str(<span class="str">"count"</span>)).as_int().unwrap_or(<span class="num">0</span>) + <span class="num">1</span>;
+            this.set_field(Value::str(<span class="str">"count"</span>), Value::int(n))?;
+            Ok(<span class="kw">vec!</span>[Value::int(n)])
+        })
+        .getter(<span class="str">"value"</span>, |_i, args| {                  <span class="com">// read as c.value</span>
+            Ok(<span class="kw">vec!</span>[args[<span class="num">0</span>].field(&amp;Value::str(<span class="str">"count"</span>))])
+        })
+        .metamethod(<span class="str">"__tostring"</span>, |_i, args| {        <span class="com">// used by tostring/print</span>
+            <span class="kw">let</span> n = args[<span class="num">0</span>].field(&amp;Value::str(<span class="str">"count"</span>));
+            Ok(<span class="kw">vec!</span>[Value::str(&amp;format!(<span class="str">"Counter({n})"</span>))])
+        }),
+);
+
+i.run_source(<span class="str">r#"
+    const c = Counter(10)
+    c:bump()
+    print(c:bump())   -- 12
+    print(c.value)    -- 12
+    print(c)          -- Counter(12)
+"#</span>)?;</code></pre>
+<p>Builder methods:</p>
+<table>
+<tr><th>Method</th><th>Adds</th></tr>
+<tr><td><code>.new(name)</code></td><td>Start a class with the given name.</td></tr>
+<tr><td><code>.field(name, default)</code></td><td>An instance field with a default value.</td></tr>
+<tr><td><code>.method(name, fn)</code></td><td>An instance method, called as <code>obj:name(...)</code>.</td></tr>
+<tr><td><code>.getter(name, fn)</code> / <code>.setter(name, fn)</code></td><td>A property getter or setter, used as <code>obj.name</code>.</td></tr>
+<tr><td><code>.metamethod(name, fn)</code></td><td>An operator overload by metamethod name (<code>__add</code>, <code>__eq</code>, <code>__tostring</code>, ...).</td></tr>
+<tr><td><code>.constructor(fn)</code></td><td>A native constructor, run when the class is called.</td></tr>
+<tr><td><code>.make_final()</code> / <code>.make_abstract()</code></td><td>Mark the class final or abstract.</td></tr>
+<tr><td><code>.build()</code></td><td>Produce the class value without registering it (use <code>define_class</code> to register).</td></tr>
+</table>
+
+<h3>Working with Value</h3>
+<p>Construct values with <code>Value::int</code>, <code>Value::str</code>,
+<code>Value::table</code>, and the variants <code>Value::Bool</code>,
+<code>Value::Float</code>, <code>Value::Nil</code>. Read them with helpers such as
+<code>as_int</code>, <code>to_string</code>, <code>type_name</code>,
+<code>field</code>, and <code>set_field</code>. The native function signature is
+<code>fn(&amp;mut Interpreter, Vec&lt;Value&gt;) -&gt; Result&lt;Vec&lt;Value&gt;, String&gt;</code>,
+where the returned vector is the list of result values.</p>
+
+<h3>Giving the editor types for your host globals</h3>
+<p>Write a <code>.luard</code> declaration file describing the globals, tables,
+and classes you inject from Rust. The editor reads it for completion and hover
+but never executes it. See <a href="#declaration-files">Declaration files</a>.</p>
+<pre><code><span class="com">-- host.luard</span>
+<span class="kw">class</span> <span class="typ">Counter</span> { <span class="kw">public</span> count: <span class="typ">number</span> = <span class="num">0</span>  <span class="kw">function</span> <span class="fn">bump</span>(): <span class="typ">number</span> <span class="kw">end</span> }
+<span class="kw">local</span> net: <span class="typ">table</span> = <span class="kw">nil</span>
+<span class="kw">local</span> shout: <span class="typ">function</span> = <span class="kw">nil</span></code></pre>

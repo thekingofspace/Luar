@@ -1,0 +1,287 @@
+<h1 id="classes">Classes</h1>
+<p>A class is a blueprint for an object. It describes the data an object holds
+(its fields) and the things it can do (its methods). LUAR is class-based, which
+means objects are created from classes rather than from raw tables. If you have
+never used classes before, read this page top to bottom; each idea builds on the
+last.</p>
+
+<h3>Declaring a class and making an object</h3>
+<p>Declare a class with <code>class Name { ... }</code>. To make an object (also
+called an instance) you call the class like a function. The values you pass go
+to the constructor.</p>
+<pre><code><span class="kw">class</span> <span class="typ">Point</span> {
+  <span class="kw">public</span> x: <span class="typ">number</span> = <span class="num">0</span>
+  <span class="kw">public</span> y: <span class="typ">number</span> = <span class="num">0</span>
+
+  <span class="kw">constructor</span>(x, y)
+    self.x = x
+    self.y = y
+  <span class="kw">end</span>
+
+  <span class="kw">function</span> <span class="fn">length</span>()
+    <span class="kw">return</span> <span class="typ">math</span>.sqrt(self.x * self.x + self.y * self.y)
+  <span class="kw">end</span>
+}
+
+<span class="kw">const</span> p = <span class="typ">Point</span>(<span class="num">3</span>, <span class="num">4</span>)   <span class="com">-- make a Point object</span>
+<span class="fn">print</span>(p.x)              <span class="com">-- read a field: 3</span>
+<span class="fn">print</span>(p:length())       <span class="com">-- call a method: 5</span></code></pre>
+
+<h3>self, and the difference between dot and colon</h3>
+<p>Inside a method, <code>self</code> is the object the method was called on. It
+is how a method reads and writes that object's own fields.</p>
+<ul>
+<li>Use a <b>dot</b> (<code>p.x</code>) to read or write a field.</li>
+<li>Use a <b>colon</b> (<code>p:length()</code>) to call a method. The colon
+quietly passes the object as <code>self</code>. Writing <code>p.length()</code>
+would not pass <code>self</code> and is almost never what you want.</li>
+</ul>
+
+<h3>Fields</h3>
+<p>A field is a named piece of data on every instance. A field may have a type
+annotation (for the editor) and a default value that is set when the object is
+built.</p>
+<pre><code><span class="kw">class</span> <span class="typ">Player</span> {
+  <span class="kw">public</span> name: <span class="typ">string</span> = <span class="str">"anon"</span>
+  <span class="kw">public</span> level = <span class="num">1</span>             <span class="com">-- the type annotation is optional</span>
+  <span class="kw">public</span> inventory: <span class="typ">table</span> = {}   <span class="com">-- each instance gets its own table</span>
+}</code></pre>
+
+<h3>Access control: public, protected, private</h3>
+<p>Access control limits who is allowed to touch a member. It helps you keep the
+inside of an object separate from the outside.</p>
+<table>
+<tr><th>Modifier</th><th>Reachable from</th></tr>
+<tr><td><code>public</code> (default)</td><td>Anywhere.</td></tr>
+<tr><td><code>protected</code></td><td>The declaring class and its subclasses only.</td></tr>
+<tr><td><code>private</code></td><td>The declaring class's own methods only.</td></tr>
+</table>
+<pre><code><span class="kw">class</span> <span class="typ">Account</span> {
+  <span class="kw">public</span> owner: <span class="typ">string</span> = <span class="str">""</span>
+  <span class="kw">private</span> balance: <span class="typ">number</span> = <span class="num">0</span>     <span class="com">-- outsiders cannot read or write this</span>
+
+  <span class="kw">function</span> <span class="fn">deposit</span>(amount)
+    self.balance = self.balance + amount   <span class="com">-- allowed: same class</span>
+  <span class="kw">end</span>
+  <span class="kw">function</span> <span class="fn">total</span>() <span class="kw">return</span> self.balance <span class="kw">end</span>
+}</code></pre>
+<p>Reading or writing a member you are not allowed to touch is a run-time error.
+This is enforced while the program runs, not just by the editor.</p>
+
+<h3>Static members</h3>
+<p>A <code>static</code> field or method belongs to the class itself rather than
+to any one instance. There is exactly one copy, shared by everyone, and you reach
+it through the class name. This is useful for counters, caches, or factory
+helpers.</p>
+<pre><code><span class="kw">class</span> <span class="typ">Counter</span> {
+  <span class="kw">static</span> total: <span class="typ">number</span> = <span class="num">0</span>
+  <span class="kw">constructor</span>() <span class="typ">Counter</span>.total += <span class="num">1</span> <span class="kw">end</span>
+  <span class="kw">static function</span> <span class="fn">made</span>() <span class="kw">return</span> <span class="typ">Counter</span>.total <span class="kw">end</span>
+}
+<span class="typ">Counter</span>()  <span class="typ">Counter</span>()
+<span class="fn">print</span>(<span class="typ">Counter</span>.made())   <span class="com">-- 2</span></code></pre>
+
+<h3>The constructor</h3>
+<p>The <code>constructor</code> runs once, when the class is called to build an
+object. Its job is to set up the new instance, which is available as
+<code>self</code>. Field defaults are applied first, then the constructor runs.
+A class without a constructor can still be built; you just get the defaults.</p>
+<pre><code><span class="kw">class</span> <span class="typ">Box</span> {
+  <span class="kw">public</span> items: <span class="typ">table</span> = {}
+  <span class="kw">constructor</span>(first)
+    <span class="typ">table</span>.insert(self.items, first)
+  <span class="kw">end</span>
+}</code></pre>
+
+<h3>Methods and their modifiers</h3>
+<p>A method is a function declared inside the class body. Besides the access
+words, a method can be marked:</p>
+<table>
+<tr><th>Modifier</th><th>Meaning</th></tr>
+<tr><td><code>static</code></td><td>Belongs to the class; called on the class name, has no <code>self</code>.</td></tr>
+<tr><td><code>abstract</code></td><td>Has no body; a concrete subclass must provide one. See abstract classes.</td></tr>
+<tr><td><code>final</code></td><td>Cannot be overridden by a subclass.</td></tr>
+<tr><td><code>override</code></td><td>States that this method replaces an inherited one. It is an error if there is nothing to override, which catches typos.</td></tr>
+</table>
+
+<h3>Getters and setters</h3>
+<p>A getter is a method that runs when you read a property; a setter runs when
+you assign to it. From the outside they look exactly like a field (no
+parentheses), but they let you compute a value or validate an assignment.</p>
+<pre><code><span class="kw">class</span> <span class="typ">Temperature</span> {
+  <span class="kw">private</span> celsius: <span class="typ">number</span> = <span class="num">0</span>
+
+  <span class="kw">get</span> <span class="fn">fahrenheit</span>()
+    <span class="kw">return</span> self.celsius * <span class="num">9</span> / <span class="num">5</span> + <span class="num">32</span>
+  <span class="kw">end</span>
+  <span class="kw">set</span> <span class="fn">fahrenheit</span>(value)
+    self.celsius = (value - <span class="num">32</span>) * <span class="num">5</span> / <span class="num">9</span>
+  <span class="kw">end</span>
+}
+
+<span class="kw">const</span> t = <span class="typ">Temperature</span>()
+t.fahrenheit = <span class="num">212</span>      <span class="com">-- runs the setter</span>
+<span class="fn">print</span>(t.fahrenheit)    <span class="com">-- runs the getter: 212</span></code></pre>
+
+<h3>Operator overloading</h3>
+<p>Operator overloading lets your objects work with the normal operators like
+<code>+</code> and <code>==</code>. You write <code>operator SYMBOL(other)</code>
+and return the result. This is handy for math-like types such as vectors or
+money.</p>
+<pre><code><span class="kw">class</span> <span class="typ">Vec</span> {
+  <span class="kw">public</span> x: <span class="typ">number</span> = <span class="num">0</span>
+  <span class="kw">public</span> y: <span class="typ">number</span> = <span class="num">0</span>
+  <span class="kw">constructor</span>(x, y) self.x = x  self.y = y <span class="kw">end</span>
+
+  <span class="kw">operator</span> +(o)  <span class="kw">return</span> <span class="typ">Vec</span>(self.x + o.x, self.y + o.y) <span class="kw">end</span>
+  <span class="kw">operator</span> -(o)  <span class="kw">return</span> <span class="typ">Vec</span>(self.x - o.x, self.y - o.y) <span class="kw">end</span>
+  <span class="kw">operator</span> -()   <span class="kw">return</span> <span class="typ">Vec</span>(-self.x, -self.y) <span class="kw">end</span>      <span class="com">-- unary minus</span>
+  <span class="kw">operator</span> ==(o) <span class="kw">return</span> self.x == o.x <span class="kw">and</span> self.y == o.y <span class="kw">end</span>
+  <span class="kw">operator</span> #()   <span class="kw">return</span> <span class="num">2</span> <span class="kw">end</span>                        <span class="com">-- length, used by #v</span>
+  <span class="kw">operator</span> <span class="fn">tostring</span>() <span class="kw">return</span> <span class="str">`Vec({self.x}, {self.y})`</span> <span class="kw">end</span>
+}
+
+<span class="fn">print</span>(<span class="typ">Vec</span>(<span class="num">1</span>, <span class="num">2</span>) + <span class="typ">Vec</span>(<span class="num">3</span>, <span class="num">4</span>))   <span class="com">-- Vec(4, 6)</span></code></pre>
+<p>The operators you can overload: <code>+</code>, <code>-</code> (binary and
+unary), <code>*</code>, <code>/</code>, <code>%</code>, <code>^</code>,
+<code>..</code> (concatenation), <code>==</code>, <code>&lt;</code>,
+<code>&lt;=</code>, <code>#</code> (length), and <code>tostring</code> (used by
+<code>print</code> and <code>tostring</code>).</p>
+
+<h3>Inheritance with extends</h3>
+<p>Inheritance lets one class build on another. The new class (the subclass)
+gets all the fields and methods of the parent, and can add new ones or replace
+existing ones. A class extends exactly one parent.</p>
+<pre><code><span class="kw">class</span> <span class="typ">Animal</span> {
+  <span class="kw">public</span> name: <span class="typ">string</span> = <span class="str">"animal"</span>
+  <span class="kw">constructor</span>(name) self.name = name <span class="kw">end</span>
+  <span class="kw">function</span> <span class="fn">describe</span>() <span class="kw">return</span> self.name <span class="kw">end</span>
+  <span class="kw">function</span> <span class="fn">speak</span>() <span class="kw">return</span> <span class="str">"..."</span> <span class="kw">end</span>
+}
+
+<span class="kw">class</span> <span class="typ">Dog</span> <span class="kw">extends</span> <span class="typ">Animal</span> {
+  <span class="kw">public</span> breed: <span class="typ">string</span> = <span class="str">"mutt"</span>
+  <span class="kw">override function</span> <span class="fn">speak</span>() <span class="kw">return</span> <span class="str">"woof"</span> <span class="kw">end</span>
+}</code></pre>
+
+<h3>super: reaching the parent</h3>
+<p><code>super</code> lets a subclass call the parent's version of something. The
+two common uses are running the parent constructor and extending an overridden
+method instead of fully replacing it.</p>
+<pre><code><span class="kw">class</span> <span class="typ">Dog</span> <span class="kw">extends</span> <span class="typ">Animal</span> {
+  <span class="kw">public</span> breed: <span class="typ">string</span> = <span class="str">"mutt"</span>
+  <span class="kw">constructor</span>(name, breed)
+    <span class="kw">super</span>:constructor(name)      <span class="com">-- run Animal's constructor first</span>
+    self.breed = breed
+  <span class="kw">end</span>
+  <span class="kw">override function</span> <span class="fn">describe</span>()
+    <span class="kw">return</span> <span class="kw">super</span>:describe() .. <span class="str">" the "</span> .. self.breed   <span class="com">-- add to the parent's result</span>
+  <span class="kw">end</span>
+}</code></pre>
+
+<h3>Abstract classes and methods</h3>
+<p>An <code>abstract</code> class is one that is not complete on its own and
+cannot be turned into an object directly; it exists to be extended. An
+<code>abstract</code> method has no body and is a promise that every concrete
+subclass will provide one. This is how you define a shared shape that each
+subclass fills in.</p>
+<pre><code><span class="kw">abstract class</span> <span class="typ">Shape</span> {
+  <span class="kw">abstract function</span> <span class="fn">area</span>() <span class="kw">end</span>     <span class="com">-- no body; subclasses must implement it</span>
+  <span class="kw">function</span> <span class="fn">describe</span>() <span class="kw">return</span> <span class="str">`area is {self:area()}`</span> <span class="kw">end</span>
+}
+
+<span class="kw">class</span> <span class="typ">Square</span> <span class="kw">extends</span> <span class="typ">Shape</span> {
+  <span class="kw">public</span> side: <span class="typ">number</span> = <span class="num">0</span>
+  <span class="kw">override function</span> <span class="fn">area</span>() <span class="kw">return</span> self.side * self.side <span class="kw">end</span>
+}
+
+<span class="com">-- Shape() is an error: you cannot instantiate an abstract class</span></code></pre>
+
+<h3>Final classes and methods</h3>
+<p><code>final</code> locks something down. A <code>final</code> class cannot be
+extended, and a <code>final</code> method cannot be overridden. Use it when a
+type or behavior is not meant to be changed by subclasses.</p>
+<pre><code><span class="kw">final class</span> <span class="typ">Money</span> { }
+<span class="com">-- class Cash extends Money { }   would be an error</span></code></pre>
+
+<h3>Mixins: reuse without inheritance</h3>
+<p>A mixin lets you pull methods (and operators and fields) from other classes
+into yours, without making them your parent. It is a way to share behavior
+between unrelated classes. Use <code>mixin A, B</code> to mix in one or more
+classes.</p>
+<pre><code><span class="kw">class</span> <span class="typ">Loggable</span> {
+  <span class="kw">function</span> <span class="fn">log</span>(msg) <span class="fn">print</span>(<span class="str">`[{self.name}] {msg}`</span>) <span class="kw">end</span>
+}
+
+<span class="kw">class</span> <span class="typ">Service</span> <span class="kw">extends</span> <span class="typ">Base</span> <span class="kw">mixin</span> <span class="typ">Loggable</span> {
+  <span class="kw">public</span> name: <span class="typ">string</span> = <span class="str">"svc"</span>
+}
+
+<span class="typ">Service</span>():log(<span class="str">"started"</span>)   <span class="com">-- log came from the mixin</span></code></pre>
+<p>Your own members take priority over mixed-in ones with the same name. The full
+clause order on a class header is
+<code>extends Parent mixin A, B implements I, J</code>.</p>
+
+<h3>Interfaces</h3>
+<p>An interface is a contract: a list of member names a class must provide. A
+class promises to satisfy an interface with <code>implements</code>, and the
+promise is checked when the class is built (a missing member is an error).
+Interfaces are about shape, not shared code; they do not provide
+implementations.</p>
+<pre><code><span class="kw">interface</span> <span class="typ">Named</span> {
+  name
+  describe
+}
+
+<span class="kw">class</span> <span class="typ">Tag</span> <span class="kw">implements</span> <span class="typ">Named</span> {
+  <span class="kw">public</span> name: <span class="typ">string</span> = <span class="str">"tag"</span>
+  <span class="kw">function</span> <span class="fn">describe</span>() <span class="kw">return</span> self.name <span class="kw">end</span>
+}</code></pre>
+<p>An interface can build on others with <code>extends</code>, and a class can
+implement several interfaces at once.</p>
+
+<h3>Reflection: inspecting classes at run time</h3>
+<p>These built-in functions let a running program ask questions about classes and
+objects.</p>
+<table>
+<tr><th>Function</th><th>Result</th></tr>
+<tr><td><code>instanceof(value, Class)</code></td><td>True if the value is an instance of the class or one of its subclasses, or implements the interface.</td></tr>
+<tr><td><code>classname(valueOrClass)</code></td><td>The class name as a string.</td></tr>
+<tr><td><code>classof(value)</code></td><td>The class object an instance was made from.</td></tr>
+<tr><td><code>superclass(valueOrClass)</code></td><td>The parent class, or nil if there is none.</td></tr>
+<tr><td><code>methodsof(valueOrClass)</code></td><td>An array of the method names, including inherited ones.</td></tr>
+<tr><td><code>isabstract(valueOrClass)</code></td><td>Whether the class is abstract.</td></tr>
+</table>
+<pre><code><span class="fn">print</span>(<span class="fn">classname</span>(rex))                  <span class="com">-- Dog</span>
+<span class="fn">print</span>(<span class="fn">classname</span>(<span class="fn">superclass</span>(rex)))      <span class="com">-- Animal</span>
+<span class="fn">print</span>(<span class="fn">instanceof</span>(rex, <span class="typ">Animal</span>))         <span class="com">-- true</span>
+<span class="fn">print</span>(<span class="fn">isabstract</span>(<span class="typ">Shape</span>))               <span class="com">-- true</span></code></pre>
+
+<h3>How an object is built, step by step</h3>
+<p>When you call a class to make an object, this is the order of events:</p>
+<ol>
+<li>A fresh empty instance is created and linked to its class.</li>
+<li>Inherited field defaults are applied, from the root parent down to this class.</li>
+<li>This class's own field defaults are applied.</li>
+<li>The constructor runs (yours, or the inherited one) with the new object as
+<code>self</code>.</li>
+<li>The finished object is returned.</li>
+</ol>
+
+<h3>Documenting a class</h3>
+<p>A comment directly above a class or a member becomes its documentation, shown
+on hover in the editor. See <a href="#documentation-comments">documentation
+comments</a>.</p>
+
+<h3>Defining classes from Rust</h3>
+<p>If you are embedding LUAR, you can define classes whose fields and methods are
+native Rust code. See <a href="#native-classes">creating classes</a> in the Host
+API.</p>
+
+<h3>See also</h3>
+<ul>
+<li><a href="#monobehaviour">MonoBehaviour</a> - a built-in base class with a
+lifecycle the runtime drives for you.</li>
+<li><a href="#types">Type system</a> - using class names as types.</li>
+<li><a href="#enums">Enums</a> - named constants that pair well with classes.</li>
+</ul>

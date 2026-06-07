@@ -1,0 +1,13 @@
+
+class Engine {
+  public title: string = ""
+  public running: boolean = false
+  function start() end
+  function stop() end
+  get fps(): number end
+}
+
+enum LogLevel { Debug Info Warning Error }
+
+local log: function = nil
+local engine: Engine = nil

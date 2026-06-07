@@ -1,0 +1,91 @@
+<h1 id="modules">Modules</h1>
+<p>A module is simply a file. As your program grows you split it into several
+files, and one file uses another by requiring it. <code>require</code> loads and
+runs another file, then hands back whatever that file returned. Paths are
+relative to the file doing the requiring, and each module is run only once: the
+result is cached and reused on later requires.</p>
+<pre><code><span class="kw">local</span> shapes = <span class="fn">require</span>(<span class="str">"./shapes"</span>)   <span class="com">-- loads ./shapes.luar next to this file</span></code></pre>
+<p>The leading <code>./</code> means "next to this file". You can reach into
+subfolders (<code>"./ui/button"</code>) or up a level (<code>"../shared"</code>).
+The <code>.luar</code> extension is added for you.</p>
+
+<h3>What is shared</h3>
+<p><code>pub</code> declarations are published to the shared global scope, so any
+file that requires the module can use them. <code>local</code> and
+<code>const</code> declarations stay private to the module. A module can also
+return a value, which becomes the result of <code>require</code>.</p>
+<pre><code><span class="com">-- greeting.luar</span>
+<span class="kw">pub const</span> SHARED_VERSION = <span class="str">"1.0"</span>   <span class="com">-- visible everywhere once required</span>
+<span class="kw">const</span> SECRET = <span class="str">"hidden"</span>            <span class="com">-- private to this module</span>
+
+<span class="kw">local</span> M = {}
+<span class="kw">function</span> M.<span class="fn">hello</span>(name) <span class="kw">return</span> <span class="str">"hi, "</span> .. name <span class="kw">end</span>
+M.answer = <span class="num">42</span>
+<span class="kw">return</span> M</code></pre>
+<pre><code><span class="com">-- main.luar</span>
+<span class="kw">local</span> g = <span class="fn">require</span>(<span class="str">"./greeting"</span>)
+<span class="fn">print</span>(g.hello(<span class="str">"luar"</span>))   <span class="com">-- the editor completes g.hello and g.answer</span>
+<span class="fn">print</span>(SHARED_VERSION)    <span class="com">-- available because it is pub</span></code></pre>
+
+<h3 id="folder-modules">Folder modules: init.luar</h3>
+<p>A folder can be a module. If a folder contains a file named
+<code>init.luar</code>, you can require the folder by name and that
+<code>init.luar</code> is what runs. This lets you group a feature into its own
+folder and present a single entry point.</p>
+<pre><code>ui/
+  init.luar      <span class="com"># this runs when you require("./ui")</span>
+  button.luar
+  slider.luar</code></pre>
+<pre><code><span class="kw">local</span> ui = <span class="fn">require</span>(<span class="str">"./ui"</span>)   <span class="com">-- runs ui/init.luar</span></code></pre>
+<p>When you require a path, LUAR looks for <code>&lt;path&gt;.luar</code> first,
+then falls back to <code>&lt;path&gt;/init.luar</code>.</p>
+
+<h3 id="require-self">require("@self"): a folder's children</h3>
+<p>Inside an <code>init.luar</code> (or any file), <code>require("@self")</code>
+returns a table of every sibling module in the same folder. Each
+<code>name.luar</code> file (except <code>init.luar</code>) and each subfolder
+that has its own <code>init.luar</code> becomes an entry, keyed by its name and
+already required. This makes it easy for an <code>init.luar</code> to gather up
+its folder's pieces.</p>
+<pre><code><span class="com">-- ui/init.luar</span>
+<span class="kw">local</span> parts = <span class="fn">require</span>(<span class="str">"@self"</span>)   <span class="com">-- { button = ..., slider = ... }</span>
+<span class="kw">return</span> {
+  Button = parts.button,
+  Slider = parts.slider,
+}</code></pre>
+
+<h3 id="luarrc">Aliases: the .luarrc file</h3>
+<p>Typing long relative paths like <code>"../../shared/util"</code> gets tedious.
+A <code>.luarrc</code> file lets you define short aliases that start with
+<code>@</code>. There are no aliases by default; you add the ones your project
+wants. Place a <code>.luarrc</code> at your project root (or any folder), and
+LUAR searches upward from the requiring file to find it.</p>
+<p>The format is one <code>alias = path</code> per line. Lines starting with
+<code>#</code> are comments. The target path is resolved relative to the folder
+that holds the <code>.luarrc</code>.</p>
+<pre><code><span class="com"># .luarrc</span>
+this = ./test
+shared = ./src/shared
+ui = ./src/ui</code></pre>
+<p>Now those aliases work from anywhere in the project:</p>
+<pre><code><span class="kw">local</span> t = <span class="fn">require</span>(<span class="str">"@this"</span>)          <span class="com">-- resolves to ./test relative to the .luarrc</span>
+<span class="kw">local</span> btn = <span class="fn">require</span>(<span class="str">"@ui/button"</span>)     <span class="com">-- alias plus a sub-path</span></code></pre>
+<p>Aliases also follow the folder-module rule, so <code>@ui</code> can point at a
+folder that has an <code>init.luar</code>.</p>
+
+<h3>Module types</h3>
+<p>In the editor, a <code>require</code> binding tracks the imported module. Typing
+the module name and a dot offers the module's exported types (classes, enums,
+type aliases) and the fields of the table it returns. If no module of that name
+exists, the binding's type is shown as an error type.</p>
+
+<h3 id="declaration-files">Declaration files</h3>
+<p>A <code>.luard</code> file is a declaration-only file. Everything in it is
+treated as an ambient global for tooling, and it is never executed. Use it to
+describe globals the host provides from Rust, so the editor can complete and
+type them.</p>
+<pre><code><span class="com">-- globals.luard</span>
+<span class="kw">class</span> <span class="typ">Engine</span> { <span class="kw">public</span> title: <span class="typ">string</span> = <span class="str">""</span>  <span class="kw">function</span> <span class="fn">start</span>() <span class="kw">end</span> }
+<span class="kw">enum</span> <span class="typ">LogLevel</span> { Debug Info Warning Error }
+<span class="kw">local</span> log: <span class="typ">function</span> = <span class="kw">nil</span></code></pre>
+<p>Ferrite never lints a <code>.luard</code> file.</p>

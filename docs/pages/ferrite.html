@@ -1,0 +1,44 @@
+<h1 id="ferrite">Ferrite checker</h1>
+<p>Ferrite is the static checker. It analyzes a program without running it and
+reports warnings and errors. The editor shows them inline, and the runner prints
+them before executing.</p>
+
+<h3>Checks</h3>
+<table>
+<tr><th>Code</th><th>Meaning</th></tr>
+<tr><td>UnusedVariable</td><td>A declared variable is never used (prefix with _ to silence).</td></tr>
+<tr><td>UnusedParameter</td><td>A function parameter is never used.</td></tr>
+<tr><td>UnusedLoopVariable</td><td>A loop variable is never used.</td></tr>
+<tr><td>Redeclaration</td><td>A variable is redeclared in the same scope.</td></tr>
+<tr><td>ShadowedVariable</td><td>A variable shadows one from an outer scope.</td></tr>
+<tr><td>UnreachableCode</td><td>Code follows a return or break in the same block.</td></tr>
+<tr><td>EmptyBlock</td><td>An empty do, if, while, case, or default body.</td></tr>
+<tr><td>EmptyClass</td><td>A class with no members.</td></tr>
+<tr><td>SelfAssignment</td><td>A variable is assigned to itself.</td></tr>
+<tr><td>MutateImmutable</td><td>An immutable (const) variable is changed (assigning nil is allowed).</td></tr>
+<tr><td>BreakOutsideLoop</td><td>A break is not inside a loop (error).</td></tr>
+<tr><td>ConstantCondition</td><td>A condition is always true or always false.</td></tr>
+<tr><td>RedundantBoolean</td><td>Comparing with a boolean literal, such as x == true.</td></tr>
+<tr><td>DoubleNegation</td><td>not not x is redundant.</td></tr>
+<tr><td>DuplicateClassMember</td><td>A class member is declared more than once.</td></tr>
+<tr><td>DuplicateTableKey</td><td>A table key is set more than once.</td></tr>
+<tr><td>DuplicateCaseValue</td><td>A switch case value appears more than once.</td></tr>
+<tr><td>SelfComparison</td><td>A variable is compared with itself.</td></tr>
+<tr><td>DivisionByZero</td><td>Division or modulo by a literal zero.</td></tr>
+<tr><td>AbstractMethodWithBody</td><td>An abstract method has a body.</td></tr>
+<tr><td>FinalAndAbstract</td><td>A method is both abstract and final.</td></tr>
+<tr><td>SyntaxError</td><td>The file does not parse (error).</td></tr>
+</table>
+
+<h3 id="directives">Directives</h3>
+<p>A directive is a comment beginning with <code>--#</code>. Use it to silence
+checks. Names can be comma or space separated, and <code>all</code> silences
+everything.</p>
+<pre><code><span class="com">--#disable UnusedVariable</span>             <span class="com"># whole file</span>
+<span class="com">--#disable MutateImmutable, UnusedVariable</span>   <span class="com"># several at once</span>
+<span class="com">--#disable all</span>                         <span class="com"># everything</span>
+
+x = <span class="num">2</span>  <span class="com">--#disable-line MutateImmutable</span>   <span class="com"># just this line</span>
+
+<span class="com">--#disable-next-line MutateImmutable</span>     <span class="com"># the following line</span>
+x = <span class="num">3</span></code></pre>

@@ -1,0 +1,125 @@
+<h1 id="lsp">Language server (LSP)</h1>
+<p>LUAR ships a language server, written in Rust, that powers the VS Code
+extension. It reuses the same lexer, parser, and Ferrite checker as the runtime,
+so the editor and the language always agree. This page explains everything the
+server provides.</p>
+
+<h3>Installing</h3>
+<p>Install the LUAR extension in VS Code. It bundles the language server binary
+and starts it automatically for <code>.luar</code> and <code>.luard</code>
+files. No configuration is required.</p>
+
+<h3>Feature overview</h3>
+<table>
+<tr><th>Feature</th><th>What you get</th></tr>
+<tr><td>Diagnostics</td><td>Live Ferrite warnings and errors as you type.</td></tr>
+<tr><td>Completion</td><td>Keywords, builtins, variables, members, enum variants, module exports, types, and directives.</td></tr>
+<tr><td>Hover</td><td>The type of a symbol plus its documentation comment.</td></tr>
+<tr><td>Inlay hints</td><td>Inferred types and mutability shown inline.</td></tr>
+<tr><td>Semantic highlighting</td><td>Backend coloring on top of the grammar.</td></tr>
+<tr><td>Auto end</td><td>Closes blocks for you when you press Enter.</td></tr>
+</table>
+
+<h3>Diagnostics</h3>
+<p>Every keystroke runs Ferrite and underlines problems in place, with the check
+code attached (for example MutateImmutable or UnusedVariable). See
+<a href="#ferrite">Ferrite checker</a> for the full list and for the
+<code>--#disable</code> directives. Declaration files (<code>.luard</code>) are
+never linted.</p>
+
+<h3>Completion</h3>
+<p>The server is context aware. What it offers depends on where the cursor is.</p>
+<ul>
+<li><b>Plain position</b>: keywords, snippets, builtins, the standard library
+namespaces, declared variables and globals, class names, enum names, and type
+names. Function-like items insert their parentheses for you.</li>
+<li><b>After a dot or colon</b> on an instance or <code>self</code>: the class
+members (methods after a colon, all members after a dot), walking the
+<code>extends</code> chain and any <code>mixin</code>s.</li>
+<li><b>After a library name</b> such as <code>math.</code> or
+<code>string.</code>: that library's functions and constants.</li>
+<li><b>After an enum name</b> such as <code>Color.</code>: the enum's variants,
+respecting module privacy.</li>
+<li><b>After a required module</b> such as <code>M.</code>: the module's exported
+types (classes, enums, type aliases) and the fields of the table it returns,
+read fresh from disk.</li>
+<li><b>In a type position</b> (after <code>:</code> or <code>::</code>, or a
+class field): primitives, classes, enums, type aliases, and the type functions
+such as <code>classof&lt;...&gt;</code> and <code>keyof&lt;...&gt;</code>.</li>
+<li><b>Inside <code>require("...")</code></b>: the workspace's other
+<code>.luar</code> files as relative paths, scanned fresh and de-duplicated.
+Accepting one replaces the path you have typed.</li>
+<li><b>Comparing or assigning a literal-union variable</b>: the exact allowed
+string values (for example <code>"on"</code> and <code>"off"</code>).</li>
+<li><b>After <code>--#</code></b>: the directive forms (<code>disable</code>,
+<code>disable-line</code>, <code>disable-next-line</code>), and after the
+directive word, every Ferrite check name plus <code>all</code>.</li>
+</ul>
+
+<h3 id="documentation-comments">Hover and documentation comments</h3>
+<p>Hovering a symbol shows its kind and type. If a documentation comment sits
+directly above the declaration, it is shown in the hover box. This works for
+functions, variables, globals, classes, enums, and module exports, including
+across modules. Markdown is rendered, and lines beginning with <code>@</code>
+are highlighted as tags.</p>
+<pre><code><span class="com">-- The maximum health a player can have.</span>
+<span class="com">-- @type number</span>
+<span class="kw">pub const</span> MaxHP = <span class="num">100</span>
+
+<span class="com">--[[
+  Greet a person.
+
+  Supports **Markdown** in the hover box.
+  @param name the person
+  @return string
+]]</span>
+<span class="kw">function</span> <span class="fn">greet</span>(name) <span class="kw">return</span> <span class="str">"hi, "</span> .. name <span class="kw">end</span></code></pre>
+<p>A <code>require</code> binding hovers as the module it imports, and as an error
+type if no module of that name exists.</p>
+
+<h3>Inlay hints</h3>
+<p>The server shows the inferred type and mutability inline at a declaration when
+you have not written an annotation yourself, so you can see what the type solver
+concluded without cluttering the source.</p>
+
+<h3>Semantic highlighting</h3>
+<p>On top of the TextMate grammar, the server emits semantic tokens so coloring
+follows meaning rather than just shape:</p>
+<ul>
+<li>Declaration keywords (<code>local</code>, <code>const</code>, <code>pub</code>,
+<code>function</code>, <code>class</code>, <code>enum</code>, and the access
+words) share one color.</li>
+<li><code>extends</code>, <code>mixin</code>, and <code>implements</code> are
+colored like <code>class</code>.</li>
+<li>Class names in declarations and after <code>extends</code>/<code>mixin</code>/
+<code>implements</code>/<code>enum</code> are highlighted distinctly.</li>
+<li>Enum variants inside an enum body are colored as constants, not as types, so
+a variant named <code>unknown</code> is not mistaken for the primitive type.</li>
+<li>Union and intersection type names (<code>A | B &amp; C</code>) all color as
+types.</li>
+<li>Library namespaces (<code>math</code>, <code>string</code>, ...) get their
+own color.</li>
+</ul>
+
+<h3>Type solving</h3>
+<p>The server runs a lightweight type solver to drive completion and hover. It
+resolves type aliases, function return types, <code>classof</code> and the other
+type functions, enum types, and module member types. Where a variable's type
+points at a class, member completion on that variable lists the class's members.
+See the complete list of <a href="#type-functions">type functions</a>.</p>
+
+<h3>Declaration files</h3>
+<p>A <code>.luard</code> file describes globals the host provides from Rust. The
+server treats everything in it as an ambient global for completion and hover and
+never lints or runs it. This is how you give the editor types for native
+functions, tables, and classes you inject. See
+<a href="#modules">Modules</a> and the
+<a href="#host-api">Host API</a>.</p>
+
+<h3>Editing help</h3>
+<p>Pressing Enter after an opener completes the block for you: <code>if</code> and
+<code>while</code> get their <code>then</code> or <code>do</code> plus a matching
+<code>end</code>, and a callable header that ends in <code>)</code>
+(<code>function</code>, <code>constructor</code>, <code>operator</code>,
+<code>get</code>, <code>set</code>) gets its <code>end</code>. The server does not
+add a duplicate <code>end</code> when the block is already closed.</p>

@@ -1,0 +1,99 @@
+<h1 id="types">Type system</h1>
+<p>LUAR is dynamically typed. Annotations are parsed for the editor and then
+scrubbed before execution.</p>
+<pre><code><span class="kw">local</span> name: <span class="typ">string</span> = <span class="str">"luar"</span>
+<span class="kw">function</span> <span class="fn">area</span>(w: <span class="typ">number</span>, h: <span class="typ">number</span>): <span class="typ">number</span> <span class="kw">return</span> w * h <span class="kw">end</span>
+<span class="kw">local</span> x: <span class="typ">Folder</span> = <span class="kw">nil</span> :: <span class="typ">any</span>      <span class="com">-- a cast; the annotation wins</span></code></pre>
+
+<h3>Primitives, unions, optionals, aliases</h3>
+<pre><code><span class="typ">boolean number string table thread nil any unknown never void function</span>
+
+<span class="kw">local</span> mode: <span class="str">"on"</span> | <span class="str">"off"</span> = <span class="str">"on"</span>   <span class="com">-- literal union</span>
+A | B        <span class="com">-- union</span>
+A &amp; B        <span class="com">-- intersection</span>
+T?           <span class="com">-- optional: T or nil</span>
+
+<span class="kw">type</span> <span class="typ">Id</span> = <span class="typ">number</span>
+<span class="kw">type</span> <span class="typ">Callback</span> = (<span class="typ">number</span>) -&gt; <span class="typ">boolean</span>
+<span class="kw">type</span> <span class="typ">Box</span> = { value: <span class="typ">number</span> }</code></pre>
+
+<h3 id="type-functions">Type functions</h3>
+<p>Type functions are written <code>name&lt;T&gt;</code> and transform a type. The
+editor's type solver evaluates them, the grammar colors them, and completion
+offers each one as a <code>name&lt;...&gt;</code> snippet in any type position.
+This is the complete built-in set.</p>
+
+<p>How the solver resolves them: most type functions belong to the
+<b>unwrap family</b> and resolve to their inner type argument, so a value
+annotated with one still completes and hovers like that inner type. The
+<b>key family</b> (<code>keyof</code>, <code>nameof</code>, <code>indexof</code>)
+resolves to <code>string</code>.</p>
+
+<h4>Indexed access</h4>
+<p>One type function takes two arguments instead of one. <code>valuefrom</code>
+reads the type of a value out of a type by key, which is useful for building
+your own typed lookups and import helpers.</p>
+<table>
+<tr><th>Type function</th><th>Meaning</th><th>Resolves to</th></tr>
+<tr><td><code>valuefrom&lt;T, key&gt;</code></td><td>The type of the value stored at <code>key</code> inside the type <code>T</code> (a table or class type). For example <code>valuefrom&lt;Config, "port"&gt;</code> is the type of the <code>port</code> field. The editor resolves this to the container type <code>T</code> as a best effort.</td><td>T</td></tr>
+</table>
+
+<h4>Class and value introspection</h4>
+<table>
+<tr><th>Type function</th><th>Meaning</th><th>Resolves to</th></tr>
+<tr><td><code>classof&lt;C&gt;</code></td><td>The instance type of a class C.</td><td>C</td></tr>
+<tr><td><code>instanceof&lt;C&gt;</code></td><td>The instance type of a class C.</td><td>C</td></tr>
+<tr><td><code>typeof&lt;x&gt;</code></td><td>The type of a value or binding x.</td><td>x's type</td></tr>
+<tr><td><code>returnof&lt;f&gt;</code></td><td>The return type of a function f.</td><td>f's return type</td></tr>
+<tr><td><code>paramsof&lt;f&gt;</code></td><td>The parameter types of a function f.</td><td>inner type</td></tr>
+</table>
+
+<h4>Collections</h4>
+<table>
+<tr><th>Type function</th><th>Meaning</th><th>Resolves to</th></tr>
+<tr><td><code>elementof&lt;{T}&gt;</code></td><td>The element type of an array of T.</td><td>T</td></tr>
+<tr><td><code>valueof&lt;T&gt;</code></td><td>The value type of T.</td><td>inner type</td></tr>
+<tr><td><code>keyof&lt;T&gt;</code></td><td>The key type of T.</td><td><code>string</code></td></tr>
+<tr><td><code>indexof&lt;T&gt;</code></td><td>The index or key type of T.</td><td><code>string</code></td></tr>
+<tr><td><code>nameof&lt;T&gt;</code></td><td>The name of T as a string.</td><td><code>string</code></td></tr>
+</table>
+
+<h4>Nullability</h4>
+<table>
+<tr><th>Type function</th><th>Meaning</th><th>Resolves to</th></tr>
+<tr><td><code>nonnil&lt;T&gt;</code></td><td>T with nil removed.</td><td>T</td></tr>
+<tr><td><code>nonnull&lt;T&gt;</code></td><td>T with nil removed (alias of nonnil).</td><td>T</td></tr>
+<tr><td><code>optional&lt;T&gt;</code></td><td>T or nil.</td><td>T</td></tr>
+<tr><td><code>awaited&lt;T&gt;</code></td><td>Unwrap an awaited or optional T.</td><td>T</td></tr>
+</table>
+
+<h4>Mutability and shape</h4>
+<table>
+<tr><th>Type function</th><th>Meaning</th><th>Resolves to</th></tr>
+<tr><td><code>readonly&lt;T&gt;</code></td><td>An immutable view of T.</td><td>T</td></tr>
+<tr><td><code>writable&lt;T&gt;</code></td><td>A writable view of T.</td><td>T</td></tr>
+<tr><td><code>mutable&lt;T&gt;</code></td><td>A mutable view of T.</td><td>T</td></tr>
+<tr><td><code>partial&lt;T&gt;</code></td><td>All fields of T optional.</td><td>T</td></tr>
+<tr><td><code>required&lt;T&gt;</code></td><td>All fields of T required.</td><td>T</td></tr>
+<tr><td><code>deep&lt;T&gt;</code></td><td>A deep variant of T.</td><td>T</td></tr>
+<tr><td><code>shallow&lt;T&gt;</code></td><td>A shallow variant of T.</td><td>T</td></tr>
+<tr><td><code>unwrap&lt;T&gt;</code></td><td>The underlying type of T.</td><td>T</td></tr>
+<tr><td><code>default&lt;T&gt;</code></td><td>T with defaults applied.</td><td>T</td></tr>
+</table>
+
+<p>Because the unwrap family resolves to the inner type, a value annotated with
+one completes like that type:</p>
+<pre><code><span class="kw">local</span> f: <span class="typ">readonly</span>&lt;<span class="typ">Folder</span>&gt; = openFolder()
+f.        <span class="com">-- completes Folder's members; readonly&lt;Folder&gt; resolved to Folder</span></code></pre>
+
+<p>Type functions nest, resolving from the inside out:</p>
+<pre><code><span class="kw">type</span> <span class="typ">Inner</span> = <span class="typ">readonly</span>&lt;<span class="typ">classof</span>&lt;<span class="typ">Folder</span>&gt;&gt;   <span class="com">-- resolves to Folder</span>
+<span class="kw">type</span> <span class="typ">Key</span>   = <span class="typ">keyof</span>&lt;<span class="typ">Config</span>&gt;               <span class="com">-- resolves to string</span></code></pre>
+
+<div class="note">Type functions, like all annotations, are scrubbed before the
+program runs. They exist only to help the editor and the type solver.</div>
+
+<h3>Generics</h3>
+<pre><code><span class="kw">type</span> <span class="typ">Box</span>&lt;T&gt; = { value: T }
+<span class="kw">function</span> <span class="fn">identity</span>&lt;T&gt;(x) <span class="kw">return</span> x <span class="kw">end</span>
+<span class="kw">class</span> <span class="typ">Container</span>&lt;T&gt; { <span class="kw">public</span> items: <span class="typ">table</span> = {} }</code></pre>

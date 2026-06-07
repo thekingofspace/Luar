@@ -1,0 +1,17 @@
+<h1 id="getting-started">Getting started</h1>
+<p>A LUAR source file uses the <code>.luar</code> extension.</p>
+<pre><code><span class="fn">print</span>(<span class="str">"hello, world"</span>)</code></pre>
+
+<h3>Running scripts</h3>
+<p>The runner executes a script after checking it with Ferrite.</p>
+<pre><code>run hello.luar          <span class="com"># run a source file</span>
+run hello.luarc         <span class="com"># run a precompiled file</span>
+compile hello.luar hello.luarc   <span class="com"># precompile to .luarc</span></code></pre>
+
+<h3>File types</h3>
+<table>
+<tr><th>Extension</th><th>Meaning</th></tr>
+<tr><td><code>.luar</code></td><td>A LUAR source file.</td></tr>
+<tr><td><code>.luard</code></td><td>A declaration-only file: types and globals the host provides, never executed.</td></tr>
+<tr><td><code>.luarc</code></td><td>A precompiled file (a serialized program). See <a href="#precompilation">Precompilation</a>.</td></tr>
+</table>

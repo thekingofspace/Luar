@@ -1,0 +1,59 @@
+<h1 id="variables">Variables</h1>
+<p>A variable is a name that holds a value. You create one by declaring it, then
+read or change it by name. This page covers how to declare variables, the kinds
+of values they can hold, and how visibility works.</p>
+
+<h3 id="values-and-types">Values and types</h3>
+<p>Every value in LUAR has a type. A variable is not tied to a type; it just holds
+whatever value you put in it, and that value carries its own type. These are the
+value types:</p>
+<table>
+<tr><th>Type</th><th>What it is</th><th>Examples</th></tr>
+<tr><td><code>nil</code></td><td>The absence of a value. The default for anything not set.</td><td><code>nil</code></td></tr>
+<tr><td><code>boolean</code></td><td>A true or false value.</td><td><code>true</code>, <code>false</code></td></tr>
+<tr><td><code>number</code></td><td>An integer or a floating-point number.</td><td><code>42</code>, <code>-7</code>, <code>3.14</code></td></tr>
+<tr><td><code>string</code></td><td>Text. See <a href="#strings">Strings</a> for the three forms.</td><td><code>"hi"</code>, <code>`x={n}`</code></td></tr>
+<tr><td><code>table</code></td><td>The general structure: arrays, maps, and objects. See <a href="#tables">Tables</a>.</td><td><code>{ 1, 2 }</code></td></tr>
+<tr><td><code>function</code></td><td>A piece of code you can call. See <a href="#functions">Functions</a>.</td><td><code>function() end</code></td></tr>
+<tr><td>class instance</td><td>An object made from a class. See <a href="#classes">Classes</a>.</td><td><code>Point(1, 2)</code></td></tr>
+</table>
+<p>You can ask a value its type at run time with <code>type(value)</code>, which
+returns a string like <code>"number"</code> or <code>"table"</code>.</p>
+<pre><code><span class="fn">print</span>(<span class="fn">type</span>(<span class="num">1</span>))         <span class="com">-- "number"</span>
+<span class="fn">print</span>(<span class="fn">type</span>(<span class="str">"hi"</span>))      <span class="com">-- "string"</span>
+<span class="fn">print</span>(<span class="fn">type</span>({}))        <span class="com">-- "table"</span>
+<span class="fn">print</span>(<span class="fn">type</span>(<span class="kw">nil</span>))       <span class="com">-- "nil"</span></code></pre>
+<p>Two values are special when used as a condition (in an <code>if</code> or a
+<code>while</code>): <code>false</code> and <code>nil</code> are "falsy", and
+everything else, including <code>0</code> and the empty string, is "truthy".</p>
+<p>You can convert between strings and numbers with <code>tostring(value)</code>
+and <code>tonumber(text)</code>. The optional type annotations you write
+(<code>local n: number = 1</code>) are explained in the
+<a href="#types">Type system</a>; they are for tooling and do not change how the
+program runs.</p>
+
+<h3>local, const, and bare assignment</h3>
+<pre><code><span class="kw">local</span> count = <span class="num">0</span>      <span class="com">-- reassignable</span>
+count = count + <span class="num">1</span>
+
+<span class="kw">const</span> PI = <span class="num">3.14159</span>  <span class="com">-- immutable</span>
+
+greeting = <span class="str">"hi"</span>        <span class="com">-- a bare name declares an immutable local</span></code></pre>
+<p>Assigning to an immutable binding is a Ferrite error, with one exception:
+assigning <code>nil</code> is allowed and frees what the binding held.</p>
+<pre><code><span class="kw">const</span> handle = openThing()
+handle = <span class="kw">nil</span>   <span class="com">-- allowed: releases the value</span></code></pre>
+
+<h3>pub</h3>
+<p><code>pub</code> promotes a binding to the shared global scope. In a module a
+<code>pub</code> binding is visible to every file that requires it; without it,
+the binding stays private to the file.</p>
+<pre><code><span class="kw">pub const</span> VERSION = <span class="str">"1.0"</span>   <span class="com">-- visible everywhere once required</span>
+<span class="kw">const</span> SECRET = <span class="str">"hidden"</span>      <span class="com">-- private to this file</span>
+<span class="kw">pub local</span> counter = <span class="num">0</span>       <span class="com">-- shared and reassignable</span></code></pre>
+
+<h3>Multiple declarations and scope</h3>
+<pre><code><span class="kw">local</span> a, b, c = <span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>
+<span class="kw">local</span> x, y = y, x       <span class="com">-- swap using multiple values</span></code></pre>
+<p>Each block introduces a new scope. An inner declaration that reuses an outer
+name shadows it (Ferrite warns with ShadowedVariable).</p>

@@ -1,0 +1,8 @@
+class Game {
+  public Test:boolean = true
+  private Terra = false
+  
+  public function TestField()
+    
+  end
+}

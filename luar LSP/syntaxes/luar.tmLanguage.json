@@ -1,0 +1,230 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "LUAR",
+  "scopeName": "source.luar",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#enum-block" },
+    { "include": "#class-name" },
+    { "include": "#type-decl" },
+    { "include": "#type-alias" },
+    { "include": "#type-annotation" },
+    { "include": "#type-union" },
+    { "include": "#function-decl" },
+    { "include": "#keywords" },
+    { "include": "#calls" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.luar",
+          "begin": "--\\[\\[",
+          "end": "\\]\\]"
+        },
+        {
+          "name": "comment.line.double-dash.luar",
+          "match": "--.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "comment": "Long string [[ ... ]] / [=[ ... ]=]: literal, multi-line, no escapes",
+          "name": "string.quoted.multiline.luar",
+          "begin": "\\[(=*)\\[",
+          "end": "\\]\\1\\]"
+        },
+        {
+          "name": "string.quoted.double.luar",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [{ "name": "constant.character.escape.luar", "match": "\\\\(x[0-9A-Fa-f]{2}|u\\{[0-9A-Fa-f]+\\}|.)" }]
+        },
+        {
+          "name": "string.quoted.single.luar",
+          "begin": "'",
+          "end": "'",
+          "patterns": [{ "name": "constant.character.escape.luar", "match": "\\\\(x[0-9A-Fa-f]{2}|u\\{[0-9A-Fa-f]+\\}|.)" }]
+        },
+        {
+          "comment": "Interpolated string: `text {expr} more`",
+          "name": "string.interpolated.luar",
+          "begin": "`",
+          "end": "`",
+          "patterns": [
+            { "name": "constant.character.escape.luar", "match": "\\\\(x[0-9A-Fa-f]{2}|u\\{[0-9A-Fa-f]+\\}|.)" },
+            {
+              "comment": "{ expr } interpolation, highlighted as embedded code",
+              "name": "meta.interpolation.luar",
+              "begin": "\\{",
+              "end": "\\}",
+              "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.luar" } },
+              "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.luar" } },
+              "patterns": [{ "include": "$self" }]
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.hex.luar", "match": "\\b0[xX][0-9a-fA-F_]+\\b" },
+        { "name": "constant.numeric.luar", "match": "\\b[0-9][0-9_]*(\\.[0-9_]+)?([eE][-+]?[0-9_]+)?\\b" }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "comment": "Control flow",
+          "name": "keyword.control.luar",
+          "match": "\\b(if|then|elseif|else|end|for|while|do|in|break|return|switch|case|default)\\b"
+        },
+        {
+          "comment": "Logical operators",
+          "name": "keyword.operator.logical.luar",
+          "match": "\\b(and|or|not)\\b"
+        },
+        {
+          "comment": "Declaration modifiers — pub/public/private etc. share the local/const colour",
+          "name": "storage.modifier.luar",
+          "match": "\\b(local|const|pub|public|private|protected|static|abstract|final|override|export)\\b"
+        },
+        {
+          "comment": "Declaration / structure keywords — same colour as local/const; extends/mixin/implements colour like `class` too",
+          "name": "storage.modifier.luar",
+          "match": "\\b(function|class|interface|enum|type|extends|mixin|implements)\\b"
+        },
+        {
+          "comment": "Class-related keywords",
+          "name": "keyword.other.luar",
+          "match": "\\b(constructor|operator|get|set|require)\\b"
+        },
+        {
+          "comment": "Literals",
+          "name": "constant.language.luar",
+          "match": "\\b(true|false|nil)\\b"
+        },
+        {
+          "comment": "Primitive type names + type functions",
+          "name": "support.type.luar",
+          "match": "\\b(boolean|number|thread|any|unknown|never|void|classof|typeof|returnof|paramsof|keyof|valueof|indexof|nameof|elementof|instanceof|awaited|nonnil|nonnull|optional|readonly|writable|mutable|partial|required|deep|shallow|unwrap|default|valuefrom)\\b"
+        },
+        {
+          "comment": "self / super",
+          "name": "variable.language.luar",
+          "match": "\\b(self|super)\\b"
+        },
+        {
+          "comment": "Global library namespaces (coroutine, math, ...) — special colour",
+          "name": "support.class.global.luar",
+          "match": "\\b(coroutine|math|string|table|bit32|os)\\b"
+        },
+        {
+          "comment": "Built-in functions",
+          "name": "support.function.builtin.luar",
+          "match": "\\b(print|type|pcall|ipairs|pairs|next|setmetatable|getmetatable|rawget|rawset|rawequal|rawlen|collectgarbage|require|instanceof|classname|classof|superclass|methodsof|isabstract|tostring|tonumber|run|spawn)\\b"
+        },
+        {
+          "comment": "Built-in base classes (MonoBehaviour) — coloured like a type",
+          "name": "support.class.luar",
+          "match": "\\b(MonoBehaviour)\\b"
+        },
+        {
+          "comment": "Vararg",
+          "name": "keyword.operator.vararg.luar",
+          "match": "\\.\\.\\."
+        },
+        {
+          "name": "keyword.operator.luar",
+          "match": "(\\+|-|\\*|/|%|\\^|\\.\\.|==|~=|<=|>=|<|>|=|::|:|#)"
+        }
+      ]
+    },
+    "type-decl": {
+      "comment": "Highlight the name in `class Name` / `interface Name` (yellowish)",
+      "match": "\\b(class|interface)\\s+([A-Za-z_]\\w*)",
+      "captures": {
+        "1": { "name": "storage.modifier.luar" },
+        "2": { "name": "entity.name.type.class.luar" }
+      }
+    },
+    "type-alias": {
+      "comment": "`type Name = ...` — keyword + the alias name",
+      "match": "\\b(type)\\s+([A-Za-z_]\\w*)",
+      "captures": {
+        "1": { "name": "storage.modifier.luar" },
+        "2": { "name": "entity.name.type.class.luar" }
+      }
+    },
+    "type-annotation": {
+      "comment": "A `: Type` annotation / `:: Type` cast — the type name is cyan. A method call (`obj:name(...)`) is excluded: the `\\b` stops the name from backtracking to a partial match, and the lookahead rejects a following `(`.",
+      "match": "(:{1,2})\\s*([A-Za-z_]\\w*(?:\\.\\w+)*)\\b(?!\\s*\\()",
+      "captures": {
+        "1": { "name": "keyword.operator.type.luar" },
+        "2": { "name": "support.type.luar" }
+      }
+    },
+    "enum-block": {
+      "comment": "An `enum Name { ... }` body. Variants are coloured as enum constants, NOT types — so a variant called `unknown`/`number` isn't mistaken for a primitive type.",
+      "begin": "\\b(enum)\\s+([A-Za-z_]\\w*)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "storage.modifier.luar" },
+        "2": { "name": "entity.name.type.class.luar" },
+        "3": { "name": "punctuation.definition.block.luar" }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.block.luar" }
+      },
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#strings" },
+        { "include": "#numbers" },
+        {
+          "comment": "Variant names",
+          "match": "[A-Za-z_]\\w*",
+          "name": "constant.other.enum.luar"
+        },
+        {
+          "match": "=",
+          "name": "keyword.operator.luar"
+        }
+      ]
+    },
+    "class-name": {
+      "comment": "Class/type name in a declaration or after extends/mixin/implements — coloured yellowish (matches the semantic-token colour).",
+      "match": "\\b(class|extends|mixin|implements|enum)\\s+([A-Za-z_]\\w*)",
+      "captures": {
+        "1": { "name": "storage.modifier.luar" },
+        "2": { "name": "entity.name.type.class.luar" }
+      }
+    },
+    "type-union": {
+      "comment": "Subsequent type names in a union/intersection: `A | B & C`. The `|`/`&` are type operators; each following name is cyan like the first. `|`/`&` are only used in type positions in LUAR, so this is unambiguous.",
+      "match": "([|&])\\s*([A-Za-z_]\\w*(?:\\.\\w+)*)\\b(?!\\s*\\()",
+      "captures": {
+        "1": { "name": "keyword.operator.type.luar" },
+        "2": { "name": "support.type.luar" }
+      }
+    },
+    "function-decl": {
+      "comment": "Highlight the name in `function name(...)`",
+      "match": "\\b(function)\\s+([A-Za-z_][A-Za-z0-9_.:]*)",
+      "captures": {
+        "1": { "name": "storage.modifier.luar" },
+        "2": { "name": "entity.name.function.luar" }
+      }
+    },
+    "calls": {
+      "comment": "Highlight a name immediately followed by a call",
+      "match": "\\b([A-Za-z_]\\w*)\\s*(?=\\()",
+      "captures": {
+        "1": { "name": "entity.name.function.call.luar" }
+      }
+    }
+  }
+}

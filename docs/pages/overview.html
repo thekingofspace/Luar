@@ -1,0 +1,45 @@
+<h1 id="overview">LUAR</h1>
+<p>LUAR is a small, class-based scripting language inspired by Lua and Luau. It
+has a tree-walking interpreter written in Rust, a static checker called Ferrite,
+a garbage collector, a precompilation format, a host embedding API, and a VS
+Code language server with completion, hover documentation, inlay hints, and live
+diagnostics.</p>
+
+<pre><code><span class="com">-- A documented function. Hover it in the editor to read this text.</span>
+<span class="com">-- @param name the person to greet</span>
+<span class="com">-- @return string</span>
+<span class="kw">function</span> <span class="fn">greet</span>(name)
+  <span class="kw">return</span> <span class="str">"hello, "</span> .. name
+<span class="kw">end</span>
+
+<span class="kw">class</span> <span class="typ">Animal</span> {
+  <span class="kw">public</span> name: <span class="typ">string</span> = <span class="str">"animal"</span>
+  <span class="kw">constructor</span>(name) self.name = name <span class="kw">end</span>
+  <span class="kw">function</span> <span class="fn">describe</span>() <span class="kw">return</span> self.name <span class="kw">end</span>
+}
+
+<span class="kw">final class</span> <span class="typ">Dog</span> <span class="kw">extends</span> <span class="typ">Animal</span> {
+  <span class="kw">override function</span> <span class="fn">describe</span>()
+    <span class="kw">return</span> <span class="kw">super</span>:describe() .. <span class="str">" woof"</span>
+  <span class="kw">end</span>
+}
+
+<span class="kw">enum</span> <span class="typ">State</span> { Idle Running Done }
+
+<span class="kw">const</span> rex = <span class="typ">Dog</span>(<span class="str">"Rex"</span>)
+<span class="fn">print</span>(greet(rex.name))
+<span class="fn">print</span>(rex:describe())
+<span class="fn">print</span>(<span class="typ">State</span>.Running)</code></pre>
+
+<h3>Design at a glance</h3>
+<ul>
+<li>Dynamically typed at run time. Type annotations are parsed for tooling and
+then scrubbed before execution, so they cost nothing at run time.</li>
+<li>Class-based objects with single inheritance, mixins, interfaces, operator
+overloading, getters and setters, and access control.</li>
+<li>Modules are files. <code>pub</code> declarations are shared across modules;
+everything else stays private to the file that declared it.</li>
+<li>Errors are values you catch with <code>pcall</code>.</li>
+<li>The whole language runs on the interpreter, including precompiled code, so
+every feature is available everywhere.</li>
+</ul>

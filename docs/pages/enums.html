@@ -1,0 +1,17 @@
+<h1 id="enums">Enums</h1>
+<p>An enum is a set of named integer constants, accessed through the enum name.</p>
+<pre><code><span class="kw">enum</span> <span class="typ">State</span> { Idle Running Done }
+<span class="fn">print</span>(<span class="typ">State</span>.Idle, <span class="typ">State</span>.Running, <span class="typ">State</span>.Done)   <span class="com">-- 0  1  2</span></code></pre>
+<p>Variants auto-increment from 0; explicit values are allowed and later auto
+variants continue from there. Variants are separated by newlines, commas, or
+whitespace.</p>
+<pre><code><span class="kw">enum</span> <span class="typ">Status</span> { Active = <span class="num">10</span>  Inactive  Banned = <span class="num">99</span> }   <span class="com">-- 10, 11, 99</span></code></pre>
+<h3>Adding to an enum and visibility</h3>
+<p>Declaring an existing enum adds variants to it instead of replacing it. A
+plain enum is module-global but private; a <code>pub enum</code> is visible to
+other modules.</p>
+<pre><code><span class="kw">enum</span> <span class="typ">Color</span> { Red Green Blue }   <span class="com">-- 0, 1, 2</span>
+<span class="kw">enum</span> <span class="typ">Color</span> { Yellow }           <span class="com">-- 3</span>
+
+<span class="kw">pub enum</span> <span class="typ">GameState</span> { Menu Playing Paused }   <span class="com">-- visible to other files</span></code></pre>
+<p>An enum name can be used as a type: <code>local s: GameState = GameState.Menu</code>.</p>
