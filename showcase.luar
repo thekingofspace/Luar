@@ -241,6 +241,37 @@ local c = Circle(2)
 print(c:describe(), "instanceof Shape:", instanceof(c, Shape))
 
 -- ---------------------------------------------------------------------------
+--  13b. Mixins: compose reusable methods into a class without inheritance
+-- ---------------------------------------------------------------------------
+-- A mixin is just a class whose members are folded into any class that lists it
+-- with `mixin`. A class can mix in several at once (comma-separated), and the
+-- mixed-in methods run against the host instance's own fields via `self`.
+class Loggable {
+    function log(message: string)
+        print("[" .. self.tag .. "] " .. message)
+    end
+}
+
+class Identifiable {
+    function id(): string
+        return "#" .. tostring(self.serial)
+    end
+}
+
+class Service mixin Loggable, Identifiable {
+    public tag: string = "svc"
+    public serial: number = 0
+
+    constructor(tag, serial)
+        self.tag = tag
+        self.serial = serial
+    end
+}
+
+local svc = Service("auth", 7)
+svc:log("started " .. svc:id())     -- log() and id() both come from mixins
+
+-- ---------------------------------------------------------------------------
 --  14. Metatables and metamethods on plain tables
 -- ---------------------------------------------------------------------------
 local base = { greet = function(self) return "hi from base" end }
