@@ -2,7 +2,7 @@
   "name": "luar-lang",
   "displayName": "LUAR",
   "description": "Language support for LUAR: syntax highlighting, IntelliSense, hover, inlay hints, and diagnostics for .luar and .luard files.",
-  "version": "0.16.10",
+  "version": "0.16.11",
   "publisher": "Raikin7",
   "license": "MIT",
   "icon": "icons/laur_logo.png",

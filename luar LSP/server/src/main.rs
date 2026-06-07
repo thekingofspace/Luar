@@ -89,7 +89,7 @@ impl Backend {
                     Some(existing) => {
                         analysis::merge_vars(&mut existing.vars, scan.vars);
                         existing.functions = scan.functions;
-                        existing.alias_targets = scan.alias_targets;
+                        analysis::merge_alias_targets(&mut existing.alias_targets, scan.alias_targets);
                         existing.class_ranges = scan.class_ranges;
                         existing.enums = scan.enums;
                         existing.docs = scan.docs;
@@ -1050,7 +1050,12 @@ fn element_type(files: &[&FileAnalysis], current: &FileAnalysis, coll: &str) -> 
 
 // If `recv` is a variable whose type is a struct `{ k: T, ... }`, offer its keys as
 // field completions so the shape inferred from a table literal is browsable.
-fn struct_field_items(files: &[&FileAnalysis], current: &FileAnalysis, recv: &str) -> Option<Vec<CompletionItem>> {
+fn struct_field_items(
+    files: &[&FileAnalysis],
+    current: &FileAnalysis,
+    recv: &str,
+    op: char,
+) -> Option<Vec<CompletionItem>> {
     let vi = analysis::find_var(files, current, recv)?;
     let ty = analysis::effective_type(files, &vi.ty);
     let inner = ty.strip_prefix('{')?.strip_suffix('}')?.trim().to_string();
@@ -1058,17 +1063,25 @@ fn struct_field_items(files: &[&FileAnalysis], current: &FileAnalysis, recv: &st
     if fields.is_empty() {
         return None;
     }
-    Some(
-        fields
-            .into_iter()
-            .map(|(name, ty)| CompletionItem {
-                label: name,
-                kind: Some(CompletionItemKind::FIELD),
-                detail: Some(ty),
-                ..Default::default()
-            })
-            .collect(),
-    )
+    let items: Vec<CompletionItem> = fields
+        .into_iter()
+        // With `:` only the function-typed fields make sense (method-call syntax).
+        .filter(|(_, ty)| op != ':' || ty == "function" || ty.contains("->"))
+        .map(|(name, ty)| {
+            let is_fn = ty == "function" || ty.contains("->");
+            if is_fn {
+                call_item(&name, CompletionItemKind::METHOD, ty)
+            } else {
+                CompletionItem {
+                    label: name,
+                    kind: Some(CompletionItemKind::FIELD),
+                    detail: Some(ty),
+                    ..Default::default()
+                }
+            }
+        })
+        .collect();
+    (!items.is_empty()).then_some(items)
 }
 
 // Split a struct body `k: T, k2: {a: U}` into (name, type) pairs, respecting nested
@@ -1516,10 +1529,8 @@ impl LanguageServer for Backend {
                 return Ok(Some(CompletionResponse::Array(member_items(&files, &class, op))));
             }
 
-            if op == '.' {
-                if let Some(items) = struct_field_items(&files, current, &recv) {
-                    return Ok(Some(CompletionResponse::Array(items)));
-                }
+            if let Some(items) = struct_field_items(&files, current, &recv, op) {
+                return Ok(Some(CompletionResponse::Array(items)));
             }
 
             if let Some(items) = builtin_member_items(&recv) {

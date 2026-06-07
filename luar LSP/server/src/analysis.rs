@@ -88,7 +88,6 @@ pub fn analyze_file(text: &str) -> Option<FileAnalysis> {
     scan_annotations(text, &mut fa.vars);
     scan_param_types(text, &mut fa.vars);
     scan_functions(text, &mut fa.functions);
-    scan_aliases(text, &mut fa.alias_targets);
     fa.class_ranges = brace_class_ranges(text);
     fa.docs = scan_docs(text);
     fa.signatures = scan_signatures(text);
@@ -983,7 +982,10 @@ fn collect(s: &Stmt, fa: &mut FileAnalysis) {
             fa.classes.push(ClassData { name: name.clone(), parent: parent.clone(), mixins: mixins.clone(), members: ms });
         }
         Stmt::Interface { name, .. } => fa.interfaces.push(name.clone()),
-        Stmt::TypeAlias { name, .. } => fa.aliases.push(name.clone()),
+        Stmt::TypeAlias { name, ty } => {
+            fa.aliases.push(name.clone());
+            fa.alias_targets.insert(name.clone(), type_to_string(ty));
+        }
         Stmt::Enum { visibility, name, variants, .. } => {
 
             let global = matches!(visibility, luar::ast::Visibility::Pub);
@@ -1195,6 +1197,32 @@ fn key_name(e: &Expr) -> Option<String> {
     }
 }
 
+fn type_to_string(ty: &luar::ast::Type) -> String {
+    use luar::ast::Type;
+    match ty {
+        Type::Named(s) => s.clone(),
+        Type::Literal(s) => format!("\"{s}\""),
+        Type::Table(fields) => {
+            if fields.is_empty() {
+                "table".into()
+            } else {
+                let parts: Vec<String> =
+                    fields.iter().map(|(k, t)| format!("{k}: {}", type_to_string(t))).collect();
+                format!("{{ {} }}", parts.join(", "))
+            }
+        }
+        Type::Array(inner) => format!("{{{}}}", type_to_string(inner)),
+        Type::Optional(inner) => type_to_string(inner),
+        Type::Function { .. } => "function".into(),
+        Type::Union(parts) => {
+            parts.iter().map(type_to_string).collect::<Vec<_>>().join(" | ")
+        }
+        Type::Intersection(parts) => {
+            parts.iter().map(type_to_string).collect::<Vec<_>>().join(" & ")
+        }
+    }
+}
+
 fn ipairs_pairs_element(iter: &Expr, fa: &FileAnalysis) -> Option<(bool, String)> {
     let Expr::Call { callee, args } = iter else { return None };
     let Expr::Name(f) = &**callee else { return None };
@@ -1245,6 +1273,25 @@ pub fn merge_vars(existing: &mut HashMap<String, VarInfo>, scanned: HashMap<Stri
     }
     for (name, vi) in prev {
         existing.entry(name).or_insert(vi);
+    }
+}
+
+// Like `merge_vars`, but for type-alias targets. The line scanner cannot reproduce a
+// struct/array shape (`{ ... }`), so on a failed parse keep a previously resolved shape
+// rather than letting it collapse to an empty or `function` placeholder.
+pub fn merge_alias_targets(existing: &mut HashMap<String, String>, scanned: HashMap<String, String>) {
+    let prev = std::mem::replace(existing, scanned);
+    for (name, target) in prev {
+        let old_is_shape = target.starts_with('{');
+        match existing.get(&name) {
+            Some(cur) if old_is_shape && !cur.starts_with('{') => {
+                existing.insert(name, target);
+            }
+            None => {
+                existing.insert(name, target);
+            }
+            _ => {}
+        }
     }
 }
 
