@@ -1,9 +1,30 @@
 {
   "name": "luar-lang",
   "displayName": "LUAR",
-  "description": "Language support for LUAR, including the file icon for .luar files.",
-  "version": "0.16.7",
-  "publisher": "luar",
+  "description": "Language support for LUAR: syntax highlighting, IntelliSense, hover, inlay hints, and diagnostics for .luar and .luard files.",
+  "version": "0.16.10",
+  "publisher": "Raikin7",
+  "license": "MIT",
+  "icon": "icons/laur_logo.png",
+  "homepage": "https://github.com/thekingofspace/Luar",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thekingofspace/Luar.git"
+  },
+  "bugs": {
+    "url": "https://github.com/thekingofspace/Luar/issues"
+  },
+  "keywords": [
+    "luar",
+    "lua",
+    "luau",
+    "scripting",
+    "language-server"
+  ],
+  "galleryBanner": {
+    "color": "#1e1e2e",
+    "theme": "dark"
+  },
   "engines": {
     "vscode": "^1.75.0"
   },

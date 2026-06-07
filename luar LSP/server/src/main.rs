@@ -87,7 +87,7 @@ impl Backend {
                 let mut cache = self.cache.lock().unwrap();
                 match cache.get_mut(uri) {
                     Some(existing) => {
-                        existing.vars = scan.vars;
+                        analysis::merge_vars(&mut existing.vars, scan.vars);
                         existing.functions = scan.functions;
                         existing.alias_targets = scan.alias_targets;
                         existing.class_ranges = scan.class_ranges;
@@ -645,7 +645,7 @@ fn relative_require(from: &Url, target: &Url) -> Option<String> {
 }
 
 fn assignment_target(upto: &str) -> Option<String> {
-    let t = upto.trim_end();
+    let t = strip_open_string(upto).trim_end();
     let before = t.strip_suffix('=')?;
 
     if before.ends_with(['=', '<', '>', '~', '!', ':', '+', '-', '*', '/', '%', '.']) {
@@ -662,21 +662,56 @@ fn assignment_target(upto: &str) -> Option<String> {
 }
 
 fn comparison_lhs(upto: &str) -> Option<String> {
-    let t = upto.trim_end();
+    let t = strip_open_string(upto).trim_end();
     let t = t.strip_suffix("==").or_else(|| t.strip_suffix("~="))?.trim_end();
     let name: String = t.chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_').collect::<Vec<_>>().into_iter().rev().collect();
     (!name.is_empty()).then_some(name)
 }
 
-fn literal_items(literals: &[String]) -> Vec<CompletionItem> {
+// If the cursor sits inside an unterminated string literal, return the text up to (but
+// not including) that opening quote. This lets value completion still fire after the
+// user has typed an opening quote, e.g. `x == "Gr`. Quotes inside finished strings are
+// tracked so they are not mistaken for the open one.
+fn strip_open_string(upto: &str) -> &str {
+    let mut open: Option<(char, usize)> = None;
+    for (i, c) in upto.char_indices() {
+        match open {
+            Some((q, _)) => {
+                if c == q {
+                    open = None;
+                }
+            }
+            None => {
+                if c == '"' || c == '\'' || c == '`' {
+                    open = Some((c, i));
+                }
+            }
+        }
+    }
+    match open {
+        Some((_, at)) => &upto[..at],
+        None => upto,
+    }
+}
+
+fn literal_items(literals: &[String], range: Option<Range>) -> Vec<CompletionItem> {
     literals
         .iter()
-        .map(|l| CompletionItem {
-            label: format!("\"{l}\""),
-            kind: Some(CompletionItemKind::VALUE),
-            insert_text: Some(format!("\"{l}\"")),
-            detail: Some("possible value".into()),
-            ..Default::default()
+        .map(|l| {
+            let text = format!("\"{l}\"");
+            let mut item = CompletionItem {
+                label: text.clone(),
+                kind: Some(CompletionItemKind::VALUE),
+                detail: Some("possible value".into()),
+                filter_text: Some(text.clone()),
+                sort_text: Some(format!("0{l}")),
+                ..Default::default()
+            };
+            match range {
+                Some(r) => item.text_edit = Some(CompletionTextEdit::Edit(TextEdit::new(r, text))),
+                None => item.insert_text = Some(text),
+            }
+            item
         })
         .collect()
 }
@@ -910,6 +945,164 @@ fn ih_make(line: u32, col: u32, label: String) -> InlayHint {
     }
 }
 
+fn for_loop_hints(
+    ch: &[char],
+    mut i: usize,
+    files: &[&FileAnalysis],
+    current: &FileAnalysis,
+) -> Vec<(u32, String)> {
+    ih_skip_ws(ch, &mut i);
+    let mut names: Vec<(String, usize)> = Vec::new();
+    loop {
+        let (name, end) = ih_ident(ch, i);
+        if name.is_empty() {
+            break;
+        }
+        names.push((name, end));
+        i = end;
+        ih_skip_ws(ch, &mut i);
+        if i < ch.len() && ch[i] == ',' {
+            i += 1;
+            ih_skip_ws(ch, &mut i);
+            continue;
+        }
+        break;
+    }
+    if names.is_empty() {
+        return Vec::new();
+    }
+
+    let rest: String = ch[i..].iter().collect();
+    let rest = rest.trim_start();
+
+    let types: Vec<String> = if rest.starts_with('=') {
+        vec!["number".to_string()]
+    } else if let Some(after) = rest.strip_prefix("in ").or_else(|| rest.strip_prefix("in\t")) {
+        let iter_expr = after.split(" do").next().unwrap_or(after).trim();
+        loop_var_types(files, current, iter_expr)
+    } else {
+        Vec::new()
+    };
+
+    let mut out = Vec::new();
+    for (idx, (name, end)) in names.iter().enumerate() {
+        if name == "_" {
+            continue;
+        }
+        if let Some(t) = types.get(idx) {
+            if !t.is_empty() {
+                out.push((*end as u32, t.clone()));
+            }
+        }
+    }
+    out
+}
+
+fn loop_var_types(files: &[&FileAnalysis], current: &FileAnalysis, iter: &str) -> Vec<String> {
+    let it = iter.trim();
+    let (kind, inner) = if let Some(r) = it.strip_prefix("ipairs") {
+        ("ipairs", r.trim())
+    } else if let Some(r) = it.strip_prefix("pairs") {
+        ("pairs", r.trim())
+    } else {
+        ("", it)
+    };
+
+    let coll = inner
+        .strip_prefix('(')
+        .and_then(|s| s.rsplit_once(')').map(|(a, _)| a))
+        .unwrap_or(inner)
+        .trim();
+
+    let elem = element_type(files, current, coll);
+    match kind {
+        "ipairs" => vec!["number".to_string(), elem],
+        "pairs" => vec![String::new(), elem],
+        _ => Vec::new(),
+    }
+}
+
+// Best-effort element type of a collection referenced by name: an array annotation
+// `{T}` yields T, a plain table yields `table`, otherwise nothing.
+fn element_type(files: &[&FileAnalysis], current: &FileAnalysis, coll: &str) -> String {
+    let name: String = coll.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+    let Some(vi) = analysis::find_var(files, current, &name) else { return String::new() };
+    let ty = analysis::effective_type(files, &vi.ty);
+    if let Some(inner) = ty.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+        let inner = inner.trim();
+        if inner.starts_with('{') {
+            return inner.to_string();
+        }
+        if inner.contains(':') || inner.contains(',') {
+            return String::new();
+        }
+        let simple: String = inner.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').collect();
+        if simple.len() == inner.len() && !simple.is_empty() {
+            return analysis::effective_type(files, &simple);
+        }
+        return inner.to_string();
+    }
+    if ty == "table" {
+        return "table".to_string();
+    }
+    String::new()
+}
+
+// If `recv` is a variable whose type is a struct `{ k: T, ... }`, offer its keys as
+// field completions so the shape inferred from a table literal is browsable.
+fn struct_field_items(files: &[&FileAnalysis], current: &FileAnalysis, recv: &str) -> Option<Vec<CompletionItem>> {
+    let vi = analysis::find_var(files, current, recv)?;
+    let ty = analysis::effective_type(files, &vi.ty);
+    let inner = ty.strip_prefix('{')?.strip_suffix('}')?.trim().to_string();
+    let fields = parse_struct_fields(&inner);
+    if fields.is_empty() {
+        return None;
+    }
+    Some(
+        fields
+            .into_iter()
+            .map(|(name, ty)| CompletionItem {
+                label: name,
+                kind: Some(CompletionItemKind::FIELD),
+                detail: Some(ty),
+                ..Default::default()
+            })
+            .collect(),
+    )
+}
+
+// Split a struct body `k: T, k2: {a: U}` into (name, type) pairs, respecting nested
+// braces/brackets so commas inside a field's type do not split it.
+fn parse_struct_fields(inner: &str) -> Vec<(String, String)> {
+    let bytes = inner.as_bytes();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let mut parts: Vec<&str> = Vec::new();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'{' | b'[' | b'(' | b'<' => depth += 1,
+            b'}' | b']' | b')' | b'>' => depth -= 1,
+            b',' if depth <= 0 => {
+                parts.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&inner[start..]);
+
+    let mut out = Vec::new();
+    for p in parts {
+        let p = p.trim();
+        let Some((k, t)) = p.split_once(':') else { continue };
+        let k = k.trim();
+        if !k.is_empty() {
+            out.push((k.to_string(), t.trim().to_string()));
+        }
+    }
+    out
+}
+
 fn inlay_hints(text: &str, files: &[&FileAnalysis], current: &FileAnalysis) -> Vec<InlayHint> {
     let mut hints = Vec::new();
     for (lineno, line) in text.lines().enumerate() {
@@ -917,6 +1110,13 @@ fn inlay_hints(text: &str, files: &[&FileAnalysis], current: &FileAnalysis) -> V
         let ch: Vec<char> = line.chars().collect();
         let mut i = 0;
         ih_skip_ws(&ch, &mut i);
+
+        if ih_word(&ch, i, "for") {
+            for (col, ty) in for_loop_hints(&ch, i + 3, files, current) {
+                hints.push(ih_make(line_no, col, format!(": {ty}")));
+            }
+            continue;
+        }
 
         let mut is_decl = false;
         let mut mutable = false;
@@ -1048,7 +1248,8 @@ fn hover_text(files: &[&FileAnalysis], current: &FileAnalysis, word: &str, uri: 
             vi.literals.iter().map(|l| format!("\"{l}\"")).collect::<Vec<_>>().join(" | ")
         } else {
             let et = analysis::effective_type(files, &vi.ty);
-            if analysis::is_class(files, &et) || analysis::is_primitive(&et) {
+            let is_array = et.starts_with('{') && et.ends_with('}');
+            if analysis::is_class(files, &et) || analysis::is_primitive(&et) || is_array {
                 et
             } else {
                 "any".to_string()
@@ -1315,6 +1516,12 @@ impl LanguageServer for Backend {
                 return Ok(Some(CompletionResponse::Array(member_items(&files, &class, op))));
             }
 
+            if op == '.' {
+                if let Some(items) = struct_field_items(&files, current, &recv) {
+                    return Ok(Some(CompletionResponse::Array(items)));
+                }
+            }
+
             if let Some(items) = builtin_member_items(&recv) {
                 return Ok(Some(CompletionResponse::Array(items)));
             }
@@ -1337,13 +1544,22 @@ impl LanguageServer for Backend {
         }
 
         if let Some(lhs) = comparison_lhs(&upto).or_else(|| assignment_target(&upto)) {
+            let stripped = strip_open_string(&upto);
+            let mid_string = stripped.chars().count() < upto.chars().count();
+            let edit_range = mid_string.then(|| {
+                let start = stripped.chars().count() as u32;
+                Range::new(Position::new(pos.line, start), Position::new(pos.line, pos.character))
+            });
+
             let mut items = Vec::new();
             if let Some(vi) = analysis::find_var(&files, current, &lhs) {
                 if !vi.literals.is_empty() {
-                    items.extend(literal_items(&vi.literals));
+                    items.extend(literal_items(&vi.literals, edit_range));
                 }
             }
-            items.extend(value_items(&files, current));
+            if !mid_string {
+                items.extend(value_items(&files, current));
+            }
             let mut seen = std::collections::HashSet::new();
             items.retain(|i| seen.insert(i.label.clone()));
             return Ok(Some(CompletionResponse::Array(items)));

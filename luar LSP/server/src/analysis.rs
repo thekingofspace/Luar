@@ -905,6 +905,16 @@ fn resolve_return_type(s: &str) -> String {
         return resolve_return_type(first);
     }
 
+    if let Some(inner) = s.strip_prefix('{').and_then(|x| x.strip_suffix('}')) {
+        let inner = inner.trim();
+        if !inner.is_empty() && !inner.contains(':') && !inner.contains(',') && !inner.contains('[') {
+            let elem = read_type_name(inner);
+            if !elem.is_empty() {
+                return format!("{{{elem}}}");
+            }
+        }
+    }
+
     if let Some(lt) = s.find('<') {
         let name: String = s[..lt].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
         if !name.is_empty() {
@@ -1028,7 +1038,38 @@ fn collect(s: &Stmt, fa: &mut FileAnalysis) {
             collect_expr(cond, fa);
             body.iter().for_each(|x| collect(x, fa));
         }
-        Stmt::ForNumeric { body, .. } | Stmt::ForIn { body, .. } => {
+        Stmt::ForNumeric { var, body, .. } => {
+            fa.vars.entry(var.clone()).or_insert(VarInfo {
+                ty: "number".into(),
+                mutable: true,
+                global: false,
+                literals: Vec::new(),
+            });
+            body.iter().for_each(|x| collect(x, fa));
+        }
+        Stmt::ForIn { names, iters, body } => {
+            let info = iters.first().and_then(|it| ipairs_pairs_element(it, fa));
+            for (idx, n) in names.iter().enumerate() {
+                if n == "_" {
+                    continue;
+                }
+                let ty = match &info {
+                    Some((is_ipairs, elem)) => {
+                        if idx == 0 {
+                            if *is_ipairs { "number".to_string() } else { String::new() }
+                        } else {
+                            elem.clone()
+                        }
+                    }
+                    None => String::new(),
+                };
+                fa.vars.entry(n.clone()).or_insert(VarInfo {
+                    ty,
+                    mutable: true,
+                    global: false,
+                    literals: Vec::new(),
+                });
+            }
             body.iter().for_each(|x| collect(x, fa));
         }
         Stmt::Return { values, .. } => values.iter().for_each(|e| collect_expr(e, fa)),
@@ -1109,7 +1150,7 @@ fn infer(e: &Expr) -> Option<String> {
         Expr::Int(_) | Expr::Float(_) => "number".into(),
         Expr::Str(_) => "string".into(),
         Expr::Nil => "nil".into(),
-        Expr::Table(_) => "table".into(),
+        Expr::Table(entries) => infer_table(entries),
         Expr::Function { .. } => "function".into(),
         Expr::Call { callee, .. } => match &**callee {
             Expr::Name(n) if n == "require" => "module".into(),
@@ -1119,6 +1160,109 @@ fn infer(e: &Expr) -> Option<String> {
         Expr::MethodCall { method, .. } => method.clone(),
         _ => return None,
     })
+}
+
+fn infer_table(entries: &[luar::ast::TableEntry]) -> String {
+    if entries.is_empty() {
+        return "table".into();
+    }
+    if let Some(t) = array_element(entries) {
+        return format!("{{{t}}}");
+    }
+    let mut fields = Vec::new();
+    for e in entries {
+        match e {
+            luar::ast::TableEntry::Keyed { key, value } => {
+                let Some(k) = key_name(key) else { return "table".into() };
+                let vt = infer(value).unwrap_or_else(|| "any".into());
+                fields.push(format!("{k}: {vt}"));
+            }
+            luar::ast::TableEntry::Positional(_) => return "table".into(),
+        }
+    }
+    if fields.is_empty() {
+        "table".into()
+    } else {
+        format!("{{ {} }}", fields.join(", "))
+    }
+}
+
+fn key_name(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Str(s) => Some(s.clone()),
+        Expr::Name(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+fn ipairs_pairs_element(iter: &Expr, fa: &FileAnalysis) -> Option<(bool, String)> {
+    let Expr::Call { callee, args } = iter else { return None };
+    let Expr::Name(f) = &**callee else { return None };
+    if f != "ipairs" && f != "pairs" {
+        return None;
+    }
+    let coll = args.first()?;
+    let coll_ty = match coll {
+        Expr::Name(n) => fa.vars.get(n).map(|v| v.ty.clone()).unwrap_or_default(),
+        other => infer(other).unwrap_or_default(),
+    };
+    Some((f == "ipairs", element_of(&coll_ty)))
+}
+
+pub fn element_of(ty: &str) -> String {
+    if let Some(inner) = ty.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+        let inner = inner.trim();
+        if inner.starts_with('{') {
+            return inner.to_string();
+        }
+        if inner.contains(':') || inner.contains(',') {
+            return String::new();
+        }
+        return inner.to_string();
+    }
+    if ty == "table" {
+        return "table".to_string();
+    }
+    String::new()
+}
+
+// On a failed parse the line scanner produces weaker types, so keep a previously
+// inferred richer type (a struct/array or any concrete type) when the rescan only sees
+// an empty or `table` type for the same name. This stops types from collapsing to
+// `table` on every keystroke while the buffer is briefly unparseable.
+pub fn merge_vars(existing: &mut HashMap<String, VarInfo>, scanned: HashMap<String, VarInfo>) {
+    let prev = std::mem::replace(existing, scanned);
+    for (name, vi) in existing.iter_mut() {
+        let Some(old) = prev.get(name) else { continue };
+        let weak = vi.ty.is_empty() || vi.ty == "table";
+        let old_rich = !old.ty.is_empty() && old.ty != "table";
+        if weak && old_rich {
+            vi.ty = old.ty.clone();
+        }
+        if vi.literals.is_empty() && !old.literals.is_empty() {
+            vi.literals = old.literals.clone();
+        }
+    }
+    for (name, vi) in prev {
+        existing.entry(name).or_insert(vi);
+    }
+}
+
+fn array_element(entries: &[luar::ast::TableEntry]) -> Option<String> {
+    if entries.is_empty() {
+        return None;
+    }
+    let mut elem: Option<String> = None;
+    for e in entries {
+        let luar::ast::TableEntry::Positional(v) = e else { return None };
+        let t = infer(v)?;
+        match &elem {
+            None => elem = Some(t),
+            Some(prev) if *prev == t => {}
+            _ => return None,
+        }
+    }
+    elem
 }
 
 fn require_path(e: &Expr) -> Option<String> {
