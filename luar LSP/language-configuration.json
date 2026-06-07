@@ -26,13 +26,13 @@
   ],
   "autoCloseBefore": ";:.,=}])> \n\t",
   "indentationRules": {
-    "increaseIndentPattern": "^((?!--).)*((\\b(then|do|else)\\b)|(\\bfunction\\b.*\\(.*\\))|(\\b(class|interface|case|default)\\b.*)|(\\{\\s*)|(\\(\\s*))\\s*(--.*)?$",
+    "increaseIndentPattern": "^((?!--).)*((\\b(then|do|else)\\b)|(\\b(function|constructor|operator|get|set)\\b.*\\(.*\\))|(\\b(class|interface|case|default)\\b.*)|(\\{\\s*)|(\\(\\s*))\\s*(--.*)?$",
     "decreaseIndentPattern": "^\\s*((\\bend\\b)|(\\belse\\b)|(\\belseif\\b)|(\\buntil\\b)|\\}|\\))"
   },
   "onEnterRules": [
     {
-      "comment": "Indent the body after a function header, dedent the closing end",
-      "beforeText": "^\\s*(?:(?:pub|local|const|public|private|protected|static|abstract|final|override)\\s+)*function\\s*[\\w.:]*\\s*\\([^)]*\\)\\s*$",
+      "comment": "Indent the body after a function/constructor/operator/get/set header, dedent the closing end",
+      "beforeText": "^\\s*(?:(?:pub|local|const|public|private|protected|static|abstract|final|override)\\s+)*(?:function|constructor|operator|get|set)\\b[^()]*\\([^)]*\\)\\s*$",
       "afterText": "^\\s*end\\b",
       "action": { "indent": "indentOutdent" }
     },

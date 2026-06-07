@@ -1,19 +1,94 @@
---#disable UnusedVariable
---#disable UnusedParameter
---#disable EmptyBlock
+pub class Vector3 {
+  public X:number = 0
+  public Y:number = 0
+  public Z:number = 0
 
-class Entity {
-  public ID:nonnil<string> = nil
-
-  operator +(var)
-    return self.ID .. var
+  constructor(x,y,z)
+    self.X = x
+    self.Y = y
+    self.Z = z
   end
 
-  constructor()
-    self.ID = "t"
+  operator ==(other:classof<Vector3>)
+    return self.X == other.X and self.Y == other.Y and self.Z == other.Z
+  end
+
+  operator +(other:classof<Vector3>)
+    return Vector3(
+      self.X + other.X,
+      self.Y + other.Y,
+      self.Z + other.Z
+    )
+  end
+
+  operator -(other:classof<Vector3>)
+    return Vector3(
+      self.X - other.X,
+      self.Y - other.Y,
+      self.Z - other.Z
+    )
+  end
+
+  operator *(value:number)
+    return Vector3(
+      self.X * value,
+      self.Y * value,
+      self.Z * value
+    )
+  end
+
+  operator /(value:number)
+    return Vector3(
+      self.X / value,
+      self.Y / value,
+      self.Z / value
+    )
+  end
+
+  operator -( )
+    return Vector3(
+      -self.X,
+      -self.Y,
+      -self.Z
+    )
+  end
+  
+  operator tostring()
+    return `{self.X} {self.Y} {self.Z}`
+  end
+
+  public function Dot(other:classof<Vector3>):number
+    return self.X * other.X +
+           self.Y * other.Y +
+           self.Z * other.Z
+  end
+
+  public function Magnitude():number
+    return math.sqrt(
+      self.X * self.X +
+      self.Y * self.Y +
+      self.Z * self.Z
+    )
+  end
+
+  public function Unit():Vector3
+    local mag = self:Magnitude()
+
+    return Vector3(
+      self.X / mag,
+      self.Y / mag,
+      self.Z / mag
+    )
   end
 }
 
-local Far = Entity()
+local CurrentPos = Vector3(200, 300, 400)
+local OtherPos = Vector3(200, 300, 400)
 
-print(Far + "test")
+print(CurrentPos.X)
+
+print(OtherPos == CurrentPos)
+
+print(CurrentPos + OtherPos)
+
+local test:Engine = engine

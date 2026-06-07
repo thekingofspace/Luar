@@ -51,21 +51,23 @@
           "patterns": [{ "name": "constant.character.escape.luar", "match": "\\\\(x[0-9A-Fa-f]{2}|u\\{[0-9A-Fa-f]+\\}|.)" }]
         },
         {
-          "comment": "Interpolated string: `text {expr} more`",
-          "name": "string.interpolated.luar",
+          "comment": "Interpolated string: `text {expr} more`. The backtick span has no blanket string scope; only the literal text runs are coloured as a string. That way code inside { } is re-tokenised by $self and keeps normal code colours instead of inheriting the string colour.",
           "begin": "`",
           "end": "`",
+          "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.luar" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.string.end.luar" } },
           "patterns": [
-            { "name": "constant.character.escape.luar", "match": "\\\\(x[0-9A-Fa-f]{2}|u\\{[0-9A-Fa-f]+\\}|.)" },
             {
-              "comment": "{ expr } interpolation, highlighted as embedded code",
+              "comment": "{ expr } interpolation, re-tokenised as normal code",
               "name": "meta.interpolation.luar",
               "begin": "\\{",
               "end": "\\}",
               "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.luar" } },
               "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.luar" } },
               "patterns": [{ "include": "$self" }]
-            }
+            },
+            { "name": "constant.character.escape.luar", "match": "\\\\(x[0-9A-Fa-f]{2}|u\\{[0-9A-Fa-f]+\\}|.)" },
+            { "name": "string.interpolated.luar", "match": "[^`\\\\{]+" }
           ]
         }
       ]

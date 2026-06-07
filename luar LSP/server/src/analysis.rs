@@ -86,6 +86,7 @@ pub fn analyze_file(text: &str) -> Option<FileAnalysis> {
     }
     scan_generic_results(text, &mut fa.vars);
     scan_annotations(text, &mut fa.vars);
+    scan_param_types(text, &mut fa.vars);
     scan_functions(text, &mut fa.functions);
     scan_aliases(text, &mut fa.alias_targets);
     fa.class_ranges = brace_class_ranges(text);
@@ -294,29 +295,90 @@ fn scan_classes_lines(text: &str) -> Vec<ClassData> {
         };
         let (parent, mixins) = parse_class_header(after);
 
-        let (mut depth, mut seen, mut j) = (0i32, false, i);
-        let mut members = Vec::new();
-        while j < lines.len() {
-            if seen {
-                if let Some(m) = scan_member_line(lines[j]) {
-                    members.push(m);
-                }
-            }
+        let (mut depth, mut started, mut j) = (0i32, false, i);
+        let mut body_lines: Vec<String> = Vec::new();
+        'outer: while j < lines.len() {
+            let mut seg = String::new();
             for c in lines[j].chars() {
                 if c == '{' {
                     depth += 1;
-                    seen = true;
+                    if depth == 1 && !started {
+                        started = true;
+                        continue;
+                    }
                 } else if c == '}' {
                     depth -= 1;
+                    if depth == 0 {
+                        body_lines.push(std::mem::take(&mut seg));
+                        break 'outer;
+                    }
+                }
+                if started && depth >= 1 {
+                    seg.push(c);
                 }
             }
-            if seen && depth <= 0 {
-                break;
+            if started {
+                body_lines.push(seg);
             }
             j += 1;
         }
+
+        let mut members = Vec::new();
+        for bl in &body_lines {
+            for chunk in split_members(bl) {
+                if let Some(m) = scan_member_line(&chunk) {
+                    if !members.iter().any(|x: &Member| x.name == m.name) {
+                        members.push(m);
+                    }
+                }
+            }
+        }
         out.push(ClassData { name: name.to_string(), parent, mixins, members });
         i = j + 1;
+    }
+    out
+}
+
+fn split_members(line: &str) -> Vec<String> {
+    const STARTS: &[&str] = &[
+        "public", "private", "protected", "static", "abstract", "final", "override", "pub",
+        "function", "constructor", "operator", "get", "set",
+    ];
+    let bytes = line.as_bytes();
+    let mut starts = Vec::new();
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < line.len() {
+        match bytes[i] {
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => depth -= 1,
+            _ => {}
+        }
+        if depth <= 0 {
+            let left_ok = i == 0 || !is_ident_byte(bytes[i - 1]);
+            if left_ok {
+                for kw in STARTS {
+                    if line[i..].starts_with(kw) {
+                        let after = i + kw.len();
+                        let right_ok = after >= line.len() || !is_ident_byte(bytes[after]);
+                        if right_ok {
+                            starts.push(i);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    if starts.len() <= 1 {
+        return vec![line.to_string()];
+    }
+    let mut out = Vec::new();
+    for k in 0..starts.len() {
+        let s = starts[k];
+        let e = if k + 1 < starts.len() { starts[k + 1] } else { line.len() };
+        out.push(line[s..e].to_string());
     }
     out
 }
@@ -535,10 +597,16 @@ fn scan_vars_lines(text: &str, vars: &mut HashMap<String, VarInfo>) {
 
         if let Some(fpos) = find_word(line, "function") {
             let rest = &line[fpos + "function".len()..];
-            if let (Some(open), Some(close)) = (rest.find('('), rest.find(')')) {
-                if open < close {
-                    for p in rest[open + 1..close].split(',') {
-                        param(vars, &p.trim().chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect::<String>());
+            if let Some(params) = function_params_on_line(line) {
+                for (pname, pty) in params {
+                    let e = vars.entry(pname).or_insert(VarInfo {
+                        ty: String::new(),
+                        mutable: true,
+                        global: false,
+                        literals: Vec::new(),
+                    });
+                    if e.ty.is_empty() && !pty.is_empty() {
+                        e.ty = pty;
                     }
                 }
 
@@ -603,8 +671,9 @@ fn scan_vars_lines(text: &str, vars: &mut HashMap<String, VarInfo>) {
             if ty.is_empty() && idx == 0 {
                 let src: String = rhs.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
                 if !src.is_empty() && src == rhs.trim() {
-                    if let Some(vi) = vars.get(&src) {
-                        ty = vi.ty.clone();
+                    match vars.get(&src) {
+                        Some(vi) => ty = vi.ty.clone(),
+                        None => ty = src,
                     }
                 }
             }
@@ -628,10 +697,94 @@ fn infer_rhs(rhs: &str) -> String {
     } else {
 
         let name: String = r.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
-        if r[name.len()..].trim_start().starts_with('(') {
-            if name == "require" { "module".into() } else { name }
-        } else {
-            String::new()
+        let rest = r[name.len()..].trim_start();
+        if rest.starts_with('(') {
+            return if name == "require" { "module".into() } else { name };
+        }
+        if let Some(after) = rest.strip_prefix(':').or_else(|| rest.strip_prefix('.')) {
+            let after = after.trim_start();
+            let method: String = after.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            if !method.is_empty() && after[method.len()..].trim_start().starts_with('(') {
+                return method;
+            }
+        }
+        String::new()
+    }
+}
+
+fn parse_params_with_types(s: &str) -> Vec<(String, String)> {
+    let bytes = s.as_bytes();
+    let mut parts: Vec<&str> = Vec::new();
+    let (mut depth, mut start) = (0i32, 0usize);
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' | b'[' | b'{' | b'<' => depth += 1,
+            b')' | b']' | b'}' | b'>' => depth -= 1,
+            b',' if depth <= 0 => {
+                parts.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&s[start..]);
+
+    let mut out = Vec::new();
+    for p in parts {
+        let p = p.trim();
+        if p.is_empty() || p == "..." {
+            continue;
+        }
+        let name: String = p.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+        if name.is_empty() {
+            continue;
+        }
+        let after = p[name.len()..].trim_start();
+        let ty = after
+            .strip_prefix(':')
+            .map(|t| t.split('=').next().unwrap_or("").trim().to_string())
+            .unwrap_or_default();
+        out.push((name, ty));
+    }
+    out
+}
+
+fn function_params_on_line(line: &str) -> Option<Vec<(String, String)>> {
+    let fpos = find_word(line, "function")?;
+    let rest = &line[fpos + "function".len()..];
+    let open = rest.find('(')?;
+    let bytes = rest.as_bytes();
+    let mut depth = 0i32;
+    let mut close = None;
+    for i in open..rest.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(parse_params_with_types(&rest[open + 1..close?]))
+}
+
+fn scan_param_types(text: &str, vars: &mut HashMap<String, VarInfo>) {
+    for line in text.lines() {
+        let Some(params) = function_params_on_line(line) else { continue };
+        for (name, ty) in params {
+            let e = vars.entry(name).or_insert(VarInfo {
+                ty: String::new(),
+                mutable: true,
+                global: false,
+                literals: Vec::new(),
+            });
+            if e.ty.is_empty() && !ty.is_empty() {
+                e.ty = ty;
+            }
         }
     }
 }
@@ -739,6 +892,19 @@ pub const KEY_TYPE_FUNCS: &[&str] = &["keyof", "nameof", "indexof"];
 
 fn resolve_return_type(s: &str) -> String {
     let s = s.trim();
+
+    if s.contains("->") {
+        return "function".into();
+    }
+
+    if let Some(inner) = s.strip_prefix('(') {
+        let first = inner.split(',').next().unwrap_or("").trim_end_matches(')').trim();
+        if first.is_empty() {
+            return String::new();
+        }
+        return resolve_return_type(first);
+    }
+
     if let Some(lt) = s.find('<') {
         let name: String = s[..lt].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
         if !name.is_empty() {
@@ -832,6 +998,8 @@ fn collect(s: &Stmt, fa: &mut FileAnalysis) {
                             ty = vi.ty.clone();
                         }
                         literals = vi.literals.clone();
+                    } else if ty.is_empty() {
+                        ty = src.clone();
                     }
                     if let Some(path) = fa.module_vars.get(src).cloned() {
                         fa.module_vars.insert(n.clone(), path);
@@ -948,6 +1116,7 @@ fn infer(e: &Expr) -> Option<String> {
             Expr::Name(n) => n.clone(),
             _ => return None,
         },
+        Expr::MethodCall { method, .. } => method.clone(),
         _ => return None,
     })
 }
@@ -1145,9 +1314,28 @@ pub fn is_class(files: &[&FileAnalysis], name: &str) -> bool {
 }
 
 pub fn effective_type(files: &[&FileAnalysis], ty: &str) -> String {
+    const PASSTHROUGH: &[&str] = &[
+        "classof", "instanceof", "nonnil", "nonnull", "optional", "readonly", "writable",
+        "mutable", "partial", "required", "deep", "shallow", "unwrap", "default", "awaited",
+        "elementof",
+    ];
+
     fn go(files: &[&FileAnalysis], ty: &str, depth: u8) -> String {
+        let ty = ty.trim();
         if depth > 6 || ty.is_empty() || is_class(files, ty) {
             return ty.to_string();
+        }
+
+        if let Some(open) = ty.find('<') {
+            if ty.ends_with('>') {
+                let fname = ty[..open].trim();
+                if PASSTHROUGH.contains(&fname) {
+                    let inner = &ty[open + 1..ty.len() - 1];
+                    let first = inner.split(',').next().unwrap_or(inner).trim();
+                    let first = first.trim_start_matches('{').trim_end_matches('}').trim();
+                    return go(files, first, depth + 1);
+                }
+            }
         }
 
         for f in files {
@@ -1158,6 +1346,13 @@ pub fn effective_type(files: &[&FileAnalysis], ty: &str) -> String {
         for f in files {
             if let Some(r) = f.functions.get(ty) {
                 return go(files, r, depth + 1);
+            }
+        }
+        for f in files {
+            if let Some(vi) = f.vars.get(ty) {
+                if vi.global && !vi.ty.is_empty() && vi.ty != ty {
+                    return go(files, &vi.ty, depth + 1);
+                }
             }
         }
         ty.to_string()

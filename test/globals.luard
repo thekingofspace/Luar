@@ -2,7 +2,7 @@
 class Engine {
   public title: string = ""
   public running: boolean = false
-  function start() end
+  function start():boolean end
   function stop() end
   get fps(): number end
 }

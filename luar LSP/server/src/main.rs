@@ -681,6 +681,59 @@ fn literal_items(literals: &[String]) -> Vec<CompletionItem> {
         .collect()
 }
 
+fn value_items(files: &[&FileAnalysis], current: &FileAnalysis) -> Vec<CompletionItem> {
+    let mut items: Vec<CompletionItem> = LITERALS
+        .iter()
+        .map(|w| CompletionItem {
+            label: w.to_string(),
+            kind: Some(CompletionItemKind::CONSTANT),
+            sort_text: Some(format!("0{w}")),
+            ..Default::default()
+        })
+        .collect();
+
+    let mut vars = var_items(files, current);
+    for it in &mut vars {
+        it.sort_text = Some(format!("1{}", it.label));
+    }
+    items.extend(vars);
+
+    for name in analysis::visible_enums(files, current).keys() {
+        items.push(CompletionItem {
+            label: name.clone(),
+            kind: Some(CompletionItemKind::ENUM),
+            detail: Some("enum".into()),
+            sort_text: Some(format!("2{name}")),
+            ..Default::default()
+        });
+    }
+
+    for (name, detail) in analysis::type_names(files) {
+        let kind = match detail {
+            "class" => CompletionItemKind::CLASS,
+            "interface" => CompletionItemKind::INTERFACE,
+            _ => CompletionItemKind::STRUCT,
+        };
+        items.push(CompletionItem {
+            label: name.clone(),
+            kind: Some(kind),
+            detail: Some(detail.into()),
+            sort_text: Some(format!("3{name}")),
+            ..Default::default()
+        });
+    }
+
+    for w in BUILTINS {
+        let mut it = call_item(w, CompletionItemKind::FUNCTION, "builtin".into());
+        it.sort_text = Some(format!("4{w}"));
+        items.push(it);
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    items.retain(|i| seen.insert(i.label.clone()));
+    items
+}
+
 fn resolve_receiver(files: &[&FileAnalysis], current: &FileAnalysis, recv: &str, line: u32) -> Option<String> {
     if recv == "self" {
         return analysis::self_class(current, line).map(String::from);
@@ -976,6 +1029,16 @@ fn hover_text(files: &[&FileAnalysis], current: &FileAnalysis, word: &str, uri: 
             _ => "const",
         };
         return Some(with_doc(format!("```luar\n{kw} {word}: {ty}\n```"), current, word));
+    }
+    let is_function = analysis::find_var(files, current, word).map(|v| v.ty == "function").unwrap_or(false)
+        || current.functions.contains_key(word)
+        || current.signatures.contains_key(word);
+    if is_function {
+        if let Some(sig) = analysis::find_signature(files, current, word) {
+            let ret = if sig.ret.is_empty() { String::new() } else { format!(": {}", sig.ret) };
+            let s = format!("function {word}({}){ret}", sig.params.join(", "));
+            return Some(with_doc(format!("```luar\n{s}\n```"), current, word));
+        }
     }
     if let Some(vi) = analysis::find_var(files, current, word) {
         let kw = if vi.global { "pub" } else if vi.mutable { "local" } else { "const" };
@@ -1273,20 +1336,17 @@ impl LanguageServer for Backend {
             return Ok(Some(CompletionResponse::Array(Vec::new())));
         }
 
-        if let Some(lhs) = comparison_lhs(&upto) {
+        if let Some(lhs) = comparison_lhs(&upto).or_else(|| assignment_target(&upto)) {
+            let mut items = Vec::new();
             if let Some(vi) = analysis::find_var(&files, current, &lhs) {
                 if !vi.literals.is_empty() {
-                    return Ok(Some(CompletionResponse::Array(literal_items(&vi.literals))));
+                    items.extend(literal_items(&vi.literals));
                 }
             }
-        }
-
-        if let Some(lhs) = assignment_target(&upto) {
-            if let Some(vi) = analysis::find_var(&files, current, &lhs) {
-                if !vi.literals.is_empty() {
-                    return Ok(Some(CompletionResponse::Array(literal_items(&vi.literals))));
-                }
-            }
+            items.extend(value_items(&files, current));
+            let mut seen = std::collections::HashSet::new();
+            items.retain(|i| seen.insert(i.label.clone()));
+            return Ok(Some(CompletionResponse::Array(items)));
         }
 
         if is_type_ctx(&upto) {

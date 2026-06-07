@@ -2,7 +2,7 @@
   "name": "luar-lang",
   "displayName": "LUAR",
   "description": "Language support for LUAR, including the file icon for .luar files.",
-  "version": "0.16.1",
+  "version": "0.16.7",
   "publisher": "luar",
   "engines": {
     "vscode": "^1.75.0"
