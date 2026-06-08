@@ -173,7 +173,7 @@ impl Ferrite {
     fn declare(&mut self, name: &str, mutable: bool, exported: bool, line: u32, kind: Kind) {
         let in_current = self.scopes.last().is_some_and(|s| s.contains_key(name));
         let in_outer = !in_current && self.scopes.iter().rev().skip(1).any(|s| s.contains_key(name));
-        if in_current {
+        if in_current && kind != Kind::Exempt {
             self.warn("Redeclaration", line, format!("variable '{name}' is redeclared in the same scope"));
         } else if in_outer && kind == Kind::Var {
             self.warn("ShadowedVariable", line, format!("variable '{name}' shadows one from an outer scope"));
@@ -232,6 +232,13 @@ impl Ferrite {
                 for name in names {
                     self.declare(name, mutable, exported, *line, Kind::Var);
                 }
+            }
+            Stmt::Buff { name, init, line, .. } => {
+                self.walk_expr(init);
+                self.declare(name, true, false, *line, Kind::Var);
+            }
+            Stmt::FreeBuff { name, .. } => {
+                self.use_name(name);
             }
             Stmt::Assign { targets, op, values, line } => {
                 for v in values {
@@ -494,7 +501,9 @@ fn stmt_line(s: &Stmt) -> Option<u32> {
         | Stmt::Return { line, .. }
         | Stmt::Break { line }
         | Stmt::If { line, .. }
-        | Stmt::While { line, .. } => Some(*line),
+        | Stmt::While { line, .. }
+        | Stmt::Buff { line, .. }
+        | Stmt::FreeBuff { line, .. } => Some(*line),
         Stmt::Expr(_, line) => Some(*line),
         _ => None,
     }

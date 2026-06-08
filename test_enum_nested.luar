@@ -1,0 +1,4 @@
+enum MyEnum {
+    A = { nested = true }
+    B
+}

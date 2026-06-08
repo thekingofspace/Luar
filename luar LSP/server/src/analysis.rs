@@ -627,6 +627,18 @@ fn scan_vars_lines(text: &str, vars: &mut HashMap<String, VarInfo>) {
             }
         }
 
+        if let Some(after) = t.strip_prefix("buff ") {
+            let after = after.trim_start();
+            let after_size = after.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_').trim_start();
+            let name: String = after_size.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            if !name.is_empty() {
+                let rhs = after_size.splitn(2, '=').nth(1).unwrap_or("").trim();
+                let ty = infer_rhs(rhs);
+                vars.entry(name).or_insert(VarInfo { ty, mutable: true, global: false, literals: Vec::new() });
+            }
+            continue;
+        }
+
         let mut rest = t;
         let mut mutable = false;
         let mut global = false;
@@ -864,17 +876,57 @@ pub fn scan_signatures(text: &str) -> HashMap<String, FnSig> {
         let Some((name, rest)) = read_ident(after) else { continue };
         let last = name.rsplit(['.', ':']).next().unwrap_or(name);
         let Some(open) = rest.find('(') else { continue };
-        let Some(close) = rest[open..].find(')').map(|c| open + c) else { continue };
-        let params: Vec<String> = rest[open + 1..close]
-            .split(',')
-            .map(|p| p.trim().to_string())
-            .filter(|p| !p.is_empty())
-            .collect();
+        let Some(close) = matching_paren(rest, open) else { continue };
+        let params = split_params(&rest[open + 1..close]);
         let tail = rest[close + 1..].trim_start();
         let ret = tail.strip_prefix(':').map(|r| resolve_return_type(r.trim_start())).unwrap_or_default();
         out.entry(last.to_string()).or_insert(FnSig { params, ret });
     }
     out
+}
+
+fn matching_paren(s: &str, open: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    for i in open..s.len() {
+        match bytes[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_params(s: &str) -> Vec<String> {
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let mut parts = Vec::new();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b',' if depth <= 0 => {
+                let p = s[start..i].trim();
+                if !p.is_empty() {
+                    parts.push(p.to_string());
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = s[start..].trim();
+    if !last.is_empty() {
+        parts.push(last.to_string());
+    }
+    parts
 }
 
 pub fn find_signature<'a>(files: &[&'a FileAnalysis], current: &'a FileAnalysis, name: &str) -> Option<&'a FnSig> {
@@ -892,6 +944,19 @@ pub const KEY_TYPE_FUNCS: &[&str] = &["keyof", "nameof", "indexof"];
 fn resolve_return_type(s: &str) -> String {
     let s = s.trim();
 
+    if let Some(inner) = s.strip_prefix('{').and_then(|x| x.strip_suffix('}')) {
+        let trimmed = inner.trim();
+        if trimmed.contains(':') {
+            return s.to_string();
+        }
+        if !trimmed.is_empty() && !trimmed.contains(',') && !trimmed.contains('[') {
+            let elem = read_type_name(trimmed);
+            if !elem.is_empty() {
+                return format!("{{{elem}}}");
+            }
+        }
+    }
+
     if s.contains("->") {
         return "function".into();
     }
@@ -902,16 +967,6 @@ fn resolve_return_type(s: &str) -> String {
             return String::new();
         }
         return resolve_return_type(first);
-    }
-
-    if let Some(inner) = s.strip_prefix('{').and_then(|x| x.strip_suffix('}')) {
-        let inner = inner.trim();
-        if !inner.is_empty() && !inner.contains(':') && !inner.contains(',') && !inner.contains('[') {
-            let elem = read_type_name(inner);
-            if !elem.is_empty() {
-                return format!("{{{elem}}}");
-            }
-        }
     }
 
     if let Some(lt) = s.find('<') {
@@ -932,6 +987,11 @@ fn resolve_return_type(s: &str) -> String {
             }
         }
     }
+
+    if s.contains('|') || s.contains('&') {
+        return s.to_string();
+    }
+
     read_type_name(s)
 }
 
@@ -1003,6 +1063,11 @@ fn collect(s: &Stmt, fa: &mut FileAnalysis) {
             for (i, n) in names.iter().enumerate() {
                 let init = inits.get(i);
                 let mut ty = init.and_then(infer).unwrap_or_default();
+                if ty.is_empty() {
+                    if let Some(Expr::Index { base, key }) = init {
+                        ty = index_type(base, key, fa);
+                    }
+                }
                 let mut literals = Vec::new();
                 if let Some(Expr::Name(src)) = init {
                     if let Some(vi) = fa.vars.get(src) {
@@ -1024,6 +1089,12 @@ fn collect(s: &Stmt, fa: &mut FileAnalysis) {
             }
 
             inits.iter().for_each(|e| collect_expr(e, fa));
+        }
+
+        Stmt::Buff { name, init, .. } => {
+            let ty = infer(init).unwrap_or_default();
+            fa.vars.insert(name.clone(), VarInfo { ty, mutable: true, global: false, literals: Vec::new() });
+            collect_expr(init, fa);
         }
 
         Stmt::Do(b) => b.iter().for_each(|x| collect(x, fa)),
@@ -1146,6 +1217,66 @@ fn collect_expr(e: &Expr, fa: &mut FileAnalysis) {
     }
 }
 
+fn index_type(base: &Expr, key: &Expr, fa: &FileAnalysis) -> String {
+    let base_ty = match base {
+        Expr::Name(n) => {
+            if fa.enums.contains_key(n) {
+                return n.clone();
+            }
+            fa.vars.get(n).map(|v| v.ty.clone()).unwrap_or_default()
+        }
+        Expr::Index { base, key } => index_type(base, key, fa),
+        other => infer(other).unwrap_or_default(),
+    };
+    if base_ty.is_empty() {
+        return String::new();
+    }
+    let files: [&FileAnalysis; 1] = [fa];
+    let resolved = effective_type(&files, &base_ty);
+    if let Some(inner) = resolved.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+        let inner = inner.trim();
+        if inner.contains(':') {
+            if let Expr::Str(field) = key {
+                for (k, t) in struct_fields(inner) {
+                    if &k == field {
+                        return t;
+                    }
+                }
+            }
+            return String::new();
+        }
+        return element_of(&resolved);
+    }
+    String::new()
+}
+
+fn struct_fields(inner: &str) -> Vec<(String, String)> {
+    let bytes = inner.as_bytes();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let mut parts: Vec<&str> = Vec::new();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'{' | b'[' | b'(' | b'<' => depth += 1,
+            b'}' | b']' | b')' | b'>' => depth -= 1,
+            b',' if depth <= 0 => {
+                parts.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&inner[start..]);
+    parts
+        .into_iter()
+        .filter_map(|p| {
+            let (k, t) = p.split_once(':')?;
+            let k = k.trim();
+            if k.is_empty() { None } else { Some((k.to_string(), t.trim().to_string())) }
+        })
+        .collect()
+}
+
 fn infer(e: &Expr) -> Option<String> {
     Some(match e {
         Expr::Bool(_) => "boolean".into(),
@@ -1254,10 +1385,6 @@ pub fn element_of(ty: &str) -> String {
     String::new()
 }
 
-// On a failed parse the line scanner produces weaker types, so keep a previously
-// inferred richer type (a struct/array or any concrete type) when the rescan only sees
-// an empty or `table` type for the same name. This stops types from collapsing to
-// `table` on every keystroke while the buffer is briefly unparseable.
 pub fn merge_vars(existing: &mut HashMap<String, VarInfo>, scanned: HashMap<String, VarInfo>) {
     let prev = std::mem::replace(existing, scanned);
     for (name, vi) in existing.iter_mut() {
@@ -1276,9 +1403,6 @@ pub fn merge_vars(existing: &mut HashMap<String, VarInfo>, scanned: HashMap<Stri
     }
 }
 
-// Like `merge_vars`, but for type-alias targets. The line scanner cannot reproduce a
-// struct/array shape (`{ ... }`), so on a failed parse keep a previously resolved shape
-// rather than letting it collapse to an empty or `function` placeholder.
 pub fn merge_alias_targets(existing: &mut HashMap<String, String>, scanned: HashMap<String, String>) {
     let prev = std::mem::replace(existing, scanned);
     for (name, target) in prev {

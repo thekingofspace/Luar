@@ -32,6 +32,9 @@ impl Writer {
     fn i64(&mut self, v: i64) {
         self.buf.extend_from_slice(&v.to_le_bytes());
     }
+    fn u64(&mut self, v: u64) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
     fn f64(&mut self, v: f64) {
         self.buf.extend_from_slice(&v.to_le_bytes());
     }
@@ -173,6 +176,18 @@ impl Writer {
             Stmt::Expr(e, line) => {
                 self.u8(12);
                 self.expr(e);
+                self.u32(*line);
+            }
+            Stmt::Buff { name, size, init, line } => {
+                self.u8(14);
+                self.str(name);
+                self.u64(*size);
+                self.expr(init);
+                self.u32(*line);
+            }
+            Stmt::FreeBuff { name, line } => {
+                self.u8(15);
+                self.str(name);
                 self.u32(*line);
             }
         }
@@ -439,6 +454,9 @@ impl<'a> Reader<'a> {
     fn i64(&mut self) -> Result<i64, String> {
         Ok(i64::from_le_bytes(self.take(8)?.try_into().unwrap()))
     }
+    fn u64(&mut self) -> Result<u64, String> {
+        Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+    }
     fn f64(&mut self) -> Result<f64, String> {
         Ok(f64::from_le_bytes(self.take(8)?.try_into().unwrap()))
     }
@@ -557,6 +575,16 @@ impl<'a> Reader<'a> {
                 visibility: self.visibility()?,
                 name: self.str()?,
                 variants: self.vec(|r| Ok((r.str()?, r.opt(Reader::expr)?)))?,
+                line: self.u32()?,
+            },
+            14 => Stmt::Buff {
+                name: self.str()?,
+                size: self.u64()?,
+                init: self.expr()?,
+                line: self.u32()?,
+            },
+            15 => Stmt::FreeBuff {
+                name: self.str()?,
                 line: self.u32()?,
             },
             t => return Err(format!("bad statement tag {t}")),

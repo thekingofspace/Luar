@@ -228,6 +228,8 @@ pub struct Table {
     pub meta: Option<Rc<RefCell<Table>>>,
 
     pub(crate) gc_mark: Cell<bool>,
+
+    pub(crate) cap: Cell<Option<u64>>,
 }
 
 impl Table {
@@ -241,6 +243,29 @@ impl Table {
 
     pub fn is_empty(&self) -> bool {
         self.array.is_empty() && self.map.is_empty()
+    }
+
+    pub fn set_cap(&self, cap: u64) {
+        self.cap.set(Some(cap));
+    }
+
+    pub fn capacity(&self) -> Option<u64> {
+        self.cap.get()
+    }
+
+    pub fn entry_count(&self) -> u64 {
+        (self.array.len() + self.map.len()) as u64
+    }
+
+    pub fn check_room_for_one(&self) -> Result<(), String> {
+        if let Some(cap) = self.cap.get() {
+            if self.entry_count() >= cap {
+                return Err(format!(
+                    "buff overflow: this value is capped at a fixed size of {cap} and cannot grow further"
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub fn get(&self, key: &Value) -> Value {
@@ -258,6 +283,15 @@ impl Table {
     pub fn set(&mut self, key: Value, value: Value) -> Result<(), String> {
         let k = value_to_key(&key)
             .ok_or_else(|| format!("invalid table key of type {}", key.type_name()))?;
+        let adds = !matches!(value, Value::Nil)
+            && match &k {
+                Key::Int(i) if *i >= 1 && (*i as usize) <= self.array.len() => false,
+                Key::Int(i) if *i >= 1 && *i as usize == self.array.len() + 1 => true,
+                _ => !self.map.contains_key(&k),
+            };
+        if adds {
+            self.check_room_for_one()?;
+        }
         if let Key::Int(i) = k {
             if i >= 1 && (i as usize) <= self.array.len() {
                 self.array[i as usize - 1] = value;

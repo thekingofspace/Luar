@@ -43,7 +43,7 @@ const MODIFIERS: &[&str] = &[
 
     "local", "const", "pub", "public", "private", "protected", "static", "abstract", "final",
     "override", "export", "function", "class", "interface", "type", "extends", "mixin", "implements",
-    "enum",
+    "enum", "buff", "freebuff",
 ];
 const TYPEISH: &[&str] = &["constructor", "operator", "get", "set"];
 
@@ -257,6 +257,8 @@ fn completions() -> Vec<CompletionItem> {
     items.push(snip("interface", "interface declaration", "interface ${1:Name} {\n\t$0\n}"));
     items.push(snip("enum", "enum declaration", "enum ${1:Name} {\n\t$0\n}"));
     items.push(snip("switch", "switch expression", "switch(${1:value})\n\tcase ${2:x}\n\t\t$0\n\tend\nend"));
+    items.push(snip("buff", "fixed-size manual buffer", "buff ${1:32} ${2:name} = ${3:value}"));
+    items.push(snip("freebuff", "release a buff", "freebuff ${1:name}"));
     items
 }
 
@@ -668,10 +670,6 @@ fn comparison_lhs(upto: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-// If the cursor sits inside an unterminated string literal, return the text up to (but
-// not including) that opening quote. This lets value completion still fire after the
-// user has typed an opening quote, e.g. `x == "Gr`. Quotes inside finished strings are
-// tracked so they are not mistaken for the open one.
 fn strip_open_string(upto: &str) -> &str {
     let mut open: Option<(char, usize)> = None;
     for (i, c) in upto.char_indices() {
@@ -1017,13 +1015,11 @@ fn loop_var_types(files: &[&FileAnalysis], current: &FileAnalysis, iter: &str) -
     let elem = element_type(files, current, coll);
     match kind {
         "ipairs" => vec!["number".to_string(), elem],
-        "pairs" => vec![String::new(), elem],
+        "pairs" => vec!["string".to_string(), elem],
         _ => Vec::new(),
     }
 }
 
-// Best-effort element type of a collection referenced by name: an array annotation
-// `{T}` yields T, a plain table yields `table`, otherwise nothing.
 fn element_type(files: &[&FileAnalysis], current: &FileAnalysis, coll: &str) -> String {
     let name: String = coll.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
     let Some(vi) = analysis::find_var(files, current, &name) else { return String::new() };
@@ -1048,8 +1044,6 @@ fn element_type(files: &[&FileAnalysis], current: &FileAnalysis, coll: &str) -> 
     String::new()
 }
 
-// If `recv` is a variable whose type is a struct `{ k: T, ... }`, offer its keys as
-// field completions so the shape inferred from a table literal is browsable.
 fn struct_field_items(
     files: &[&FileAnalysis],
     current: &FileAnalysis,
@@ -1065,7 +1059,7 @@ fn struct_field_items(
     }
     let items: Vec<CompletionItem> = fields
         .into_iter()
-        // With `:` only the function-typed fields make sense (method-call syntax).
+
         .filter(|(_, ty)| op != ':' || ty == "function" || ty.contains("->"))
         .map(|(name, ty)| {
             let is_fn = ty == "function" || ty.contains("->");
@@ -1084,8 +1078,6 @@ fn struct_field_items(
     (!items.is_empty()).then_some(items)
 }
 
-// Split a struct body `k: T, k2: {a: U}` into (name, type) pairs, respecting nested
-// braces/brackets so commas inside a field's type do not split it.
 fn parse_struct_fields(inner: &str) -> Vec<(String, String)> {
     let bytes = inner.as_bytes();
     let mut depth = 0i32;
@@ -1127,6 +1119,24 @@ fn inlay_hints(text: &str, files: &[&FileAnalysis], current: &FileAnalysis) -> V
         if ih_word(&ch, i, "for") {
             for (col, ty) in for_loop_hints(&ch, i + 3, files, current) {
                 hints.push(ih_make(line_no, col, format!(": {ty}")));
+            }
+            continue;
+        }
+
+        if ih_word(&ch, i, "buff") {
+            let mut j = i + 4;
+            ih_skip_ws(&ch, &mut j);
+            while j < ch.len() && (ch[j].is_ascii_alphanumeric() || ch[j] == '_') {
+                j += 1;
+            }
+            ih_skip_ws(&ch, &mut j);
+            let (name, end) = ih_ident(&ch, j);
+            if !name.is_empty() {
+                let inferred = analysis::find_var(files, current, &name).and_then(|vi| {
+                    let et = analysis::effective_type(files, &vi.ty);
+                    (!et.is_empty()).then_some(et)
+                });
+                hints.push(ih_make(line_no, end as u32, ih_label(true, false, inferred)));
             }
             continue;
         }
@@ -1243,34 +1253,36 @@ fn hover_text(files: &[&FileAnalysis], current: &FileAnalysis, word: &str, uri: 
         };
         return Some(with_doc(format!("```luar\n{kw} {word}: {ty}\n```"), current, word));
     }
-    let is_function = analysis::find_var(files, current, word).map(|v| v.ty == "function").unwrap_or(false)
-        || current.functions.contains_key(word)
-        || current.signatures.contains_key(word);
-    if is_function {
-        if let Some(sig) = analysis::find_signature(files, current, word) {
-            let ret = if sig.ret.is_empty() { String::new() } else { format!(": {}", sig.ret) };
-            let s = format!("function {word}({}){ret}", sig.params.join(", "));
-            return Some(with_doc(format!("```luar\n{s}\n```"), current, word));
-        }
-    }
     if let Some(vi) = analysis::find_var(files, current, word) {
+        if vi.ty == "function" {
+            if let Some(sig) = analysis::find_signature(files, current, word) {
+                let ret = if sig.ret.is_empty() { String::new() } else { format!(": {}", sig.ret) };
+                let s = format!("function {word}({}){ret}", sig.params.join(", "));
+                return Some(with_doc(format!("```luar\n{s}\n```"), current, word));
+            }
+            return Some(with_doc(format!("```luar\nlocal {word}: function\n```"), current, word));
+        }
         let kw = if vi.global { "pub" } else if vi.mutable { "local" } else { "const" };
-        let ty = if vi.ty.is_empty() {
-            "?".to_string()
-        } else if !vi.literals.is_empty() {
+        let ty = if !vi.literals.is_empty() {
             vi.literals.iter().map(|l| format!("\"{l}\"")).collect::<Vec<_>>().join(" | ")
+        } else if vi.ty.is_empty() {
+            "?".to_string()
         } else {
             let et = analysis::effective_type(files, &vi.ty);
-            let is_array = et.starts_with('{') && et.ends_with('}');
-            if analysis::is_class(files, &et) || analysis::is_primitive(&et) || is_array {
-                et
-            } else {
-                "any".to_string()
-            }
+            if displayable_type(files, &et) { et } else { "any".to_string() }
         };
         let mutability = if vi.mutable { "mutable" } else { "immutable" };
         let scope = if vi.global { ", global" } else { "" };
         return Some(with_doc(format!("```luar\n{kw} {word}: {ty}\n```\n*{mutability}{scope}*"), current, word));
+    }
+    if let Some(sig) = analysis::find_signature(files, current, word) {
+        let ret = if sig.ret.is_empty() { String::new() } else { format!(": {}", sig.ret) };
+        let s = format!("function {word}({}){ret}", sig.params.join(", "));
+        return Some(with_doc(format!("```luar\n{s}\n```"), current, word));
+    }
+    if let Some(ret) = current.functions.get(word) {
+        let sig = if ret.is_empty() { format!("function {word}(...)") } else { format!("function {word}(...): {ret}") };
+        return Some(with_doc(format!("```luar\n{sig}\n```"), current, word));
     }
     if analysis::is_class(files, word) {
         return Some(with_doc(format!("```luar\nclass {word}\n```"), current, word));
@@ -1278,9 +1290,15 @@ fn hover_text(files: &[&FileAnalysis], current: &FileAnalysis, word: &str, uri: 
     if let Some(variants) = analysis::visible_enums(files, current).get(word) {
         return Some(with_doc(format!("```luar\nenum {word} {{ {} }}\n```", variants.join(", ")), current, word));
     }
-    if let Some(ret) = current.functions.get(word) {
-        let sig = if ret.is_empty() { format!("function {word}(...)") } else { format!("function {word}(...): {ret}") };
-        return Some(with_doc(format!("```luar\n{sig}\n```"), current, word));
+    if let Some(target) = current.alias_targets.get(word) {
+        return Some(with_doc(format!("```luar\ntype {word} = {target}\n```"), current, word));
+    }
+    if files.iter().any(|f| f.interfaces.iter().any(|n| n == word)) {
+        return Some(with_doc(format!("```luar\ninterface {word}\n```"), current, word));
+    }
+    if let Some((_, p, r)) = BUILTIN_SIGS.iter().find(|(n, _, _)| *n == word) {
+        let ret = if r.is_empty() { String::new() } else { format!(": {r}") };
+        return Some(format!("```luar\nfunction {word}({}){ret}\n```\n*builtin*", p.join(", ")));
     }
     if analysis::is_primitive(word) {
         return Some(format!("**{word}** - a built-in type"));
@@ -1289,6 +1307,16 @@ fn hover_text(files: &[&FileAnalysis], current: &FileAnalysis, word: &str, uri: 
         return Some(d.clone());
     }
     None
+}
+
+fn displayable_type(files: &[&FileAnalysis], et: &str) -> bool {
+    analysis::is_class(files, et)
+        || analysis::is_primitive(et)
+        || (et.starts_with('{') && et.ends_with('}'))
+        || et.contains('|')
+        || et.contains('&')
+        || et.contains("->")
+        || files.iter().any(|f| f.enums.contains_key(et))
 }
 
 fn with_doc(base: String, current: &FileAnalysis, word: &str) -> String {
@@ -1478,7 +1506,13 @@ impl LanguageServer for Backend {
         let pos = p.position;
         let text = self.docs.lock().unwrap().get(&uri).cloned().unwrap_or_default();
         let line = text.lines().nth(pos.line as usize).unwrap_or("").to_string();
-        let upto: String = line.chars().take(pos.character as usize).collect();
+        let mut upto: String = line.chars().take(pos.character as usize).collect();
+
+        if let Some(c) = line.chars().nth(pos.character as usize) {
+            if (c == '.' || c == ':') && !upto.ends_with(['.', ':']) {
+                upto.push(c);
+            }
+        }
 
         if let Some(items) = directive_completion(&upto) {
             return Ok(Some(CompletionResponse::Array(items)));

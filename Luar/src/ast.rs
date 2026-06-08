@@ -66,6 +66,15 @@ pub enum Stmt {
 
     TypeAlias { name: String, ty: Type },
 
+    Buff {
+        name: String,
+        size: u64,
+        init: Expr,
+        line: u32,
+    },
+
+    FreeBuff { name: String, line: u32 },
+
     Class {
         visibility: Visibility,
         is_final: bool,

@@ -93,7 +93,7 @@
         {
           "comment": "Declaration modifiers — pub/public/private etc. share the local/const colour",
           "name": "storage.modifier.luar",
-          "match": "\\b(local|const|pub|public|private|protected|static|abstract|final|override|export)\\b"
+          "match": "\\b(local|const|pub|public|private|protected|static|abstract|final|override|export|buff|freebuff)\\b"
         },
         {
           "comment": "Declaration / structure keywords — same colour as local/const; extends/mixin/implements colour like `class` too",
@@ -142,7 +142,7 @@
         },
         {
           "name": "keyword.operator.luar",
-          "match": "(\\+|-|\\*|/|%|\\^|\\.\\.|==|~=|<=|>=|<|>|=|::|:|#)"
+          "match": "(\\+|->|-|\\*|/|%|\\^|\\.\\.|==|~=|<=|>=|<|>|=|::|:|#)"
         }
       ]
     },
@@ -164,7 +164,7 @@
     },
     "type-annotation": {
       "comment": "A `: Type` annotation / `:: Type` cast — the type name is cyan. A method call (`obj:name(...)`) is excluded: the `\\b` stops the name from backtracking to a partial match, and the lookahead rejects a following `(`.",
-      "match": "(:{1,2})\\s*([A-Za-z_]\\w*(?:\\.\\w+)*)\\b(?!\\s*\\()",
+      "match": "(:{1,2})\\s*(\\\"[^\\\"]*\\\"|'[^']*'|[A-Za-z_]\\w*(?:\\.\\w+)*)(?!\\w)(?!\\s*\\()",
       "captures": {
         "1": { "name": "keyword.operator.type.luar" },
         "2": { "name": "support.type.luar" }
@@ -207,7 +207,7 @@
     },
     "type-union": {
       "comment": "Subsequent type names in a union/intersection: `A | B & C`. The `|`/`&` are type operators; each following name is cyan like the first. `|`/`&` are only used in type positions in LUAR, so this is unambiguous.",
-      "match": "([|&])\\s*([A-Za-z_]\\w*(?:\\.\\w+)*)\\b(?!\\s*\\()",
+      "match": "([|&])\\s*(\\\"[^\\\"]*\\\"|'[^']*'|[A-Za-z_]\\w*(?:\\.\\w+)*)(?!\\w)(?!\\s*\\()",
       "captures": {
         "1": { "name": "keyword.operator.type.luar" },
         "2": { "name": "support.type.luar" }

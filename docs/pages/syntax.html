@@ -94,8 +94,82 @@ multiple lines and support all the escape sequences above.</p>
 sugar forms) or a <code>switch</code>. A value on a line by itself, such as
 <code>1 + 1</code>, is a syntax error.</div>
 
-<h3>Keywords</h3>
-<pre><code>local const pub public private protected static abstract final override export
-function class interface enum type extends mixin implements constructor operator
-get set if then elseif else end for while do in break return switch case default
-and or not self super true false nil</code></pre>
+<h3 id="keywords">Keywords</h3>
+<p>Every reserved word in LUAR, grouped by what it does. A name in this list cannot be
+used as a variable.</p>
+
+<h4>Declaring and freeing variables</h4>
+<table>
+<tr><th>Keyword</th><th>Meaning</th></tr>
+<tr><td><code>local</code></td><td>Declares a mutable variable, visible from its declaration to the end of the enclosing block.</td></tr>
+<tr><td><code>const</code></td><td>Declares a constant binding. It cannot be reassigned; only assigning <code>nil</code> may clear it.</td></tr>
+<tr><td><code>pub</code></td><td>Exports a declaration as a module global, so files that <code>require</code> this one can see it.</td></tr>
+<tr><td><code>export</code></td><td>Accepted before a declaration as a synonym for exporting at module scope.</td></tr>
+<tr><td><code>buff</code></td><td>Declares a fixed-size, manually managed buffer: a mutable variable that never goes out of scope and is released only by <code>freebuff</code>. It can never be <code>pub</code>. See <a href="#buff">Buffs</a>.</td></tr>
+<tr><td><code>freebuff</code></td><td>Immediately releases a <code>buff</code>, bypassing the garbage collector. Reading the name afterwards is an error.</td></tr>
+</table>
+
+<h4>Class member access and modifiers</h4>
+<table>
+<tr><th>Keyword</th><th>Meaning</th></tr>
+<tr><td><code>public</code></td><td>A class member reachable from anywhere. This is the default if no access is written.</td></tr>
+<tr><td><code>private</code></td><td>A member reachable only from the declaring class's own methods.</td></tr>
+<tr><td><code>protected</code></td><td>A member reachable from the declaring class and its subclasses.</td></tr>
+<tr><td><code>static</code></td><td>A member that belongs to the class itself rather than to instances; reached through the class name.</td></tr>
+<tr><td><code>abstract</code></td><td>On a class, makes it impossible to instantiate. On a method, declares it with no body that a concrete subclass must provide.</td></tr>
+<tr><td><code>final</code></td><td>A method that cannot be overridden, or a class that cannot be extended.</td></tr>
+<tr><td><code>override</code></td><td>States that a method replaces an inherited one. It is an error if there is nothing to override, which catches typos.</td></tr>
+</table>
+
+<h4>Declaring types and members</h4>
+<table>
+<tr><th>Keyword</th><th>Meaning</th></tr>
+<tr><td><code>function</code></td><td>Defines a function: standalone, <code>local</code>, or a method inside a class.</td></tr>
+<tr><td><code>class</code></td><td>Defines a class, a blueprint that objects are created from.</td></tr>
+<tr><td><code>interface</code></td><td>Defines a contract: a set of method names a class can promise to provide.</td></tr>
+<tr><td><code>enum</code></td><td>Defines an enumeration, a group of named constant values.</td></tr>
+<tr><td><code>type</code></td><td>Defines a type alias, a name for a type expression.</td></tr>
+<tr><td><code>extends</code></td><td>Names the single parent class that a class inherits from.</td></tr>
+<tr><td><code>mixin</code></td><td>Folds the members of one or more other classes into a class.</td></tr>
+<tr><td><code>implements</code></td><td>Declares the interfaces a class satisfies.</td></tr>
+<tr><td><code>constructor</code></td><td>The special method that runs once when a class is instantiated.</td></tr>
+<tr><td><code>operator</code></td><td>Overloads an operator for a class, for example <code>operator +</code>.</td></tr>
+<tr><td><code>get</code></td><td>Defines a getter: a method that runs when a property is read.</td></tr>
+<tr><td><code>set</code></td><td>Defines a setter: a method that runs when a property is assigned.</td></tr>
+</table>
+
+<h4>Control flow</h4>
+<table>
+<tr><th>Keyword</th><th>Meaning</th></tr>
+<tr><td><code>if</code></td><td>Begins a conditional. Its branch runs when the condition is truthy.</td></tr>
+<tr><td><code>then</code></td><td>Separates an <code>if</code> or <code>elseif</code> condition from its body.</td></tr>
+<tr><td><code>elseif</code></td><td>An additional condition tested when the previous ones were false.</td></tr>
+<tr><td><code>else</code></td><td>The branch that runs when no preceding condition matched.</td></tr>
+<tr><td><code>end</code></td><td>Closes a block: an <code>if</code>, loop, function, <code>switch</code> case, or <code>do</code> block.</td></tr>
+<tr><td><code>for</code></td><td>Begins a loop: numeric (<code>for i = a, b</code>) or generic (<code>for k, v in iter</code>).</td></tr>
+<tr><td><code>while</code></td><td>Begins a loop that repeats while its condition stays truthy.</td></tr>
+<tr><td><code>do</code></td><td>Opens the body of a <code>for</code>/<code>while</code> loop, or a standalone block that makes a new scope.</td></tr>
+<tr><td><code>in</code></td><td>Separates the loop variables from the iterator in a generic <code>for</code>.</td></tr>
+<tr><td><code>break</code></td><td>Exits the nearest enclosing loop immediately.</td></tr>
+<tr><td><code>return</code></td><td>Returns zero or more values from a function.</td></tr>
+<tr><td><code>switch</code></td><td>Begins a multi-way branch on a single value.</td></tr>
+<tr><td><code>case</code></td><td>A branch of a <code>switch</code> matched against the value.</td></tr>
+<tr><td><code>default</code></td><td>The <code>switch</code> branch that runs when no <code>case</code> matched.</td></tr>
+</table>
+
+<h4>Logical operators</h4>
+<table>
+<tr><th>Keyword</th><th>Meaning</th></tr>
+<tr><td><code>and</code></td><td>Short-circuit logical AND. Yields the first falsey operand or the last operand.</td></tr>
+<tr><td><code>or</code></td><td>Short-circuit logical OR. Yields the first truthy operand or the last operand.</td></tr>
+<tr><td><code>not</code></td><td>Logical negation: turns a truthy value into <code>false</code> and a falsey value into <code>true</code>.</td></tr>
+</table>
+
+<h4>Special values and identifiers</h4>
+<table>
+<tr><th>Keyword</th><th>Meaning</th></tr>
+<tr><td><code>self</code></td><td>Inside a method, the object the method was called on.</td></tr>
+<tr><td><code>super</code></td><td>Inside a method, the parent class, used to call an overridden method.</td></tr>
+<tr><td><code>true</code> / <code>false</code></td><td>The two boolean values.</td></tr>
+<tr><td><code>nil</code></td><td>The absence of a value. Everything except <code>nil</code> and <code>false</code> is truthy.</td></tr>
+</table>

@@ -186,6 +186,23 @@ impl Interpreter {
             }
 
             Stmt::TypeAlias { .. } => {}
+            Stmt::Buff { name, size, init, .. } => {
+                let v = self.eval(init)?;
+                check_buff_size(name, *size, &v).map_err(EvalError)?;
+                stamp_buff_cap(&v, *size);
+                self.env.declare_buff(name.clone(), v, *size);
+            }
+            Stmt::FreeBuff { name, .. } => match self.env.free_buff(name) {
+                super::env::BuffFree::Freed => {}
+                super::env::BuffFree::NotBuff => {
+                    return Err(EvalError(format!(
+                        "'{name}' is not a buff; only buffs can be released with freebuff"
+                    )));
+                }
+                super::env::BuffFree::NotFound => {
+                    return Err(EvalError(format!("freebuff: no buff named '{name}'")));
+                }
+            },
             Stmt::Enum { visibility, name, variants, .. } => {
                 self.exec_enum(*visibility, name, variants)?;
             }
@@ -272,6 +289,10 @@ impl Interpreter {
             match target {
                 LValue::Name(name) => {
 
+                    if let Some(size) = self.env.buff_size(name) {
+                        check_buff_size(name, size, &v).map_err(EvalError)?;
+                        stamp_buff_cap(&v, size);
+                    }
                     if self.env.contains(name) {
                         self.env.assign(name, v)?;
                     } else {
@@ -1283,6 +1304,26 @@ fn float_to_value(f: f64) -> Value {
     }
 }
 
+fn check_buff_size(name: &str, size: u64, value: &Value) -> std::result::Result<(), String> {
+    let (len, unit) = match value {
+        Value::Str(s) => (s.len() as u64, "bytes"),
+        Value::Table(t) => (t.borrow().entry_count(), "entries"),
+        _ => return Ok(()),
+    };
+    if len > size {
+        return Err(format!(
+            "buff '{name}' overflow: {len} {unit} exceed its fixed size {size}"
+        ));
+    }
+    Ok(())
+}
+
+fn stamp_buff_cap(value: &Value, size: u64) {
+    if let Value::Table(t) = value {
+        t.borrow().set_cap(size);
+    }
+}
+
 fn register_builtins(env: &mut Environment) {
     let builtins: &[(&'static str, NativeFn)] = &[
         ("setmetatable", builtin_setmetatable),
@@ -1742,10 +1783,16 @@ fn tbl_insert(_i: &mut Interpreter, a: Vec<Value>) -> NativeResult {
         let pos = arg_int(&a, 1, "table.insert")?.max(1) as usize;
         let v = a[2].clone();
         let mut tb = t.borrow_mut();
+        tb.check_room_for_one()?;
         let idx = (pos - 1).min(tb.array.len());
         tb.array.insert(idx, v);
     } else {
-        t.borrow_mut().array.push(a.get(1).cloned().unwrap_or(Value::Nil));
+        let v = a.get(1).cloned().unwrap_or(Value::Nil);
+        let mut tb = t.borrow_mut();
+        if !matches!(v, Value::Nil) {
+            tb.check_room_for_one()?;
+        }
+        tb.array.push(v);
     }
     Ok(vec![])
 }
@@ -2723,6 +2770,94 @@ mod tests {
     #[test]
     fn const_cannot_be_reassigned() {
         let program = parse(tokenize("const c = 1\nc = 2").unwrap()).unwrap();
+        let mut interp = Interpreter::new();
+        assert!(interp.run(&program).is_err());
+    }
+
+    #[test]
+    fn buff_declares_and_is_mutable() {
+        let i = run("buff 32 b = \"hi\"\nb = \"yo\"\npub local v = b");
+        assert_eq!(i.env.get("v"), Some(Value::str("yo")));
+    }
+
+    #[test]
+    fn buff_never_goes_out_of_scope() {
+        let i = run("local function mk() buff 8 keep = \"x\" end\nmk()\npub local v = keep");
+        assert_eq!(i.env.get("v"), Some(Value::str("x")));
+    }
+
+    #[test]
+    fn buff_nil_does_not_free_it() {
+        let i = run("buff 8 b = \"x\"\nb = nil\nb = \"again\"\npub local v = b");
+        assert_eq!(i.env.get("v"), Some(Value::str("again")));
+    }
+
+    #[test]
+    fn freebuff_blocks_use_after_free() {
+        let program = parse(tokenize("buff 8 b = \"x\"\nfreebuff b\npub local v = b").unwrap()).unwrap();
+        let mut interp = Interpreter::new();
+        assert!(interp.run(&program).is_err());
+    }
+
+    #[test]
+    fn buff_overflow_is_rejected() {
+        let program = parse(tokenize("buff 4 b = \"toolong\"").unwrap()).unwrap();
+        let mut interp = Interpreter::new();
+        assert!(interp.run(&program).is_err());
+    }
+
+    #[test]
+    fn freebuff_rejects_non_buff() {
+        let program = parse(tokenize("local x = 1\nfreebuff x").unwrap()).unwrap();
+        let mut interp = Interpreter::new();
+        assert!(interp.run(&program).is_err());
+    }
+
+    #[test]
+    fn buff_cannot_be_pub() {
+        assert!(parse(tokenize("pub buff 8 b = \"x\"").unwrap()).is_err());
+    }
+
+    #[test]
+    fn buff_survives_precompile_round_trip() {
+        let bytes = crate::precompile_source("buff 8 b = \"hi\"\npub local v = b").unwrap();
+        let i = crate::run_precompiled(&bytes).unwrap();
+        assert_eq!(i.env.get("v"), Some(Value::str("hi")));
+    }
+
+    #[test]
+    fn buff_table_cannot_grow_past_size_via_insert() {
+        let program = parse(tokenize("buff 3 t = {1,2,3}\ntable.insert(t, 4)").unwrap()).unwrap();
+        let mut interp = Interpreter::new();
+        assert!(interp.run(&program).is_err());
+    }
+
+    #[test]
+    fn buff_table_cannot_grow_past_size_via_index() {
+        let program = parse(tokenize("buff 2 t = {1,2}\nt[3] = 9").unwrap()).unwrap();
+        let mut interp = Interpreter::new();
+        assert!(interp.run(&program).is_err());
+    }
+
+    #[test]
+    fn buff_table_overwrite_is_allowed() {
+        let i = run("buff 3 t = {1,2,3}\nt[1] = 9\npub local v = t[1]");
+        assert_eq!(i.env.get("v"), Some(Value::Int(9)));
+    }
+
+    #[test]
+    fn buff_class_instance_field_growth_is_capped() {
+        let program = parse(
+            tokenize("class C { public a: number = 1 }\nbuff 1 obj = C()\nobj.b = 2").unwrap(),
+        )
+        .unwrap();
+        let mut interp = Interpreter::new();
+        assert!(interp.run(&program).is_err());
+    }
+
+    #[test]
+    fn buff_oversized_table_init_is_rejected() {
+        let program = parse(tokenize("buff 2 t = {1,2,3}").unwrap()).unwrap();
         let mut interp = Interpreter::new();
         assert!(interp.run(&program).is_err());
     }

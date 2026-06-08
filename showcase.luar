@@ -108,6 +108,19 @@ local function describe(s: string): string
     end
     return result
 end
+local function Dec(s: string): string
+    return switch(s)
+        case "a"
+            return"first"
+        end
+        case "b"
+            return "second"
+        end
+        default
+            return "other"
+        end
+    end
+end
 print("describe(b):", describe("b"), "describe(z):", describe("z"))
 
 -- ---------------------------------------------------------------------------
@@ -319,3 +332,8 @@ local anything = nil :: any
 local asString = (42 :: any) :: string
 
 print("=== showcase complete ===")
+
+buff 73 test = Loggable()
+
+freebuff test
+

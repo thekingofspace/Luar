@@ -167,7 +167,7 @@ impl Parser {
 
     fn parse_statement(&mut self) -> PResult<Stmt> {
 
-        self.eat_kw("export");
+        let exported = self.eat_kw("export");
         if self.is_kw("return") {
             let line = self.peek().span.line;
             self.bump();
@@ -189,8 +189,24 @@ impl Parser {
             return self.parse_enum();
         }
 
+        if self.is_kw("buff")
+            && matches!(self.peek2().kind, TokenKind::Int | TokenKind::Float)
+        {
+            return self.parse_buff();
+        }
+
+        if self.is_kw("freebuff") && self.peek2().kind == TokenKind::Identifier {
+            let line = self.peek().span.line;
+            self.bump();
+            let name = self.expect_ident()?;
+            return Ok(Stmt::FreeBuff { name, line });
+        }
+        if self.is_kw("pub") && self.peek2().kind == TokenKind::Identifier && self.peek2().text == "buff" {
+            return Err(self.error("a buff cannot be `pub` (buffs are always local)"));
+        }
+
         if self.is_kw("pub") || self.is_kw("local") || self.is_kw("const") || self.is_kw("function") {
-            return self.parse_declaration_or_function();
+            return self.parse_declaration_or_function(exported);
         }
         if self.is_kw("do") {
             self.bump();
@@ -215,9 +231,9 @@ impl Parser {
         self.parse_expr_or_assign()
     }
 
-    fn parse_declaration_or_function(&mut self) -> PResult<Stmt> {
+    fn parse_declaration_or_function(&mut self, exported: bool) -> PResult<Stmt> {
         let line = self.peek().span.line;
-        let visibility = if self.eat_kw("pub") { Visibility::Pub } else { Visibility::Local };
+        let visibility = if exported || self.eat_kw("pub") { Visibility::Pub } else { Visibility::Local };
 
         let mutability = if self.eat_kw("const") {
             Mutability::Const
@@ -454,6 +470,26 @@ impl Parser {
         }
         let default = if self.eat_op("=") { Some(self.parse_expr()?) } else { None };
         Ok(ClassMember::Field { access, is_static, name, default })
+    }
+
+    fn parse_buff(&mut self) -> PResult<Stmt> {
+        let line = self.peek().span.line;
+        self.expect_kw("buff")?;
+        let size_tok = self.bump();
+        let digits: String = size_tok.text.chars().filter(|c| *c != '_').collect();
+        let size: u64 = digits
+            .strip_prefix("0x")
+            .or_else(|| digits.strip_prefix("0X"))
+            .map(|h| u64::from_str_radix(h, 16))
+            .unwrap_or_else(|| digits.parse())
+            .map_err(|_| self.error("buff size must be a non-negative integer"))?;
+        let name = self.expect_ident()?;
+        if self.eat_op(":") {
+            let _ = self.parse_type()?;
+        }
+        self.expect_op("=")?;
+        let init = self.parse_expr()?;
+        Ok(Stmt::Buff { name, size, init, line })
     }
 
     fn parse_type_alias(&mut self) -> PResult<Stmt> {

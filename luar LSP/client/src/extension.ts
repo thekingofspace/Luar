@@ -49,8 +49,8 @@ function blockAlreadyClosed(
     const trimmed = text.trim();
     if (trimmed === "") continue;
     const lineIndent = (text.match(/^[ \t]*/) || [""])[0];
-    if (lineIndent.length > indent.length) continue; // inside this block's body
-    if (lineIndent.length < indent.length) return false; // an enclosing block closed first; ours is missing
+    if (lineIndent.length > indent.length) continue;
+    if (lineIndent.length < indent.length) return false;
     return /^(end|else|elseif)\b/.test(trimmed) || trimmed.startsWith("}");
   }
   return false;
@@ -100,7 +100,7 @@ function registerAutoEnd(context: ExtensionContext): void {
     const endsOpener =
       /(?:\bthen|\bdo|\belse)$/.test(code) ||
 
-      (/\b(function|constructor|operator|get|set)\b/.test(code) && /\)\s*$/.test(code));
+      (/\b(function|constructor|operator|get|set)\b/.test(code) && /\)\s*(?::\s*[^{}=]*)?$/.test(code));
 
     const closed = blockAlreadyClosed(e.document, cursorLineNo, indent);
 

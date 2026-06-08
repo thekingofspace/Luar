@@ -112,6 +112,11 @@ impl Compiler {
     fn compile_stmt(&mut self, ctx: &mut FuncCtx, stmt: &Stmt) -> Result<()> {
         match stmt {
             Stmt::TypeAlias { .. } => {}
+            Stmt::Buff { .. } | Stmt::FreeBuff { .. } => {
+                return Err(CompileError(
+                    "buff/freebuff are only supported by the tree-walking interpreter, not the bytecode VM".into(),
+                ));
+            }
             Stmt::Declare { visibility, names, inits, .. } => {
                 if names.len() != 1 || inits.len() != 1 {
                     return Err(CompileError("multiple declaration not supported in VM yet".into()));

@@ -5,7 +5,7 @@
 // them and scroll into view.
 
 var PAGES = [
-  "overview", "getting-started", "syntax", "variables", "scope", "functions",
+  "overview", "getting-started", "syntax", "variables", "scope", "buff", "functions",
   "control-flow", "tables", "classes", "enums", "types", "modules",
   "monobehaviour", "stdlib", "builtins", "ferrite", "gc", "precompilation",
   "host-api", "lsp"

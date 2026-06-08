@@ -26,16 +26,33 @@ impl std::fmt::Display for VarError {
 
 impl std::error::Error for VarError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuffFree {
+    Freed,
+    NotBuff,
+    NotFound,
+}
+
 #[derive(Debug, Clone)]
 pub struct Variable {
     value: Value,
     mutability: Mutability,
     visibility: Visibility,
+
+    buff_size: Option<u64>,
 }
 
 impl Variable {
     pub fn new(value: Value, mutability: Mutability, visibility: Visibility) -> Self {
-        Variable { value, mutability, visibility }
+        Variable { value, mutability, visibility, buff_size: None }
+    }
+
+    pub fn new_buff(value: Value, size: u64) -> Self {
+        Variable { value, mutability: Mutability::Mutable, visibility: Visibility::Local, buff_size: Some(size) }
+    }
+
+    pub fn buff_size(&self) -> Option<u64> {
+        self.buff_size
     }
 
     pub fn value(&self) -> &Value {
@@ -89,6 +106,8 @@ pub struct Environment {
     current: ScopeRef,
 
     module_root: ScopeRef,
+
+    buffs: HashMap<String, Variable>,
 }
 
 impl Default for Environment {
@@ -101,11 +120,11 @@ impl Environment {
 
     pub fn new() -> Self {
         let global: ScopeRef = Rc::new(RefCell::new(Scope::default()));
-        Environment { current: global.clone(), module_root: global.clone(), global }
+        Environment { current: global.clone(), module_root: global.clone(), global, buffs: HashMap::new() }
     }
 
     pub fn with_global(global: ScopeRef) -> Self {
-        Environment { current: global.clone(), module_root: global.clone(), global }
+        Environment { current: global.clone(), module_root: global.clone(), global, buffs: HashMap::new() }
     }
 
     pub fn mark_module_root(&mut self) {
@@ -172,6 +191,24 @@ impl Environment {
         target.borrow_mut().vars.insert(name.into(), var);
     }
 
+    pub fn declare_buff(&mut self, name: impl Into<String>, value: Value, size: u64) {
+        self.buffs.insert(name.into(), Variable::new_buff(value, size));
+    }
+
+    pub fn buff_size(&self, name: &str) -> Option<u64> {
+        self.buffs.get(name).and_then(|v| v.buff_size())
+    }
+
+    pub fn free_buff(&mut self, name: &str) -> BuffFree {
+        if self.buffs.remove(name).is_some() {
+            BuffFree::Freed
+        } else if self.contains(name) {
+            BuffFree::NotBuff
+        } else {
+            BuffFree::NotFound
+        }
+    }
+
     pub fn contains(&self, name: &str) -> bool {
         let mut scope = self.current.clone();
         loop {
@@ -181,9 +218,10 @@ impl Environment {
             let parent = scope.borrow().parent.clone();
             match parent {
                 Some(p) => scope = p,
-                None => return false,
+                None => break,
             }
         }
+        self.buffs.contains_key(name)
     }
 
     pub fn get(&self, name: &str) -> Option<Value> {
@@ -195,9 +233,10 @@ impl Environment {
             let parent = scope.borrow().parent.clone();
             match parent {
                 Some(p) => scope = p,
-                None => return None,
+                None => break,
             }
         }
+        self.buffs.get(name).map(|v| v.value().clone())
     }
 
     pub fn assign(&mut self, name: &str, value: Value) -> Result<(), VarError> {
@@ -209,9 +248,13 @@ impl Environment {
             let parent = scope.borrow().parent.clone();
             match parent {
                 Some(p) => scope = p,
-                None => return Err(VarError::Undefined(name.to_string())),
+                None => break,
             }
         }
+        if let Some(var) = self.buffs.get_mut(name) {
+            return var.set(value).map_err(|_| VarError::Const(name.to_string()));
+        }
+        Err(VarError::Undefined(name.to_string()))
     }
 
     pub fn force_set(&mut self, name: &str, value: Value) -> bool {
@@ -258,6 +301,10 @@ impl Environment {
         }
 
         for var in self.module_root.borrow().vars.values() {
+            roots.push(var.value().clone());
+        }
+
+        for var in self.buffs.values() {
             roots.push(var.value().clone());
         }
         roots
@@ -317,5 +364,27 @@ mod tests {
         env.declare("x", Value::Int(9), Mutability::Const, Visibility::Local);
         assert!(env.remove("x").is_some());
         assert_eq!(env.get("x"), None);
+    }
+
+    #[test]
+    fn buff_survives_scope_exit_and_is_freed_only_by_freebuff() {
+        let mut env = Environment::new();
+        env.push_scope();
+        env.declare_buff("b", Value::Int(5), 8);
+        env.pop_scope();
+
+        assert_eq!(env.get("b"), Some(Value::Int(5)));
+        assert_eq!(env.buff_size("b"), Some(8));
+
+        assert_eq!(env.free_buff("b"), BuffFree::Freed);
+        assert_eq!(env.get("b"), None);
+        assert_eq!(env.free_buff("b"), BuffFree::NotFound);
+    }
+
+    #[test]
+    fn free_buff_rejects_plain_variables() {
+        let mut env = Environment::new();
+        env.declare("x", Value::Int(1), Mutability::Mutable, Visibility::Local);
+        assert_eq!(env.free_buff("x"), BuffFree::NotBuff);
     }
 }
