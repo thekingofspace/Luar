@@ -75,6 +75,37 @@ i.force_set(<span class="str">"score"</span>, Value::int(<span class="num">0</sp
 i.nil_value(<span class="str">"score"</span>);                <span class="com">// set to nil and free what it held</span>
 i.remove_global(<span class="str">"score"</span>);            <span class="com">// remove the binding entirely</span></code></pre>
 
+<h3 id="inspecting-variables">Inspecting and editing variables mid-run</h3>
+<p>You look a global up by name with <code>get_global</code>, which returns
+<code>Option&lt;Value&gt;</code> &mdash; <code>None</code> means nothing by that
+name is defined right now, so the same call doubles as an existence check. There
+is no "list every variable" call; you query the names you care about and read the
+<code>Value</code> with the usual helpers.</p>
+<pre><code><span class="kw">match</span> i.get_global(<span class="str">"score"</span>) {
+    Some(v) =&gt; println!(<span class="str">"score = {}"</span>, v.as_int().unwrap_or(<span class="num">0</span>)),
+    None    =&gt; println!(<span class="str">"score is not defined"</span>),
+}</code></pre>
+<p>Editing works the same whether the interpreter is idle between calls or in the
+middle of running a script. A native function receives <code>&amp;mut Interpreter</code>,
+so it can read and rewrite globals while the code that called it is still on the
+stack; the change is visible to everything that runs afterward.</p>
+<pre><code>i.set_global_fn(<span class="str">"doubleScore"</span>, |i, _args| {
+    <span class="kw">let</span> cur = i.get_global(<span class="str">"score"</span>).and_then(|v| v.as_int()).unwrap_or(<span class="num">0</span>);
+    i.force_set(<span class="str">"score"</span>, Value::int(cur * <span class="num">2</span>));   <span class="com">// rewrite the global mid-execution</span>
+    Ok(<span class="kw">vec!</span>[])
+});
+
+i.run_source(<span class="str">r#"
+    score = 21
+    doubleScore()      -- the host edits `score` while this runs
+    print(score)       -- 42
+"#</span>)?;</code></pre>
+<p>The four editing calls differ only in how forceful they are:
+<code>set_global</code> declares or replaces a reassignable binding,
+<code>force_set</code> overwrites even a <code>const</code> (and returns whether
+it already existed), <code>nil_value</code> sets it to nil and frees what it
+held, and <code>remove_global</code> deletes the binding outright.</p>
+
 <h3>Creating native functions</h3>
 <p>A native function is a Rust function with the signature
 <code>fn(&amp;mut Interpreter, Vec&lt;Value&gt;) -&gt; Result&lt;Vec&lt;Value&gt;, String&gt;</code>.

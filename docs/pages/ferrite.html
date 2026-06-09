@@ -3,6 +3,49 @@
 reports warnings and errors. The editor shows them inline, and the runner prints
 them before executing.</p>
 
+<h3 id="ferrite-from-rust">Running Ferrite from Rust</h3>
+<p>Ferrite is one function. <code>luar::ferrite::check</code> takes source text and
+returns every diagnostic it found, already sorted by line. It tokenizes and parses
+the source itself, so you hand it a raw string &mdash; there is no separate parse
+step to wire up.</p>
+<pre><code><span class="kw">use</span> luar::ferrite::{check, Severity};
+
+<span class="kw">let</span> src = std::fs::read_to_string(<span class="str">"main.luar"</span>)?;
+<span class="kw">let</span> diagnostics = check(&amp;src);   <span class="com">// Vec&lt;Diagnostic&gt;</span>
+
+<span class="kw">for</span> d <span class="kw">in</span> &amp;diagnostics {
+    <span class="com">// Display gives: "2:warning [MutateImmutable] cannot change immutable variable 'x'"</span>
+    println!(<span class="str">"{d}"</span>);
+}</code></pre>
+<p>Each <code>Diagnostic</code> exposes its parts so you can render or filter them
+yourself, and its <code>Display</code> produces the one-line form shown above.</p>
+<table>
+<tr><th>Field</th><th>Type</th><th>What it is</th></tr>
+<tr><td><code>severity</code></td><td><code>Severity</code></td><td><code>Severity::Warning</code> or <code>Severity::Error</code>. Only <code>BreakOutsideLoop</code> and <code>SyntaxError</code> are errors; every other check is a warning.</td></tr>
+<tr><td><code>code</code></td><td><code>&amp;'static str</code></td><td>The check name, such as <code>"MutateImmutable"</code> (see the table below).</td></tr>
+<tr><td><code>message</code></td><td><code>String</code></td><td>A human-readable explanation.</td></tr>
+<tr><td><code>line</code></td><td><code>u32</code></td><td>The 1-based source line (<code>0</code> for a whole-file syntax error).</td></tr>
+</table>
+<p>Ferrite never decides for you whether to stop &mdash; it only reports. A typical
+runner checks first, prints everything, and refuses to run only if something is an
+error, letting warnings through:</p>
+<pre><code><span class="kw">let</span> diagnostics = check(&amp;src);
+<span class="kw">let</span> has_error = diagnostics.iter().any(|d| d.severity == Severity::Error);
+<span class="kw">for</span> d <span class="kw">in</span> &amp;diagnostics {
+    eprintln!(<span class="str">"{d}"</span>);
+}
+<span class="kw">if</span> has_error {
+    <span class="kw">return</span> Err(<span class="str">"refusing to run: Ferrite reported errors"</span>.into());
+}
+<span class="kw">let mut</span> i = luar::Interpreter::new();
+i.run_source(&amp;src)?;</code></pre>
+<p>A file that does not tokenize or parse comes back as a single diagnostic with
+code <code>"SyntaxError"</code> and <code>Severity::Error</code>, so the same call
+that catches lint issues also catches a file that will not compile. The in-source
+<code>--#disable</code> directives below are honored by <code>check</code> as well,
+and the full list of lint codes is available at run time as
+<code>luar::ferrite::CHECKS</code>.</p>
+
 <h3>Checks</h3>
 <table>
 <tr><th>Code</th><th>Meaning</th></tr>

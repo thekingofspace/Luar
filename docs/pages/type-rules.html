@@ -1,0 +1,156 @@
+<h1 id="type-rules">Type rules (for tooling)</h1>
+<p>This page is for people building editor tooling, language servers, linters, or
+type solvers for LUAR. It describes exactly what type syntax the language accepts,
+which symbols are allowed and in what order they bind, and what happens to all of
+it at run time.</p>
+
+<div class="note">LUAR is dynamically typed. Every piece of type syntax below is
+parsed and then <b>scrubbed before execution</b>: the interpreter throws the
+annotations away and they have <b>zero</b> runtime effect. They exist only so
+tooling can read them. A program with all annotations deleted runs identically.</div>
+
+<h3>Where types may appear</h3>
+<p>The parser accepts a type in each of these positions and then discards it. A
+tool should expect a full type expression (see the grammar below) in every slot.</p>
+<table>
+<tr><th>Position</th><th>Example</th></tr>
+<tr><td>Variable binding</td><td><code><span class="kw">local</span> x: <span class="typ">number</span> = <span class="num">1</span></code> (also <code>const</code> and bare names)</td></tr>
+<tr><td>Function parameter</td><td><code><span class="kw">function</span> <span class="fn">f</span>(a: <span class="typ">number</span>, b: <span class="typ">string</span>)</code></td></tr>
+<tr><td>Function return</td><td><code><span class="kw">function</span> <span class="fn">f</span>(): <span class="typ">boolean</span></code></td></tr>
+<tr><td>Loop variable</td><td><code><span class="kw">for</span> i: <span class="typ">number</span> = <span class="num">1</span>, <span class="num">10</span> <span class="kw">do</span></code></td></tr>
+<tr><td>Class field</td><td><code><span class="kw">public</span> name: <span class="typ">string</span> = <span class="str">""</span></code></td></tr>
+<tr><td>Type alias</td><td><code><span class="kw">type</span> <span class="typ">Id</span> = <span class="typ">number</span></code></td></tr>
+<tr><td>Generic parameter list</td><td><code><span class="kw">type</span> <span class="typ">Box</span>&lt;T&gt;</code>, <code><span class="kw">function</span> <span class="fn">f</span>&lt;T&gt;(x)</code>, <code><span class="kw">class</span> <span class="typ">C</span>&lt;T&gt;</code></td></tr>
+<tr><td>Cast</td><td><code>value :: <span class="typ">SomeType</span></code></td></tr>
+</table>
+<p>The <code>type</code> alias and the cast operator <code>::</code> are themselves
+scrubbed: a <code>type</code> declaration produces no runtime value, and a cast
+evaluates only its left-hand expression and ignores the type.</p>
+
+<h3>Binding order</h3>
+<p>Type operators bind from loosest to tightest in this order. A correct parser
+must layer them the same way so it agrees with what the language scrubs.</p>
+<table>
+<tr><th>Level</th><th>Operator</th><th>Form</th><th>Associativity</th></tr>
+<tr><td>1 (loosest)</td><td>Function arrow</td><td><code>Params -&gt; Ret</code></td><td>right</td></tr>
+<tr><td>2</td><td>Union</td><td><code>A | B | C</code></td><td>flat (n-ary)</td></tr>
+<tr><td>3</td><td>Intersection</td><td><code>A &amp; B</code></td><td>flat (n-ary)</td></tr>
+<tr><td>4</td><td>Optional</td><td><code>T?</code> (postfix, repeatable)</td><td>postfix</td></tr>
+<tr><td>5 (tightest)</td><td>Atoms</td><td>names + <code>&lt;...&gt;</code>, literals, <code>{...}</code>, <code>(...)</code></td><td>&mdash;</td></tr>
+</table>
+<p>So the same way the parser groups them:</p>
+<pre><code><span class="typ">A</span> | <span class="typ">B</span> &amp; <span class="typ">C</span>?        <span class="com">-- A | (B &amp; (C?))</span>
+<span class="typ">A</span> | <span class="typ">B</span> -&gt; <span class="typ">C</span>        <span class="com">-- (A | B) -> C   (the arrow is loosest)</span>
+<span class="typ">A</span> -&gt; <span class="typ">B</span> -&gt; <span class="typ">C</span>     <span class="com">-- A -> (B -> C)  (right associative)</span>
+<span class="typ">T</span>??              <span class="com">-- optional of optional; ? may repeat</span></code></pre>
+
+<h3>Grammar</h3>
+<p>The complete shape the parser accepts, loosest rule first:</p>
+<pre><code>type          = union ( <span class="str">"->"</span> type )?
+union         = intersection ( <span class="str">"|"</span> intersection )*
+intersection  = postfix ( <span class="str">"&"</span> postfix )*
+postfix       = primary ( <span class="str">"?"</span> )*
+primary       = literal
+              | name ( <span class="str">"."</span> name )*          <span class="com"># each name may carry &lt;...&gt;</span>
+              | <span class="str">"{"</span> table <span class="str">"}"</span>
+              | <span class="str">"("</span> params <span class="str">")"</span> ( <span class="str">"->"</span> type )?
+literal       = STRING | NUMBER
+table         =                              <span class="com"># empty: {}</span>
+              | <span class="str">"["</span> type <span class="str">"]"</span> ( <span class="str">":"</span> | <span class="str">"="</span> ) type sep?     <span class="com"># index signature {[K]: V}</span>
+              | name <span class="str">"?"</span>? ( <span class="str">":"</span> | <span class="str">"="</span> ) type ( sep name ... )*  <span class="com"># record {a: T, b?: U}</span>
+              | type sep?                    <span class="com"># array shorthand {T}</span>
+params        = ( <span class="str">"..."</span> type? | (name <span class="str">":"</span>)? type ) ( <span class="str">","</span> ... )*
+sep           = <span class="str">","</span> | <span class="str">";"</span></code></pre>
+
+<h3>Atoms in detail</h3>
+
+<h4>Named types and generic slots <code>&lt;&gt;</code></h4>
+<p>A name is an identifier, optionally a dotted path, and each segment may be
+followed by a generic argument list in angle brackets. The angle-bracket slot is
+matched by <b>balancing</b> <code>&lt;</code> and <code>&gt;</code> (nesting is
+allowed), and the language <b>skips</b> whatever is inside &mdash; the arguments
+are not retained. Interpreting them (generic instantiation, type functions such
+as <code>readonly&lt;T&gt;</code> or <code>keyof&lt;T&gt;</code>) is entirely up to
+your tool. The only rule the language enforces is that the brackets balance.</p>
+<pre><code><span class="typ">number</span>
+<span class="typ">Folder</span>
+<span class="typ">Array</span>&lt;<span class="typ">number</span>&gt;
+<span class="typ">Map</span>&lt;<span class="typ">string</span>, <span class="typ">Array</span>&lt;<span class="typ">number</span>&gt;&gt;   <span class="com">-- nested slots balance</span>
+<span class="typ">module</span>.<span class="typ">Thing</span>&lt;T&gt;                <span class="com">-- dotted path, each segment may slot</span></code></pre>
+<p>Common primitive names a tool will see: <code>boolean number string table
+thread nil any unknown never void function</code>. These are not keywords to the
+type grammar &mdash; they are just identifiers.</p>
+
+<h4>Literal types</h4>
+<p>A string literal or a numeric literal is a type. These pair naturally with
+unions.</p>
+<pre><code><span class="kw">local</span> mode: <span class="str">"on"</span> | <span class="str">"off"</span> = <span class="str">"on"</span>
+<span class="kw">local</span> flag: <span class="num">0</span> | <span class="num">1</span> = <span class="num">0</span></code></pre>
+
+<h4>Table types <code>{}</code></h4>
+<p>Braces cover three shapes, told apart by what is inside. The element and field
+types may be any type expression, and whitespace and newlines are insignificant,
+so a brace type can span several lines.</p>
+<pre><code>{}                       <span class="com">-- empty table type</span>
+{ x: <span class="typ">number</span>, y: <span class="typ">number</span> }   <span class="com">-- record; fields use : or = , separated by , or ;</span>
+{ name?: <span class="typ">string</span> }          <span class="com">-- a field may be optional with ?</span>
+{ [<span class="typ">string</span>]: <span class="typ">number</span> }       <span class="com">-- index signature (map from key type to value type)</span>
+{ <span class="typ">number</span> }                <span class="com">-- array shorthand: a table of number</span></code></pre>
+<p>A single type alone in braces is the array shorthand, and it is valid on its
+own line. All of these parse:</p>
+<pre><code><span class="kw">type</span> <span class="typ">This</span> = { <span class="typ">C</span> }          <span class="com">-- a table of C</span>
+<span class="kw">type</span> <span class="typ">This</span> = {
+  <span class="typ">C</span>
+}                          <span class="com">-- the same thing across lines</span>
+<span class="kw">local</span> items: { <span class="typ">Widget</span> } = {}   <span class="com">-- and anywhere a type is accepted</span></code></pre>
+<p>A field's type can be any type expression, including a function type, and the
+parameters of that function may be named. So a record of methods is fine:</p>
+<pre><code><span class="kw">type</span> <span class="typ">This</span> = {
+  test: (self: <span class="typ">test</span>) -&gt; ()
+}</code></pre>
+
+<h4>Function and grouped types <code>()</code></h4>
+<p>Parentheses introduce a parameter list. Followed by <code>-&gt;</code> it is a
+function type; without an arrow a single type in parentheses is just that type
+grouped. Parameters may be named (the name is discarded) and the list may end
+with a vararg <code>...</code>, optionally typed.</p>
+<pre><code>() -&gt; <span class="typ">nil</span>
+(<span class="typ">number</span>, <span class="typ">string</span>) -&gt; <span class="typ">boolean</span>
+(x: <span class="typ">number</span>, y: <span class="typ">number</span>) -&gt; <span class="typ">number</span>   <span class="com">-- parameter names allowed, then ignored</span>
+(<span class="typ">string</span>, ...<span class="typ">number</span>) -&gt; <span class="typ">nil</span>          <span class="com">-- trailing vararg, optionally typed</span>
+(<span class="typ">number</span>)                          <span class="com">-- no arrow: just the grouped type number</span></code></pre>
+
+<h3>Allowed symbols</h3>
+<p>The full set of punctuation the type grammar uses, with everything else being
+identifiers, string literals, or number literals:</p>
+<table>
+<tr><th>Symbol</th><th>Role</th></tr>
+<tr><td><code>-&gt;</code></td><td>Function arrow (params to return).</td></tr>
+<tr><td><code>|</code></td><td>Union.</td></tr>
+<tr><td><code>&amp;</code></td><td>Intersection.</td></tr>
+<tr><td><code>?</code></td><td>Optional (postfix); also marks an optional record field.</td></tr>
+<tr><td><code>&lt;</code> <code>&gt;</code></td><td>Generic argument slot; balanced and skipped by the language.</td></tr>
+<tr><td><code>{</code> <code>}</code></td><td>Table, record, index, and array types.</td></tr>
+<tr><td><code>[</code> <code>]</code></td><td>Key type in an index signature.</td></tr>
+<tr><td><code>(</code> <code>)</code></td><td>Parameter list and grouping.</td></tr>
+<tr><td><code>:</code> <code>=</code></td><td>Field and parameter separators inside <code>{}</code> and named params.</td></tr>
+<tr><td><code>,</code> <code>;</code></td><td>Separators in records, params, and lists.</td></tr>
+<tr><td><code>.</code></td><td>Dotted name path.</td></tr>
+<tr><td><code>...</code></td><td>Vararg parameter.</td></tr>
+<tr><td><code>::</code></td><td>Cast operator, <code>expr :: Type</code>.</td></tr>
+</table>
+
+<h3>What the runtime does with all of this</h3>
+<p>Nothing. The interpreter never sees types: they are stripped after parsing.
+This has a few consequences a tool author should rely on:</p>
+<ul>
+<li>Annotations can never change behavior, so a checker is free to be as strict or
+as lenient as it likes without affecting how a program runs.</li>
+<li>Generic arguments inside <code>&lt;...&gt;</code> are not kept by the language
+parser at all &mdash; if your tool wants them, it must parse the slot itself.</li>
+<li>A <code>type</code> alias and a <code>::</code> cast produce no runtime value;
+they are purely declarations for tooling.</li>
+<li>Because nothing is enforced at run time, a syntactically valid type that is
+semantically nonsense will still run. Diagnosing that is the tool's job, not the
+interpreter's.</li>
+</ul>

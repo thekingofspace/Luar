@@ -8,7 +8,7 @@ var PAGES = [
   "overview", "getting-started", "syntax", "variables", "scope", "buff", "functions",
   "control-flow", "tables", "classes", "enums", "modules",
   "stdlib", "builtins", "ferrite", "gc", "precompilation",
-  "host-api"
+  "host-api", "type-rules"
 ];
 
 var cache = {};        // page id -> html string
