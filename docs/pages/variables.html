@@ -23,14 +23,17 @@ returns a string like <code>"number"</code> or <code>"table"</code>.</p>
 <span class="fn">print</span>(<span class="fn">type</span>(<span class="str">"hi"</span>))      <span class="com">-- "string"</span>
 <span class="fn">print</span>(<span class="fn">type</span>({}))        <span class="com">-- "table"</span>
 <span class="fn">print</span>(<span class="fn">type</span>(<span class="kw">nil</span>))       <span class="com">-- "nil"</span></code></pre>
+<p>An <code>enum</code> and a <code>class</code> report their own names rather than
+<code>"table"</code>, so you can tell them apart from a plain table:</p>
+<pre><code><span class="kw">enum</span> Color { Red Green Blue }
+<span class="kw">class</span> Point { <span class="kw">public</span> x: <span class="typ">number</span> = <span class="num">0</span> }
+<span class="fn">print</span>(<span class="fn">type</span>(Color))   <span class="com">-- "enum"</span>
+<span class="fn">print</span>(<span class="fn">type</span>(Point))   <span class="com">-- "class"</span></code></pre>
 <p>Two values are special when used as a condition (in an <code>if</code> or a
 <code>while</code>): <code>false</code> and <code>nil</code> are "falsy", and
 everything else, including <code>0</code> and the empty string, is "truthy".</p>
 <p>You can convert between strings and numbers with <code>tostring(value)</code>
-and <code>tonumber(text)</code>. The optional type annotations you write
-(<code>local n: number = 1</code>) are explained in the
-<a href="#types">Type system</a>; they are for tooling and do not change how the
-program runs.</p>
+and <code>tonumber(text)</code>.</p>
 
 <h3>local, const, and bare assignment</h3>
 <pre><code><span class="kw">local</span> count = <span class="num">0</span>      <span class="com">-- reassignable</span>

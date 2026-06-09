@@ -66,6 +66,8 @@ pub struct Class {
 
     pub constructor: Option<Value>,
 
+    pub destructor: Option<Value>,
+
     pub fields: Vec<FieldDef>,
 
     pub statics: Rc<RefCell<Table>>,
@@ -230,6 +232,8 @@ pub struct Table {
     pub(crate) gc_mark: Cell<bool>,
 
     pub(crate) cap: Cell<Option<u64>>,
+
+    pub(crate) is_enum: bool,
 }
 
 impl Table {
@@ -426,7 +430,13 @@ impl Value {
             Value::Int(_) => "number",
             Value::Float(_) => "number",
             Value::Str(_) => "string",
-            Value::Table(_) => "table",
+            Value::Table(t) => {
+                if t.try_borrow().map(|tb| tb.is_enum).unwrap_or(false) {
+                    "enum"
+                } else {
+                    "table"
+                }
+            }
             Value::Native(_) | Value::Function(_) => "function",
             Value::Coroutine(_) => "thread",
             Value::Class(_) => "class",

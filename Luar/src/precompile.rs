@@ -265,6 +265,10 @@ impl Writer {
                 self.str(symbol);
                 self.fnbody(func);
             }
+            ClassMember::Destructor { func } => {
+                self.u8(6);
+                self.fnbody(func);
+            }
         }
     }
 
@@ -641,6 +645,7 @@ impl<'a> Reader<'a> {
             3 => ClassMember::Setter { access: self.access()?, name: self.str()?, func: self.fnbody()? },
             4 => ClassMember::Constructor { func: self.fnbody()? },
             5 => ClassMember::Operator { symbol: self.str()?, func: self.fnbody()? },
+            6 => ClassMember::Destructor { func: self.fnbody()? },
             t => return Err(format!("bad member tag {t}")),
         })
     }
@@ -826,10 +831,12 @@ mod tests {
               override function id(): number return self.n end
               operator +(o) local t = Thing() t.n = self.n + o.n return t end
             }
-            class Ticker extends MonoBehaviour {
+            pub local freed = false
+            class Ticker {
               public count: number = 0
-              function Update() self.count += 1 end
+              destructor() freed = true end
             }
+            do local tk = Ticker() end
             const a = Thing()
             a.n = 2
             const b = Thing()
@@ -837,12 +844,12 @@ mod tests {
             const c = a + b
             pub local sum = c:id()
             pub local greeting = a:hi()
-            run(2)
         "#;
         let bytes = crate::precompile_source(src).expect("precompiles");
         let interp = crate::run_precompiled(&bytes).expect("runs");
         assert_eq!(interp.env.get("sum"), Some(crate::runtime::Value::Int(5)));
         assert_eq!(interp.env.get("greeting"), Some(crate::runtime::Value::str("hi")));
+        assert_eq!(interp.env.get("freed"), Some(crate::runtime::Value::Bool(true)));
     }
 
     #[test]

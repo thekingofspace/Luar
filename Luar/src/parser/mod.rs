@@ -439,6 +439,9 @@ impl Parser {
         if self.eat_kw("constructor") {
             return Ok(ClassMember::Constructor { func: self.parse_fn_body()? });
         }
+        if self.eat_kw("destructor") {
+            return Ok(ClassMember::Destructor { func: self.parse_fn_body()? });
+        }
         if self.eat_kw("operator") {
             let t = self.peek().clone();
             let symbol = match t.kind {

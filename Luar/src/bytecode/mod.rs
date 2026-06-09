@@ -101,6 +101,8 @@ pub enum OpCode {
 
     CoClose = 64,
 
+    CoRunning = 65,
+
     Print = 70,
 
     Halt = 255,
@@ -145,6 +147,7 @@ impl OpCode {
             62 => Yield,
             63 => CoStatus,
             64 => CoClose,
+            65 => CoRunning,
             70 => Print,
             255 => Halt,
             _ => return None,

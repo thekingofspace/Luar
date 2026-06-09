@@ -1,11 +1,48 @@
 <h1 id="precompilation">Precompilation</h1>
-<p>A program can be precompiled to a compact binary that loads and runs on the
-full interpreter, so every language feature works from precompiled code.</p>
-<pre><code>compile script.luar script.luarc   <span class="com"># produce a .luarc</span>
-run script.luarc                   <span class="com"># run it</span></code></pre>
-<p>From Rust:</p>
-<pre><code><span class="kw">let</span> bytes = luar::precompile_source(src)?;   <span class="com">// serialize</span>
-<span class="kw">let</span> interp = luar::run_precompiled(&amp;bytes)?;  <span class="com">// load and run</span></code></pre>
-<p>A <code>.luarc</code> file is the parsed, type-scrubbed program. Because it runs
-on the interpreter, classes, enums, mixins, operators, MonoBehaviour, and the
-standard library all behave exactly as they do from source.</p>
+<p>Precompilation is <b>optional</b>. LUAR runs <code>.luar</code> source
+directly &mdash; you never have to precompile anything to use any feature. It
+exists for when you want to load or ship a program without its source text, or
+skip parsing at startup. If you only ever run source, you can ignore this page.</p>
+
+<h3>What a .luarc is</h3>
+<p>A <code>.luarc</code> file is a precompiled program. The source has been
+tokenized, parsed, and had its type annotations scrubbed, and the resulting
+syntax tree is packed into a compact binary. It is <b>not</b> machine code and
+<b>not</b> a separate runtime: it is the very same program the parser would hand
+to the interpreter, frozen to bytes. Loading one skips the lexer and parser, and
+from there everything runs on the ordinary interpreter &mdash; classes, enums,
+mixins, operators, and the standard library all behave exactly as they do from
+source.</p>
+
+<h3>From the runner</h3>
+<p>The runner can precompile a file and run the result.</p>
+<pre><code>compile game.luar game.luarc   <span class="com"># produce a .luarc</span>
+run game.luarc                 <span class="com"># run it, just like running the source</span></code></pre>
+
+<h3>From Rust</h3>
+<p><code>precompile_source</code> turns source into the packed bytes, and
+<code>run_precompiled</code> loads those bytes and runs them in a fresh
+interpreter. You decide where the bytes live &mdash; a file on disk, an asset
+embedded in your binary, or a payload over the network.</p>
+<pre><code><span class="kw">let</span> bytes = luar::precompile_source(src)?;     <span class="com">// Vec&lt;u8&gt;, the packed program</span>
+std::fs::write(<span class="str">"game.luarc"</span>, &amp;bytes)?;          <span class="com">// optional: save it somewhere</span>
+
+<span class="kw">let</span> bytes  = std::fs::read(<span class="str">"game.luarc"</span>)?;
+<span class="kw">let</span> interp = luar::run_precompiled(&amp;bytes)?;    <span class="com">// load and run; returns the interpreter</span></code></pre>
+<p>These are thin wrappers over <code>precompile::pack</code> (syntax tree to
+bytes) and <code>precompile::unpack</code> (bytes back to a syntax tree), which
+you can call directly if you already hold a parsed program.</p>
+
+<h3>When to reach for it</h3>
+<ul>
+<li><b>Ship without source.</b> Hand out <code>.luarc</code> bytes when you would
+rather not distribute the original <code>.luar</code> text.</li>
+<li><b>Faster startup.</b> Large programs skip lexing and parsing on load, which
+adds up when a host boots many scripts at once.</li>
+<li><b>Embedding.</b> Bake the bytes straight into your host binary and run them
+with <code>run_precompiled</code>, no files required.</li>
+</ul>
+<p>Because annotations are scrubbed when the program is packed, a
+<code>.luarc</code> carries no type information; checking happens earlier, on the
+source, with Ferrite. The binary is portable as long as the LUAR that reads it
+understands the format it was written with.</p>

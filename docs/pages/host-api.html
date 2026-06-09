@@ -17,6 +17,38 @@ i.run_source(<span class="str">"print(1 + 2)"</span>)?;       <span class="com">
 <pre><code><span class="kw">let</span> interp = luar::eval_source(<span class="str">"print(\"hi\")"</span>)?;   <span class="com">// parse + run, returns the interpreter</span>
 <span class="kw">let</span> value  = Interpreter::load_module(<span class="str">"return 42"</span>)?;  <span class="com">// run as a module, return its value</span></code></pre>
 
+<h3 id="starting-a-project">Starting a project</h3>
+<p>A real program is more than one string. The usual shape is: build an
+interpreter, point it at your project folder, inject whatever the host provides,
+then run an entry file that pulls in the rest with <code>require</code>.</p>
+<pre><code><span class="kw">use</span> luar::{Interpreter, Value};
+
+<span class="kw">let mut</span> i = Interpreter::new();
+i.set_module_dir(<span class="str">"./game"</span>);                  <span class="com">// relative require() paths resolve from here</span>
+i.set_global_const(<span class="str">"VERSION"</span>, Value::str(<span class="str">"1.0"</span>));
+
+<span class="kw">let</span> src = std::fs::read_to_string(<span class="str">"./game/main.luar"</span>)?;
+i.run_source(&amp;src)?;                           <span class="com">// main.luar can require ./player, ./ui, ...</span></code></pre>
+<p><code>set_module_dir</code> sets the base folder that relative
+<code>require("./x")</code> paths resolve against, so the entry file and
+everything it pulls in find each other no matter where the host binary was
+launched from. Each module is parsed and run once, then its result is cached.</p>
+
+<h4>Reloading modules</h4>
+<p>Because modules are cached, requiring the same path twice returns the same
+result. <code>free_module</code> drops a module from the cache and nils the
+values it published, so the next <code>require</code> runs the file fresh from
+disk &mdash; this is how you hot-reload a script while the program keeps running.
+It returns <code>true</code> if the module was loaded.</p>
+<pre><code>i.free_module(<span class="str">"./player"</span>);                    <span class="com">// forget the cached ./player module</span>
+i.run_source(<span class="str">"require(\"./player\")"</span>)?;         <span class="com">// re-runs ./player.luar from disk</span></code></pre>
+
+<h4>Garbage collection</h4>
+<p>The interpreter collects garbage on its own as code runs. Call
+<code>collect_garbage</code> to force a collection at a natural pause, for
+instance right after unloading a large module.</p>
+<pre><code>i.collect_garbage();</code></pre>
+
 <h3>Executing code</h3>
 <table>
 <tr><th>Method</th><th>What it does</th></tr>
@@ -128,6 +160,8 @@ i.run_source(<span class="str">r#"
 <table>
 <tr><th>Method</th><th>Adds</th></tr>
 <tr><td><code>.new(name)</code></td><td>Start a class with the given name.</td></tr>
+<tr><td><code>.extends(parent)</code></td><td>Inherit from another class value: its fields carry over, and any member you do not redefine resolves through the parent. A class has exactly one parent.</td></tr>
+<tr><td><code>.mixin(other)</code></td><td>Fold in another class's members (methods, getters, setters, operators, fields) without inheritance. Your own definitions win.</td></tr>
 <tr><td><code>.field(name, default)</code></td><td>An instance field with a default value.</td></tr>
 <tr><td><code>.method(name, fn)</code></td><td>An instance method, called as <code>obj:name(...)</code>.</td></tr>
 <tr><td><code>.getter(name, fn)</code> / <code>.setter(name, fn)</code></td><td>A property getter or setter, used as <code>obj.name</code>.</td></tr>
@@ -137,6 +171,59 @@ i.run_source(<span class="str">r#"
 <tr><td><code>.build()</code></td><td>Produce the class value without registering it (use <code>define_class</code> to register).</td></tr>
 </table>
 
+<h4>Inheritance and mixins</h4>
+<p><code>.extends(parent)</code> makes a native class inherit from another class
+value &mdash; its fields are carried over, and any method, getter, setter, or
+operator you do not redefine resolves through the parent chain.
+<code>.mixin(other)</code> folds in another class's members without inheritance.
+Your own definitions always take priority, and a class still has exactly one
+parent.</p>
+<pre><code><span class="kw">let</span> animal = i.define_class(
+    NativeClassBuilder::new(<span class="str">"Animal"</span>)
+        .field(<span class="str">"name"</span>, Value::str(<span class="str">"animal"</span>))
+        .method(<span class="str">"describe"</span>, |_i, args| {
+            Ok(<span class="kw">vec!</span>[args[<span class="num">0</span>].field(&amp;Value::str(<span class="str">"name"</span>))])
+        }),
+);
+
+i.define_class(
+    NativeClassBuilder::new(<span class="str">"Dog"</span>)
+        .extends(animal)                            <span class="com">// inherits the name field and describe()</span>
+        .method(<span class="str">"bark"</span>, |_i, _args| Ok(<span class="kw">vec!</span>[Value::str(<span class="str">"woof"</span>)])),
+);</code></pre>
+<p>Scripts can extend a native class with the ordinary <code>extends</code>
+keyword too, so native and LUAR classes mix freely in one hierarchy.</p>
+
+<h3 id="class-events">Reacting to classes and instances</h3>
+<p>Often the host wants to know when script code defines or builds a class that
+descends from a base it provided &mdash; to drive a lifecycle, register the
+object, or wire it into the host. Two hooks deliver exactly that, matched by base
+class name anywhere in the ancestry.</p>
+<table>
+<tr><th>Hook</th><th>When the callback fires</th></tr>
+<tr><td><code>on_subclass_of(base, |i, class| ...)</code></td><td>Whenever a script declares a class that descends from <code>base</code>. The callback receives the new class value.</td></tr>
+<tr><td><code>on_instance_of(base, |i, instance| ...)</code></td><td>After any instance whose class descends from <code>base</code> is constructed (its constructor has already run). The callback receives the new instance.</td></tr>
+</table>
+<pre><code><span class="kw">let mut</span> i = Interpreter::new();
+i.define_class(NativeClassBuilder::new(<span class="str">"Entity"</span>).make_abstract());
+
+i.on_subclass_of(<span class="str">"Entity"</span>, |_i, _class| {
+    <span class="com">// a script just defined a new kind of Entity — register or validate it</span>
+});
+i.on_instance_of(<span class="str">"Entity"</span>, |_i, instance| {
+    <span class="com">// every Entity that gets built lands here — add it to your world,</span>
+    <span class="com">// stash a handle, kick off its lifecycle, and so on</span>
+    <span class="kw">let _</span> = instance;
+});
+
+i.run_source(<span class="str">r#"
+    class Player extends Entity { function start() print("ready") end }
+    const p = Player()   -- fires on_subclass_of at the declaration, then on_instance_of
+"#</span>)?;</code></pre>
+<p>This is how you give a base class a lifecycle without baking one into the
+language: ship the base from Rust, then decide in host code what happens when
+scripts extend it or construct instances of it.</p>
+
 <h3>Working with Value</h3>
 <p>Construct values with <code>Value::int</code>, <code>Value::str</code>,
 <code>Value::table</code>, and the variants <code>Value::Bool</code>,
@@ -145,12 +232,3 @@ i.run_source(<span class="str">r#"
 <code>field</code>, and <code>set_field</code>. The native function signature is
 <code>fn(&amp;mut Interpreter, Vec&lt;Value&gt;) -&gt; Result&lt;Vec&lt;Value&gt;, String&gt;</code>,
 where the returned vector is the list of result values.</p>
-
-<h3>Giving the editor types for your host globals</h3>
-<p>Write a <code>.luard</code> declaration file describing the globals, tables,
-and classes you inject from Rust. The editor reads it for completion and hover
-but never executes it. See <a href="#declaration-files">Declaration files</a>.</p>
-<pre><code><span class="com">-- host.luard</span>
-<span class="kw">class</span> <span class="typ">Counter</span> { <span class="kw">public</span> count: <span class="typ">number</span> = <span class="num">0</span>  <span class="kw">function</span> <span class="fn">bump</span>(): <span class="typ">number</span> <span class="kw">end</span> }
-<span class="kw">local</span> net: <span class="typ">table</span> = <span class="kw">nil</span>
-<span class="kw">local</span> shout: <span class="typ">function</span> = <span class="kw">nil</span></code></pre>

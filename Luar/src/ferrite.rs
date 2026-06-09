@@ -382,6 +382,7 @@ impl Ferrite {
                     }
                 }
                 ClassMember::Constructor { func }
+                | ClassMember::Destructor { func }
                 | ClassMember::Operator { func, .. }
                 | ClassMember::Getter { func, .. }
                 | ClassMember::Setter { func, .. } => self.walk_fn(&func.params, &func.body),

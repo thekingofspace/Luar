@@ -2,9 +2,13 @@
 <table>
 <tr><th>Function</th><th>Purpose</th></tr>
 <tr><td><code>print(...)</code></td><td>Print values separated by tabs.</td></tr>
-<tr><td><code>type(v)</code></td><td>The type name of a value.</td></tr>
+<tr><td><code>warn(...)</code></td><td>Like print, but writes to the warning channel (stderr).</td></tr>
+<tr><td><code>type(v)</code></td><td>The type name of a value: <code>"nil"</code>, <code>"bool"</code>, <code>"number"</code>, <code>"string"</code>, <code>"table"</code>, <code>"function"</code>, <code>"thread"</code>, <code>"enum"</code>, <code>"class"</code>, or <code>"interface"</code>.</td></tr>
 <tr><td><code>tostring(v)</code></td><td>A string for a value, honoring a tostring overload.</td></tr>
-<tr><td><code>tonumber(v)</code></td><td>A number parsed from a value, or nil.</td></tr>
+<tr><td><code>tonumber(v, base?)</code></td><td>A number parsed from a value, or nil. With a base (2&ndash;36) the value is read as a string of digits in that base.</td></tr>
+<tr><td><code>assert(v, message?)</code></td><td>Raise an error if v is falsy, otherwise return all arguments. The message defaults to "assertion failed!".</td></tr>
+<tr><td><code>error(message, level?)</code></td><td>Raise message as an error. The optional level is accepted for compatibility.</td></tr>
+<tr><td><code>select(n, ...)</code></td><td>With <code>"#"</code>, the number of extra arguments; with a number, the arguments from position n onward (negative counts from the end).</td></tr>
 <tr><td><code>pcall(fn, ...)</code></td><td>Call fn, catching errors; returns ok plus results or the error.</td></tr>
 <tr><td><code>ipairs(t)</code>, <code>pairs(t)</code>, <code>next(t, k)</code></td><td>Iteration.</td></tr>
 <tr><td><code>setmetatable(t, m)</code>, <code>getmetatable(t)</code></td><td>Metatables.</td></tr>
@@ -12,7 +16,6 @@
 <tr><td><code>require(path)</code></td><td>Load and run a module.</td></tr>
 <tr><td><code>collectgarbage()</code></td><td>Run the garbage collector now.</td></tr>
 <tr><td><code>instanceof</code>, <code>classname</code>, <code>classof</code>, <code>superclass</code>, <code>methodsof</code>, <code>isabstract</code></td><td>Class reflection (see <a href="#classes">Classes</a>).</td></tr>
-<tr><td><code>run(frames)</code>, <code>spawn(Class, ...)</code></td><td>Drive MonoBehaviour subclasses.</td></tr>
 </table>
 
 <h3 id="overriding-globals">Overriding globals</h3>

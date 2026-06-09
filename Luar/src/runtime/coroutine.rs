@@ -1,6 +1,6 @@
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread::JoinHandle;
 
@@ -19,7 +19,7 @@ pub enum Status {
 }
 
 enum Resume {
-    Go(Vec<Value>),
+    Go(Vec<Value>, Weak<RefCell<CoroState>>),
     Kill,
 }
 
@@ -37,6 +37,10 @@ struct Yielder {
 thread_local! {
 
     static YIELDER: RefCell<Option<Yielder>> = const { RefCell::new(None) };
+
+    static SELF_CORO: RefCell<Option<Weak<RefCell<CoroState>>>> = const { RefCell::new(None) };
+
+    static MAIN_CORO: RefCell<Option<Rc<RefCell<CoroState>>>> = const { RefCell::new(None) };
 }
 
 pub struct CoroState {
@@ -53,6 +57,11 @@ impl CoroState {
             Status::Running => "running",
             Status::Dead => "dead",
         }
+    }
+
+    fn main() -> CoroState {
+        let (_tx, from_coro) = channel::<Xfer<Yielded>>();
+        CoroState { to_coro: None, from_coro, handle: None, status: Status::Running }
     }
 }
 
@@ -85,13 +94,14 @@ pub fn create(func: Value, global: ScopeRef) -> CoroState {
 fn coro_main(payload: Xfer<StartPayload>) {
     let Xfer((func, global, to_rx, from_tx)) = payload;
 
-    let args = match to_rx.recv() {
-        Ok(Xfer(Resume::Go(a))) => a,
+    let (args, self_weak) = match to_rx.recv() {
+        Ok(Xfer(Resume::Go(a, w))) => (a, w),
         _ => return,
     };
 
     let from_tx_final = from_tx.clone();
     YIELDER.with(|cell| *cell.borrow_mut() = Some(Yielder { to_rx, from_tx }));
+    SELF_CORO.with(|cell| *cell.borrow_mut() = Some(self_weak));
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut interp = Interpreter::with_shared_global(global);
@@ -99,6 +109,7 @@ fn coro_main(payload: Xfer<StartPayload>) {
     }));
 
     YIELDER.with(|cell| *cell.borrow_mut() = None);
+    SELF_CORO.with(|cell| *cell.borrow_mut() = None);
 
     let message = match result {
         Ok(Ok(values)) => Yielded::Return(values),
@@ -119,10 +130,21 @@ pub fn do_yield(values: Vec<Value>) -> Result<Vec<Value>, String> {
             .send(Xfer(Yielded::Yield(values)))
             .map_err(|_| "coroutine: the resumer is gone".to_string())?;
         match yielder.to_rx.recv() {
-            Ok(Xfer(Resume::Go(a))) => Ok(a),
+            Ok(Xfer(Resume::Go(a, _))) => Ok(a),
 
             _ => Err("__luar_coroutine_closed__".to_string()),
         }
+    })
+}
+
+pub fn running() -> (Value, bool) {
+    if let Some(rc) = SELF_CORO.with(|cell| cell.borrow().as_ref().and_then(Weak::upgrade)) {
+        return (Value::Coroutine(rc), false);
+    }
+    MAIN_CORO.with(|m| {
+        let mut slot = m.borrow_mut();
+        let rc = slot.get_or_insert_with(|| Rc::new(RefCell::new(CoroState::main())));
+        (Value::Coroutine(rc.clone()), true)
     })
 }
 
@@ -140,7 +162,7 @@ pub fn resume(state: &Rc<RefCell<CoroState>>, args: Vec<Value>) -> Vec<Value> {
     let received = {
         let st = state.borrow();
         if let Some(tx) = &st.to_coro {
-            if tx.send(Xfer(Resume::Go(args))).is_err() {
+            if tx.send(Xfer(Resume::Go(args, Rc::downgrade(state)))).is_err() {
                 drop(st);
                 state.borrow_mut().status = Status::Dead;
                 return vec![Value::Bool(false), Value::str("coroutine is gone")];

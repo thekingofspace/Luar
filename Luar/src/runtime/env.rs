@@ -131,6 +131,10 @@ impl Environment {
         self.module_root = self.current.clone();
     }
 
+    pub fn module_root_scope(&self) -> ScopeRef {
+        self.module_root.clone()
+    }
+
     pub fn declare_module_global(&mut self, name: impl Into<String>, value: Value, mutability: Mutability) {
         let var = Variable::new(value, mutability, Visibility::Local);
         self.module_root.borrow_mut().vars.insert(name.into(), var);
@@ -154,6 +158,18 @@ impl Environment {
             }
         }
         n
+    }
+
+    pub fn current_scope_sole_tables(&self) -> Vec<Value> {
+        self.current
+            .borrow()
+            .vars
+            .values()
+            .filter_map(|var| match var.value() {
+                Value::Table(rc) if Rc::strong_count(rc) == 1 => Some(var.value().clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     pub fn push_scope(&mut self) {
@@ -313,6 +329,12 @@ impl Environment {
 
 pub(crate) fn scope_values(scope: &ScopeRef) -> Vec<Value> {
     scope.borrow().vars.values().map(|v| v.value().clone()).collect()
+}
+
+pub(crate) fn nil_scope_vars(scope: &ScopeRef) {
+    for var in scope.borrow_mut().vars.values_mut() {
+        var.force_set(Value::Nil);
+    }
 }
 
 #[cfg(test)]

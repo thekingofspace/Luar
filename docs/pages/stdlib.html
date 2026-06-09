@@ -116,6 +116,7 @@ and continues where it left off, without threads.</p>
 <tr><td><code>coroutine.resume(co, ...)</code></td><td>Start or continue a coroutine. The arguments are passed to the function on the first resume, or become the result of the matching <code>yield</code> after that. Returns whether it succeeded plus any yielded or returned values.</td></tr>
 <tr><td><code>coroutine.yield(...)</code></td><td>Pause the current coroutine, handing the given values back to whoever resumed it.</td></tr>
 <tr><td><code>coroutine.status(co)</code></td><td>The coroutine's state, such as suspended, running, or dead.</td></tr>
+<tr><td><code>coroutine.running()</code></td><td>The coroutine running right now, plus a boolean that is <code>true</code> when it is the main thread. The main thread is itself a coroutine, so you always get a thread back; inside a coroutine you get that coroutine and <code>false</code>.</td></tr>
 <tr><td><code>coroutine.close(co)</code></td><td>Finish a suspended coroutine so it can be cleaned up.</td></tr>
 </table>
 <pre><code><span class="kw">local</span> co = <span class="typ">coroutine</span>.create(<span class="kw">function</span>(a)

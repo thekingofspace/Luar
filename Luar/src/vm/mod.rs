@@ -248,6 +248,9 @@ impl Vm {
                 };
                 self.push(Value::Bool(ok));
             }
+            OpCode::CoRunning => {
+                self.push(Value::Coroutine(self.current));
+            }
             OpCode::Print => {
 
                 let n = instr.operand as usize;

@@ -147,6 +147,8 @@ pub enum ClassMember {
 
     Constructor { func: FnBody },
 
+    Destructor { func: FnBody },
+
     Operator { symbol: String, func: FnBody },
 }
 

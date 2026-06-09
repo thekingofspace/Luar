@@ -93,6 +93,30 @@ A class without a constructor can still be built; you just get the defaults.</p>
   <span class="kw">end</span>
 }</code></pre>
 
+<h3>The destructor</h3>
+<p>A <code>destructor</code> is the mirror of a constructor: it runs once, automatically,
+the moment an instance is about to be released. Release happens deterministically when
+the last binding that holds the object leaves its scope (for example at the end of a
+<code>do</code> block or when a function returns) and nothing else refers to it. Use it
+for cleanup &mdash; closing a handle, removing a drawn element, releasing a resource.</p>
+<pre><code><span class="kw">class</span> <span class="typ">Handle</span> {
+  <span class="kw">public</span> id: <span class="typ">number</span> = <span class="num">0</span>
+  <span class="kw">constructor</span>(id) self.id = id <span class="kw">end</span>
+  <span class="kw">destructor</span>() <span class="fn">print</span>(<span class="str">`closing {self.id}`</span>) <span class="kw">end</span>
+}
+
+<span class="kw">do</span>
+  <span class="kw">local</span> h = <span class="typ">Handle</span>(<span class="num">1</span>)   <span class="com">-- used here</span>
+<span class="kw">end</span>                     <span class="com">-- destructor runs now: "closing 1"</span></code></pre>
+<p>An object that is still referenced elsewhere &mdash; returned from a function, stored
+in a table, captured by a closure &mdash; is <b>not</b> released, so its destructor does
+not run until that last reference also goes away. This makes cleanup predictable: it
+happens exactly when the object is truly no longer in use.</p>
+<div class="note">Destructors are not inherited. When a subclass needs cleanup it
+must declare its own <code>destructor</code> &mdash; a parent's destructor does
+not run for a subclass instance that lacks one. Each instance runs at most the
+destructor declared on its own class.</div>
+
 <h3>Methods and their modifiers</h3>
 <p>A method is a function declared inside the class body. Besides the access
 words, a method can be marked:</p>
@@ -147,6 +171,26 @@ unary), <code>*</code>, <code>/</code>, <code>%</code>, <code>^</code>,
 <code>..</code> (concatenation), <code>==</code>, <code>&lt;</code>,
 <code>&lt;=</code>, <code>#</code> (length), and <code>tostring</code> (used by
 <code>print</code> and <code>tostring</code>).</p>
+
+<h4>Inheriting and overriding operators</h4>
+<p>Operators are inherited just like methods: a subclass automatically gets the
+operators of its parent (and of any mixins). A subclass can replace one by declaring
+the same <code>operator</code> again, and it can build on the parent's version through
+<code>super</code>.</p>
+<pre><code><span class="kw">class</span> <span class="typ">Money</span> {
+  <span class="kw">public</span> cents: <span class="typ">number</span> = <span class="num">0</span>
+  <span class="kw">operator</span> +(o) <span class="kw">return</span> <span class="typ">Money</span>(self.cents + o.cents) <span class="kw">end</span>
+}
+
+<span class="kw">class</span> <span class="typ">Wallet</span> <span class="kw">extends</span> <span class="typ">Money</span> {
+  <span class="kw">operator</span> +(o)
+    <span class="kw">local</span> sum = <span class="kw">super</span> + o      <span class="com">-- reuse Money's + via super</span>
+    <span class="kw">return</span> sum
+  <span class="kw">end</span>
+}</code></pre>
+<p>When operators come from more than one place, the lookup order is the same as for
+methods: the class's own operator wins over a mixed-in one, which wins over an
+inherited one.</p>
 
 <h3>Inheritance with extends</h3>
 <p>Inheritance lets one class build on another. The new class (the subclass)
@@ -218,9 +262,20 @@ classes.</p>
 }
 
 <span class="typ">Service</span>():log(<span class="str">"started"</span>)   <span class="com">-- log came from the mixin</span></code></pre>
-<p>Your own members take priority over mixed-in ones with the same name. The full
-clause order on a class header is
-<code>extends Parent mixin A, B implements I, J</code>.</p>
+<p>A mixin brings in the other class's <b>methods, operator overloads, and fields</b>
+(with their default values). When the same name comes from several places, resolution
+follows a clear order:</p>
+<ul>
+<li>A member declared in the class itself always wins.</li>
+<li>Otherwise a mixed-in member wins over an inherited (<code>extends</code>) one.</li>
+<li>If two mixins define the same name, the <b>last one in the <code>mixin</code> list</b>
+wins.</li>
+<li>A mixin's field is only added if a field with that name is not already inherited from
+the parent, so the parent's default is kept.</li>
+</ul>
+<p>The full clause order on a class header is always
+<code>extends Parent mixin A, B implements I, J</code>. A class still has exactly one
+parent; mixins are how you compose behavior from several classes at once.</p>
 
 <h3>Interfaces</h3>
 <p>An interface is a contract: a list of member names a class must provide. A
@@ -280,9 +335,6 @@ API.</p>
 
 <h3>See also</h3>
 <ul>
-<li><a href="#monobehaviour">MonoBehaviour</a> - a built-in base class with a
-lifecycle the runtime drives for you.</li>
-<li><a href="#types">Type system</a> - using class names as types.</li>
 <li><a href="#enums">Enums</a> - named constants that pair well with classes.</li>
 </ul>
 

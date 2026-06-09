@@ -42,19 +42,14 @@ pub struct Interpreter {
 
     class_ctx: Vec<Rc<Class>>,
 
-    behaviours: Vec<Rc<Class>>,
-
     module_dir: std::path::PathBuf,
-}
 
-const PRELUDE: &str = r#"
-pub class MonoBehaviour {
-  function Awake(): void end
-  function Start(): void end
-  function Update(): void end
-  function OnDestroy(): void end
+    has_destructors: bool,
+
+    class_hooks: Vec<(String, Box<dyn FnMut(&mut Interpreter, Value)>)>,
+
+    instance_hooks: Vec<(String, Box<dyn FnMut(&mut Interpreter, Value)>)>,
 }
-"#;
 
 impl Default for Interpreter {
     fn default() -> Self {
@@ -67,25 +62,78 @@ impl Interpreter {
     pub fn new() -> Self {
         let mut env = Environment::new();
         register_builtins(&mut env);
-        let mut interp = Interpreter {
+        Interpreter {
             env,
             varargs: Vec::new(),
             class_ctx: Vec::new(),
-            behaviours: Vec::new(),
             module_dir: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-        };
-        interp.load_prelude();
-        interp
+            has_destructors: false,
+            class_hooks: Vec::new(),
+            instance_hooks: Vec::new(),
+        }
     }
 
     pub fn set_module_dir(&mut self, dir: impl Into<std::path::PathBuf>) {
         self.module_dir = dir.into();
     }
 
-    fn load_prelude(&mut self) {
-        let tokens = crate::lexer::tokenize(PRELUDE).expect("prelude lexes");
-        let program = crate::parser::parse(tokens).expect("prelude parses");
-        self.run(&program).expect("prelude runs");
+    pub fn on_subclass_of(
+        &mut self,
+        base: impl Into<String>,
+        callback: impl FnMut(&mut Interpreter, Value) + 'static,
+    ) {
+        self.class_hooks.push((base.into(), Box::new(callback)));
+    }
+
+    pub fn on_instance_of(
+        &mut self,
+        base: impl Into<String>,
+        callback: impl FnMut(&mut Interpreter, Value) + 'static,
+    ) {
+        self.instance_hooks.push((base.into(), Box::new(callback)));
+    }
+
+    pub fn free_module(&mut self, name: &str) -> bool {
+        let Some(key) = resolve_module_key(&self.module_dir, name) else {
+            return false;
+        };
+        let scope = MODULE_SCOPES.with(|s| s.borrow_mut().remove(&key));
+        MODULE_CACHE.with(|c| c.borrow_mut().remove(&key));
+        match scope {
+            Some(scope) => {
+                super::env::nil_scope_vars(&scope);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn fire_class_hooks(&mut self, class: &Rc<Class>) {
+        if self.class_hooks.is_empty() {
+            return;
+        }
+        let mut hooks = std::mem::take(&mut self.class_hooks);
+        for (base, cb) in hooks.iter_mut() {
+            if class_descends_from(class, base) {
+                cb(self, Value::Class(class.clone()));
+            }
+        }
+        hooks.append(&mut self.class_hooks);
+        self.class_hooks = hooks;
+    }
+
+    fn fire_instance_hooks(&mut self, instance: &Value, class: &Rc<Class>) {
+        if self.instance_hooks.is_empty() {
+            return;
+        }
+        let mut hooks = std::mem::take(&mut self.instance_hooks);
+        for (base, cb) in hooks.iter_mut() {
+            if class_descends_from(class, base) {
+                cb(self, instance.clone());
+            }
+        }
+        hooks.append(&mut self.instance_hooks);
+        self.instance_hooks = hooks;
     }
 
     pub(crate) fn with_shared_global(global: super::env::ScopeRef) -> Self {
@@ -93,8 +141,10 @@ impl Interpreter {
             env: Environment::with_global(global),
             varargs: Vec::new(),
             class_ctx: Vec::new(),
-            behaviours: Vec::new(),
             module_dir: std::path::PathBuf::from("."),
+            has_destructors: false,
+            class_hooks: Vec::new(),
+            instance_hooks: Vec::new(),
         }
     }
 
@@ -136,11 +186,30 @@ impl Interpreter {
                 }
             }
         }
+        if error.is_none() {
+            if let Err(e) = self.run_scope_destructors() {
+                error = Some(e);
+            }
+        }
         self.env.pop_scope();
         match error {
             Some(e) => Err(e),
             None => Ok(flow),
         }
+    }
+
+    fn run_scope_destructors(&mut self) -> Result<()> {
+        if !self.has_destructors {
+            return Ok(());
+        }
+        for inst in self.env.current_scope_sole_tables() {
+            if let Some(class) = instance_class(&inst) {
+                if let Some(dtor) = class.destructor.clone() {
+                    self.invoke_method(dtor, inst.clone(), class, Vec::new())?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn exec(&mut self, stmt: &Stmt) -> Result<Flow> {
@@ -208,10 +277,7 @@ impl Interpreter {
             }
             Stmt::Class { visibility, is_final, is_abstract, name, parent, mixins, interfaces, members } => {
                 let class = self.build_class(name, *is_final, *is_abstract, parent.as_deref(), mixins, interfaces, members)?;
-
-                if !*is_abstract && is_behaviour(&class) {
-                    self.behaviours.push(class.clone());
-                }
+                self.fire_class_hooks(&class);
                 self.env.declare(name.clone(), Value::Class(class), Mutability::Const, *visibility);
             }
             Stmt::Interface { visibility, name, parents, members } => {
@@ -706,6 +772,11 @@ impl Interpreter {
         if is_method {
             self.class_ctx.pop();
         }
+        if error.is_none() {
+            if let Err(e) = self.run_scope_destructors() {
+                error = Some(e);
+            }
+        }
         self.env.pop_scope();
         self.env.swap_current(saved);
         match error {
@@ -764,6 +835,7 @@ impl Interpreter {
             }
         };
         let Value::Table(rc) = &table else { unreachable!() };
+        rc.borrow_mut().is_enum = true;
 
         let mut counter = rc
             .borrow()
@@ -837,6 +909,7 @@ impl Interpreter {
         let mut getters: HashMap<String, Value> = HashMap::new();
         let mut setters: HashMap<String, Value> = HashMap::new();
         let mut constructor: Option<Value> = None;
+        let mut destructor: Option<Value> = None;
         let mut fields: Vec<FieldDef> = Vec::new();
         let mut access_map: HashMap<String, Access> = HashMap::new();
         let mut abstracts: HashSet<String> = HashSet::new();
@@ -946,6 +1019,16 @@ impl Interpreter {
                         captured.clone(),
                     ));
                 }
+                ClassMember::Destructor { func } => {
+                    destructor = Some(Value::function(
+                        "destructor".to_string(),
+                        func.params.clone(),
+                        func.is_vararg,
+                        Rc::new(func.body.clone()),
+                        captured.clone(),
+                    ));
+                    self.has_destructors = true;
+                }
                 ClassMember::Operator { symbol, func } => {
                     let mm = operator_to_metamethod(symbol, func.params.len())
                         .ok_or_else(|| EvalError(format!("unsupported operator overload '{symbol}'")))?;
@@ -971,6 +1054,7 @@ impl Interpreter {
             getters,
             setters,
             constructor,
+            destructor,
             fields,
             statics: statics_rc.clone(),
             access: access_map,
@@ -1065,6 +1149,7 @@ impl Interpreter {
                 _ => {}
             }
         }
+        self.fire_instance_hooks(&inst, &class);
         Ok(vec![inst])
     }
 
@@ -1111,15 +1196,6 @@ impl Interpreter {
         }
 
         Err(EvalError(format!("attempt to call method '{method}' on a {}", recv.type_name())))
-    }
-
-    fn call_lifecycle(&mut self, instance: &Value, name: &str) -> Result<()> {
-        if let Some(class) = instance_class(instance) {
-            if let Some((m, defining)) = class.find_method(name) {
-                self.invoke_method(m, instance.clone(), defining, Vec::new())?;
-            }
-        }
-        Ok(())
     }
 
     fn invoke_method(&mut self, m: Value, self_v: Value, defining: Rc<Class>, args: Vec<Value>) -> Result<Vec<Value>> {
@@ -1330,6 +1406,10 @@ fn register_builtins(env: &mut Environment) {
         ("getmetatable", builtin_getmetatable),
         ("type", builtin_type),
         ("print", builtin_print),
+        ("warn", builtin_warn),
+        ("assert", builtin_assert),
+        ("error", builtin_error),
+        ("select", builtin_select),
         ("rawget", builtin_rawget),
         ("rawset", builtin_rawset),
         ("rawequal", builtin_rawequal),
@@ -1348,8 +1428,6 @@ fn register_builtins(env: &mut Environment) {
         ("isabstract", builtin_isabstract),
         ("tostring", builtin_tostring),
         ("tonumber", builtin_tonumber),
-        ("run", builtin_run),
-        ("spawn", builtin_spawn),
     ];
     for (name, func) in builtins {
         let value = Value::Native(Native { name, func: *func });
@@ -1363,6 +1441,7 @@ fn register_builtins(env: &mut Environment) {
         ("yield", coro_yield),
         ("status", coro_status),
         ("close", coro_close),
+        ("running", coro_running),
     ];
     for (name, func) in members {
         let _ = coro.set_field(Value::str(*name), Value::Native(Native { name, func: *func }));
@@ -1995,6 +2074,11 @@ fn coro_close(_interp: &mut Interpreter, args: Vec<Value>) -> NativeResult {
     }
 }
 
+fn coro_running(_interp: &mut Interpreter, _args: Vec<Value>) -> NativeResult {
+    let (co, is_main) = super::coroutine::running();
+    Ok(vec![co, Value::Bool(is_main)])
+}
+
 type NativeResult = std::result::Result<Vec<Value>, String>;
 
 fn builtin_setmetatable(_i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
@@ -2035,6 +2119,21 @@ fn builtin_tostring(i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
 
 fn builtin_tonumber(_i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
     let v = args.first().cloned().unwrap_or(Value::Nil);
+    if let Some(base_val) = args.get(1) {
+        if !matches!(base_val, Value::Nil) {
+            let base = coerce_number(base_val).map(|n| n.as_f64() as i64).unwrap_or(0);
+            if !(2..=36).contains(&base) {
+                return Err("tonumber: base must be between 2 and 36".into());
+            }
+            let out = match &v {
+                Value::Str(s) => {
+                    i64::from_str_radix(s.trim(), base as u32).map(Value::Int).unwrap_or(Value::Nil)
+                }
+                _ => return Err("tonumber: value must be a string when a base is given".into()),
+            };
+            return Ok(vec![out]);
+        }
+    }
     let out = match &v {
         Value::Int(_) | Value::Float(_) => v.clone(),
         Value::Str(s) => {
@@ -2059,6 +2158,64 @@ fn builtin_print(i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
     }
     println!("{}", parts.join("\t"));
     Ok(vec![])
+}
+
+fn builtin_warn(i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
+    let mut parts = Vec::with_capacity(args.len());
+    for v in &args {
+        parts.push(i.display_string(v).map_err(|e| e.0)?);
+    }
+    eprintln!("{}", parts.join("\t"));
+    Ok(vec![])
+}
+
+fn builtin_assert(i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
+    let cond = args.first().cloned().unwrap_or(Value::Nil);
+    if cond.is_truthy() {
+        Ok(args)
+    } else {
+        let message = match args.get(1) {
+            Some(Value::Str(s)) => s.to_string(),
+            Some(other) => i.display_string(other).map_err(|e| e.0)?,
+            None => "assertion failed!".to_string(),
+        };
+        Err(message)
+    }
+}
+
+fn builtin_error(i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
+    let message = match args.first() {
+        Some(Value::Str(s)) => s.to_string(),
+        Some(other) => i.display_string(other).map_err(|e| e.0)?,
+        None => "nil".to_string(),
+    };
+    Err(message)
+}
+
+fn builtin_select(_i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
+    let mut it = args.into_iter();
+    let index = it.next().unwrap_or(Value::Nil);
+    let rest: Vec<Value> = it.collect();
+    if let Value::Str(s) = &index {
+        if s.as_ref() == "#" {
+            return Ok(vec![Value::Int(rest.len() as i64)]);
+        }
+    }
+    let n = coerce_number(&index)
+        .map(|num| num.as_f64() as i64)
+        .ok_or_else(|| "select: index must be a number or '#'".to_string())?;
+    let start = if n > 0 {
+        (n - 1) as usize
+    } else if n < 0 {
+        let from_end = rest.len() as i64 + n;
+        if from_end < 0 {
+            return Err("select: index out of range".into());
+        }
+        from_end as usize
+    } else {
+        return Err("select: index out of range".into());
+    };
+    Ok(rest.into_iter().skip(start).collect())
 }
 
 fn builtin_rawget(_i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
@@ -2100,6 +2257,8 @@ pub struct NativeClassBuilder {
     setters: HashMap<String, Value>,
     fields: Vec<FieldDef>,
     constructor: Option<Value>,
+    parent: Option<Rc<Class>>,
+    mixins: Vec<Rc<Class>>,
     is_final: bool,
     is_abstract: bool,
 }
@@ -2115,9 +2274,25 @@ impl NativeClassBuilder {
             setters: HashMap::new(),
             fields: Vec::new(),
             constructor: None,
+            parent: None,
+            mixins: Vec::new(),
             is_final: false,
             is_abstract: false,
         }
+    }
+
+    pub fn extends(mut self, parent: Value) -> Self {
+        if let Value::Class(c) = parent {
+            self.parent = Some(c);
+        }
+        self
+    }
+
+    pub fn mixin(mut self, other: Value) -> Self {
+        if let Value::Class(c) = other {
+            self.mixins.push(c);
+        }
+        self
     }
 
     pub fn method(mut self, name: &'static str, func: NativeFn) -> Self {
@@ -2165,16 +2340,52 @@ impl NativeClassBuilder {
         let Value::Table(meta_rc) = &instance_meta else { unreachable!() };
         let statics = Value::table();
         let Value::Table(statics_rc) = &statics else { unreachable!() };
+
+        let mut methods = self.methods;
+        let mut operators = self.operators;
+        let mut getters = self.getters;
+        let mut setters = self.setters;
+        let mut fields: Vec<FieldDef> = Vec::new();
+        if let Some(p) = &self.parent {
+            for f in &p.fields {
+                fields.push(FieldDef { name: f.name.clone(), default: f.default.clone() });
+            }
+        }
+        for mx in &self.mixins {
+            for (k, v) in &mx.methods {
+                methods.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+            for (k, v) in &mx.operators {
+                operators.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+            for (k, v) in &mx.getters {
+                getters.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+            for (k, v) in &mx.setters {
+                setters.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+            for f in &mx.fields {
+                if !fields.iter().any(|x| x.name == f.name) {
+                    fields.push(FieldDef { name: f.name.clone(), default: f.default.clone() });
+                }
+            }
+        }
+        for f in self.fields {
+            fields.retain(|x| x.name != f.name);
+            fields.push(f);
+        }
+
         let class = Rc::new(Class {
             name: self.name,
-            parent: None,
-            methods: self.methods,
-            operators: self.operators,
+            parent: self.parent,
+            methods,
+            operators,
             constructor: self.constructor,
-            fields: self.fields,
+            destructor: None,
+            fields,
             statics: statics_rc.clone(),
-            getters: self.getters,
-            setters: self.setters,
+            getters,
+            setters,
             access: HashMap::new(),
             abstracts: HashSet::new(),
             finals: HashSet::new(),
@@ -2207,52 +2418,18 @@ fn as_class(v: &Value) -> Option<Rc<Class>> {
     }
 }
 
-fn is_behaviour(class: &Rc<Class>) -> bool {
+fn class_descends_from(class: &Rc<Class>, base: &str) -> bool {
+    if class.name == base {
+        return true;
+    }
     let mut cur = class.parent.clone();
     while let Some(c) = cur {
-        if c.name == "MonoBehaviour" {
+        if c.name == base {
             return true;
         }
         cur = c.parent.clone();
     }
     false
-}
-
-fn builtin_run(i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
-    let frames = match args.first() {
-        Some(Value::Int(n)) => (*n).max(0),
-        Some(Value::Float(f)) => (*f as i64).max(0),
-        _ => 1,
-    };
-    let classes = i.behaviours.clone();
-    let mut instances = Vec::with_capacity(classes.len());
-    for c in classes {
-        let inst = i.construct(c, Vec::new()).map_err(|e| e.0)?.into_iter().next().unwrap_or(Value::Nil);
-        i.call_lifecycle(&inst, "Awake").map_err(|e| e.0)?;
-        i.call_lifecycle(&inst, "Start").map_err(|e| e.0)?;
-        instances.push(inst);
-    }
-    for _ in 0..frames {
-        for inst in &instances {
-            i.call_lifecycle(inst, "Update").map_err(|e| e.0)?;
-        }
-    }
-    for inst in &instances {
-        i.call_lifecycle(inst, "OnDestroy").map_err(|e| e.0)?;
-    }
-    Ok(vec![])
-}
-
-fn builtin_spawn(i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
-    let mut it = args.into_iter();
-    let Some(Value::Class(c)) = it.next() else {
-        return Err("spawn expects a class as its first argument".into());
-    };
-    let rest: Vec<Value> = it.collect();
-    let inst = i.construct(c, rest).map_err(|e| e.0)?.into_iter().next().unwrap_or(Value::Nil);
-    i.call_lifecycle(&inst, "Awake").map_err(|e| e.0)?;
-    i.call_lifecycle(&inst, "Start").map_err(|e| e.0)?;
-    Ok(vec![inst])
 }
 
 fn builtin_superclass(_i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
@@ -2300,6 +2477,9 @@ fn builtin_rawlen(_i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
 thread_local! {
 
     static MODULE_CACHE: RefCell<std::collections::HashMap<String, Value>> =
+        RefCell::new(std::collections::HashMap::new());
+
+    static MODULE_SCOPES: RefCell<std::collections::HashMap<String, super::env::ScopeRef>> =
         RefCell::new(std::collections::HashMap::new());
 }
 
@@ -2357,8 +2537,33 @@ fn builtin_require(interp: &mut Interpreter, args: Vec<Value>) -> NativeResult {
     let returned = module.run(&program).map_err(|e| e.0)?;
     let value = returned.into_iter().next().unwrap_or(Value::Nil);
 
+    let scope = module.env.module_root_scope();
+    MODULE_SCOPES.with(|s| s.borrow_mut().insert(key.clone(), scope));
     MODULE_CACHE.with(|c| c.borrow_mut().insert(key, value.clone()));
     Ok(vec![value])
+}
+
+fn resolve_module_key(dir: &std::path::Path, raw: &str) -> Option<String> {
+    use std::path::PathBuf;
+    let base: PathBuf = if let Some(rest) = raw.strip_prefix('@') {
+        let (alias, tail) = match rest.split_once('/') {
+            Some((a, t)) => (a, Some(t)),
+            None => (rest, None),
+        };
+        let target = luarrc_alias(dir, alias)?;
+        match tail {
+            Some(t) => target.join(t),
+            None => target,
+        }
+    } else {
+        dir.join(raw)
+    };
+    let file = resolve_module_file(&base)?;
+    Some(
+        std::fs::canonicalize(&file)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| file.to_string_lossy().into_owned()),
+    )
 }
 
 fn resolve_module_file(base: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -2442,6 +2647,8 @@ fn require_file(interp: &mut Interpreter, path: &std::path::Path) -> std::result
     module.env.mark_module_root();
     let returned = module.run(&program).map_err(|e| e.0)?;
     let value = returned.into_iter().next().unwrap_or(Value::Nil);
+    let scope = module.env.module_root_scope();
+    MODULE_SCOPES.with(|s| s.borrow_mut().insert(key.clone(), scope));
     MODULE_CACHE.with(|c| c.borrow_mut().insert(key, value.clone()));
     Ok(value)
 }
@@ -3086,30 +3293,25 @@ pub local b = "2.5" * 2"#);
     }
 
     #[test]
-    fn monobehaviour_run_drives_lifecycle() {
+    fn destructor_runs_on_sole_owner_scope_exit() {
         let i = run(
-            r#"class Counter extends MonoBehaviour {
-                 public ticks: number = 0
-                 function Start() self.ticks = 100 end
-                 function Update() self.ticks += 1 end
-               }
-               pub local seen = instanceof(Counter(), MonoBehaviour)
-               run(3)"#,
+            r#"pub local log = ""
+               class R { destructor() log = log .. "x" end }
+               do local a = R() end
+               do local b = R() end"#,
         );
-        assert_eq!(i.env.get("seen"), Some(Value::Bool(true)));
+        assert_eq!(i.env.get("log"), Some(Value::str("xx")));
     }
 
     #[test]
-    fn spawn_runs_start_and_returns_instance() {
+    fn destructor_skips_returned_instance() {
         let i = run(
-            r#"class Bot extends MonoBehaviour {
-                 public ready: boolean = false
-                 function Start() self.ready = true end
-               }
-               const b = spawn(Bot)
-               pub local r = b.ready"#,
+            r#"pub local freed = false
+               class R { destructor() freed = true end }
+               local function make() return R() end
+               pub local kept = make()"#,
         );
-        assert_eq!(i.env.get("r"), Some(Value::Bool(true)));
+        assert_eq!(i.env.get("freed"), Some(Value::Bool(false)));
     }
 
     #[test]
@@ -3158,6 +3360,76 @@ two]]
                pub local n = Dir.North"#,
         );
         assert_eq!(i.env.get("n"), Some(Value::Int(0)));
+    }
+
+    #[test]
+    fn base_globals_assert_error_select_tonumber() {
+        let i = run(
+            r##"pub local a = assert(7, "should not fire")
+local ok, err = pcall(function() assert(false, "boom") end)
+pub local assert_ok = ok
+pub local assert_err = err
+local ok2, err2 = pcall(function() error("kaboom") end)
+pub local error_ok = ok2
+pub local error_err = err2
+pub local count = select("#", "a", "b", "c")
+pub local tail = select(2, 10, 20, 30)
+pub local last = select(-1, 10, 20, 30)
+pub local hex = tonumber("ff", 16)
+pub local bin = tonumber("1010", 2)
+pub local plain = tonumber("42")"##,
+        );
+        assert_eq!(i.env.get("a"), Some(Value::Int(7)));
+        assert_eq!(i.env.get("assert_ok"), Some(Value::Bool(false)));
+        assert_eq!(i.env.get("assert_err"), Some(Value::str("boom")));
+        assert_eq!(i.env.get("error_ok"), Some(Value::Bool(false)));
+        assert_eq!(i.env.get("error_err"), Some(Value::str("kaboom")));
+        assert_eq!(i.env.get("count"), Some(Value::Int(3)));
+        assert_eq!(i.env.get("tail"), Some(Value::Int(20)));
+        assert_eq!(i.env.get("last"), Some(Value::Int(30)));
+        assert_eq!(i.env.get("hex"), Some(Value::Int(255)));
+        assert_eq!(i.env.get("bin"), Some(Value::Int(10)));
+        assert_eq!(i.env.get("plain"), Some(Value::Int(42)));
+    }
+
+    #[test]
+    fn tables_can_hold_classes_and_enums() {
+        let i = run(
+            r#"class Widget {
+                 public x: number = 5
+                 function get() return self.x end
+               }
+               enum Color { Red Green Blue }
+               local registry = { W = Widget, C = Color }
+               pub local cls_type = type(registry.W)
+               pub local enum_type = type(registry.C)
+               local inst = registry.W()
+               pub local inst_x = inst.x
+               pub local via_method = registry.W():get()
+               pub local green = registry.C.Green"#,
+        );
+        assert_eq!(i.env.get("cls_type"), Some(Value::str("class")));
+        assert_eq!(i.env.get("enum_type"), Some(Value::str("enum")));
+        assert_eq!(i.env.get("inst_x"), Some(Value::Int(5)));
+        assert_eq!(i.env.get("via_method"), Some(Value::Int(5)));
+        assert_eq!(i.env.get("green"), Some(Value::Int(1)));
+    }
+
+    #[test]
+    fn type_reports_enum_and_class() {
+        let i = run(
+            r#"enum Color { Red Green Blue }
+               class Widget { function f() return 1 end }
+               local plain = { 1, 2, 3 }
+               pub local enum_type = type(Color)
+               pub local class_type = type(Widget)
+               pub local table_type = type(plain)
+               pub local variant_type = type(Color.Red)"#,
+        );
+        assert_eq!(i.env.get("enum_type"), Some(Value::str("enum")));
+        assert_eq!(i.env.get("class_type"), Some(Value::str("class")));
+        assert_eq!(i.env.get("table_type"), Some(Value::str("table")));
+        assert_eq!(i.env.get("variant_type"), Some(Value::str("number")));
     }
 
     #[test]
@@ -3522,6 +3794,37 @@ pub local st = coroutine.status(co)"#,
         assert_eq!(i.env.get("good"), Some(Value::Bool(true)));
         assert_eq!(i.env.get("st"), Some(Value::str("dead")));
         assert_eq!(i.env.get("ticks"), Some(Value::Int(2)));
+    }
+
+    #[test]
+    fn coroutine_running_reports_current_thread() {
+        let i = run(
+            r#"local m1, mf = coroutine.running()
+local m2 = coroutine.running()
+pub local main_type = type(m1)
+pub local main_stable = m1 == m2
+pub local main_flag = mf
+local function body()
+  return coroutine.running()
+end
+local co = coroutine.create(body)
+local ok1, inner = coroutine.resume(co)
+pub local same = inner == co
+pub local main_not_co = m1 == co
+local function body2()
+  local s, f = coroutine.running()
+  return f
+end
+local co2 = coroutine.create(body2)
+local ok2, inner_flag = coroutine.resume(co2)
+pub local inner_is_main = inner_flag"#,
+        );
+        assert_eq!(i.env.get("main_type"), Some(Value::str("thread")));
+        assert_eq!(i.env.get("main_stable"), Some(Value::Bool(true)));
+        assert_eq!(i.env.get("main_flag"), Some(Value::Bool(true)));
+        assert_eq!(i.env.get("same"), Some(Value::Bool(true)));
+        assert_eq!(i.env.get("main_not_co"), Some(Value::Bool(false)));
+        assert_eq!(i.env.get("inner_is_main"), Some(Value::Bool(false)));
     }
 
     #[test]

@@ -373,6 +373,10 @@ impl Compiler {
                 self.compile_expr(ctx, &args[0])?;
                 ctx.emit(I::simple(OpCode::CoClose));
             }
+            "running" => {
+                self.expect_args("coroutine.running", args, 0)?;
+                ctx.emit(I::simple(OpCode::CoRunning));
+            }
             other => return Err(CompileError(format!("unknown coroutine method '{other}'"))),
         }
         Ok(())
