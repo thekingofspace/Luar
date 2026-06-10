@@ -56,6 +56,10 @@ pub struct Interpreter {
     instance_hooks: Vec<(String, Box<dyn FnMut(&mut Interpreter, Value)>)>,
 
     script_id: u64,
+
+    pub(crate) family: std::sync::Arc<super::gil::Family>,
+
+    steps: std::cell::Cell<u32>,
 }
 
 impl Default for Interpreter {
@@ -82,6 +86,8 @@ impl Interpreter {
             class_hooks: Vec::new(),
             instance_hooks: Vec::new(),
             script_id,
+            family: std::sync::Arc::new(super::gil::Family::new()),
+            steps: std::cell::Cell::new(0),
         }
     }
 
@@ -173,7 +179,10 @@ impl Interpreter {
         self.instance_hooks = hooks;
     }
 
-    pub(crate) fn with_shared_global(global: super::env::ScopeRef) -> Self {
+    pub(crate) fn with_shared_global(
+        global: super::env::ScopeRef,
+        family: std::sync::Arc<super::gil::Family>,
+    ) -> Self {
         Interpreter {
             env: Environment::with_global(global),
             varargs: Vec::new(),
@@ -185,10 +194,22 @@ impl Interpreter {
             class_hooks: Vec::new(),
             instance_hooks: Vec::new(),
             script_id: gc::new_script_id(),
+            family,
+            steps: std::cell::Cell::new(0),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn preempt_check(&self) {
+        let n = self.steps.get().wrapping_add(1);
+        self.steps.set(n);
+        if n & 63 == 0 {
+            self.family.preempt_point();
         }
     }
 
     pub fn run(&mut self, program: &[Stmt]) -> Result<Vec<Value>> {
+        let _fam = super::gil::FamilyScope::enter(&self.family);
         let _script = gc::enter_script(self.script_id);
         for stmt in program {
             match self.exec(stmt)? {
@@ -210,6 +231,7 @@ impl Interpreter {
     }
 
     fn exec_block(&mut self, body: &[Stmt]) -> Result<Flow> {
+        self.preempt_check();
         self.env.push_scope();
         let mut flow = Flow::Normal;
         let mut error = None;
@@ -592,6 +614,7 @@ impl Interpreter {
     }
 
     fn exec_block_reused(&mut self, stmts: &[Stmt]) -> Result<Flow> {
+        self.preempt_check();
         let mut flow = Flow::Normal;
         for stmt in stmts {
             match self.exec(stmt)? {
@@ -948,6 +971,7 @@ impl Interpreter {
         if f.dead.get() {
             return Err(EvalError("attempt to call a function from a freed script".into()));
         }
+        self.preempt_check();
         let _script = gc::enter_script(f.script);
         let saved = self.env.swap_current(f.captured.clone());
         self.env.push_scope();
@@ -2361,7 +2385,7 @@ fn coro_create(interp: &mut Interpreter, args: Vec<Value>) -> NativeResult {
         return Err(format!("coroutine.create: expected a function, got {}", func.type_name()));
     }
     let global = interp.env.global_scope();
-    let state = super::coroutine::create(func, global);
+    let state = super::coroutine::create(func, global, interp.family.clone());
     Ok(vec![Value::Coroutine(Rc::new(RefCell::new(state)))])
 }
 
@@ -2848,8 +2872,8 @@ fn builtin_require(interp: &mut Interpreter, args: Vec<Value>) -> NativeResult {
             Some((a, t)) => (a, Some(t)),
             None => (rest, None),
         };
-        let target = luarrc_alias(&dir, alias).ok_or_else(|| {
-            format!("require: unknown alias '@{alias}' (define it in a .luarrc file)")
+        let target = config_alias(&dir, alias).ok_or_else(|| {
+            format!("require: unknown alias '@{alias}' (define it in a luari.json file)")
         })?;
         match tail {
             Some(t) => target.join(t),
@@ -2875,15 +2899,12 @@ fn builtin_require(interp: &mut Interpreter, args: Vec<Value>) -> NativeResult {
         return Err(require_chain_message(&raw, &key));
     }
 
-    let source = std::fs::read_to_string(&file)
-        .map_err(|e| format!("require: cannot read '{}': {e}", file.display()))?;
-    let tokens = crate::lexer::tokenize(&source).map_err(|e| e.to_string())?;
-    let program = crate::parser::parse(tokens).map_err(|e| e.to_string())?;
+    let program = load_module_program(&file)?;
 
     let global = interp.env.global_scope();
-    let mut module = Interpreter::with_shared_global(global);
+    let mut module = Interpreter::with_shared_global(global, interp.family.clone());
     module.module_dir = file.parent().map(PathBuf::from).unwrap_or(dir);
-    module.module_is_init = file.file_name().map(|n| n == "init.luar").unwrap_or(false);
+    module.module_is_init = file.file_stem().map(|n| n == "init").unwrap_or(false);
     module.env.push_scope();
     module.env.mark_module_root();
     REQUIRE_STACK.with(|s| s.borrow_mut().push(key.clone()));
@@ -2908,7 +2929,7 @@ fn resolve_module_key(dir: &std::path::Path, raw: &str) -> Option<String> {
             Some((a, t)) => (a, Some(t)),
             None => (rest, None),
         };
-        let target = luarrc_alias(dir, alias)?;
+        let target = config_alias(dir, alias)?;
         match tail {
             Some(t) => target.join(t),
             None => target,
@@ -2929,16 +2950,49 @@ fn resolve_module_file(base: &std::path::Path) -> Option<std::path::PathBuf> {
     if direct.is_file() {
         return Some(direct);
     }
+    let packed = base.with_extension("luarb");
+    if packed.is_file() {
+        return Some(packed);
+    }
     let init = base.join("init.luar");
     if init.is_file() {
         return Some(init);
     }
+    let packed_init = base.join("init.luarb");
+    if packed_init.is_file() {
+        return Some(packed_init);
+    }
     None
 }
 
-fn luarrc_alias(dir: &std::path::Path, alias: &str) -> Option<std::path::PathBuf> {
+fn load_module_program(file: &std::path::Path) -> std::result::Result<Vec<crate::ast::Stmt>, String> {
+    if file.extension().map(|e| e == "luarb").unwrap_or(false) {
+        let bytes = std::fs::read(file)
+            .map_err(|e| format!("require: cannot read '{}': {e}", file.display()))?;
+        return crate::precompile::unpack(&bytes)
+            .map_err(|e| format!("require: cannot load precompiled '{}': {e}", file.display()));
+    }
+    let source = std::fs::read_to_string(file)
+        .map_err(|e| format!("require: cannot read '{}': {e}", file.display()))?;
+    let tokens = crate::lexer::tokenize(&source).map_err(|e| e.to_string())?;
+    crate::parser::parse(tokens).map_err(|e| e.to_string())
+}
+
+fn config_alias(dir: &std::path::Path, alias: &str) -> Option<std::path::PathBuf> {
     let mut cur = Some(dir);
     while let Some(d) = cur {
+        for name in ["luari.json", "luari", ".luari"] {
+            if let Ok(text) = std::fs::read_to_string(d.join(name)) {
+                if let Some(target) = json_alias_target(&text, alias) {
+                    let cleaned = target.trim_start_matches("./").trim_end_matches('/');
+                    return Some(if cleaned.is_empty() {
+                        d.to_path_buf()
+                    } else {
+                        d.join(cleaned)
+                    });
+                }
+            }
+        }
         let rc = d.join(".luarrc");
         if let Ok(text) = std::fs::read_to_string(&rc) {
             for line in text.lines() {
@@ -2959,6 +3013,55 @@ fn luarrc_alias(dir: &std::path::Path, alias: &str) -> Option<std::path::PathBuf
     None
 }
 
+fn json_alias_target(text: &str, alias: &str) -> Option<String> {
+    let key_at = text.find("\"aliases\"")?;
+    let after_key = &text[key_at + "\"aliases\"".len()..];
+    let brace = after_key.find('{')?;
+    let mut rest = &after_key[brace + 1..];
+    loop {
+        rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == ',');
+        if rest.starts_with('}') || rest.is_empty() {
+            return None;
+        }
+        let (name, after_name) = json_string_at(rest)?;
+        let after_colon = after_name.trim_start();
+        let after_colon = after_colon.strip_prefix(':')?.trim_start();
+        let (value, after_value) = json_string_at(after_colon)?;
+        if name == alias {
+            return Some(value);
+        }
+        rest = after_value;
+    }
+}
+
+fn json_string_at(text: &str) -> Option<(String, &str)> {
+    let mut chars = text.char_indices();
+    match chars.next() {
+        Some((_, '"')) => {}
+        _ => return None,
+    }
+    let mut out = String::new();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' => return Some((out, &text[i + 1..])),
+            '\\' => match chars.next() {
+                Some((_, 'n')) => out.push('\n'),
+                Some((_, 't')) => out.push('\t'),
+                Some((_, 'r')) => out.push('\r'),
+                Some((_, 'u')) => {
+                    for _ in 0..4 {
+                        chars.next();
+                    }
+                }
+                Some((_, other)) => out.push(other),
+                None => return None,
+            },
+            other => out.push(other),
+        }
+    }
+    None
+}
+
 fn folder_children_table(interp: &mut Interpreter, dir: &std::path::Path) -> std::result::Result<Value, String> {
     let table = Value::table();
     let Value::Table(rc) = &table else { unreachable!() };
@@ -2966,20 +3069,28 @@ fn folder_children_table(interp: &mut Interpreter, dir: &std::path::Path) -> std
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file() && path.extension().map(|e| e == "luar").unwrap_or(false) {
+            let is_module_file = path.is_file()
+                && path
+                    .extension()
+                    .map(|e| e == "luar" || e == "luarb")
+                    .unwrap_or(false);
+            if is_module_file {
                 let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                 if stem != "init" {
                     names.push((stem, path));
                 }
-            } else if path.is_dir() && path.join("init.luar").is_file() {
+            } else if path.is_dir()
+                && (path.join("init.luar").is_file() || path.join("init.luarb").is_file())
+            {
                 let stem = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                 names.push((stem, path));
             }
         }
     }
     names.sort();
+    names.dedup_by(|a, b| a.0 == b.0);
     for (name, path) in names {
-        let file = if path.is_dir() { path.join("init.luar") } else { path.clone() };
+        let file = module_entry_file(&path);
         let key = std::fs::canonicalize(&file)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| file.to_string_lossy().into_owned());
@@ -2992,9 +3103,24 @@ fn folder_children_table(interp: &mut Interpreter, dir: &std::path::Path) -> std
     Ok(table)
 }
 
+fn module_entry_file(path: &std::path::Path) -> std::path::PathBuf {
+    if path.is_dir() {
+        let init = path.join("init.luar");
+        if init.is_file() {
+            init
+        } else {
+            path.join("init.luarb")
+        }
+    } else if path.extension().map(|e| e == "luarb").unwrap_or(false) {
+        path.to_path_buf()
+    } else {
+        path.with_extension("luar")
+    }
+}
+
 fn require_file(interp: &mut Interpreter, path: &std::path::Path) -> std::result::Result<Value, String> {
     use std::path::PathBuf;
-    let file = if path.is_dir() { path.join("init.luar") } else { path.with_extension("luar") };
+    let file = module_entry_file(path);
     let key = std::fs::canonicalize(&file)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| file.to_string_lossy().into_owned());
@@ -3004,14 +3130,11 @@ fn require_file(interp: &mut Interpreter, path: &std::path::Path) -> std::result
     if require_in_progress(&key) {
         return Err(require_chain_message(&file.to_string_lossy(), &key));
     }
-    let source = std::fs::read_to_string(&file)
-        .map_err(|e| format!("require: cannot read '{}': {e}", file.display()))?;
-    let tokens = crate::lexer::tokenize(&source).map_err(|e| e.to_string())?;
-    let program = crate::parser::parse(tokens).map_err(|e| e.to_string())?;
+    let program = load_module_program(&file)?;
     let global = interp.env.global_scope();
-    let mut module = Interpreter::with_shared_global(global);
+    let mut module = Interpreter::with_shared_global(global, interp.family.clone());
     module.module_dir = file.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-    module.module_is_init = file.file_name().map(|n| n == "init.luar").unwrap_or(false);
+    module.module_is_init = file.file_stem().map(|n| n == "init").unwrap_or(false);
     module.env.push_scope();
     module.env.mark_module_root();
     REQUIRE_STACK.with(|s| s.borrow_mut().push(key.clone()));
@@ -4608,5 +4731,153 @@ return 2").unwrap();
         let err = interp.run(&program).unwrap_err();
         assert!(err.0.contains("circular require"), "got: {}", err.0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn luari_json_aliases_resolve_in_require() {
+        let dir = std::env::temp_dir().join(format!("luar_luari_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Scenes")).unwrap();
+        std::fs::write(
+            dir.join("luari.json"),
+            "{\n  \"aliases\": {\n    \"Settings\": \"./Scenes/Settings\"\n  }\n}",
+        )
+        .unwrap();
+        std::fs::write(dir.join("Scenes").join("Settings.luar"), "return { volume = 5 }").unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.module_dir = dir.clone();
+        let program =
+            parse(tokenize("local s = require(\"@Settings\")\npub local v = s.volume").unwrap())
+                .unwrap();
+        interp.run(&program).unwrap();
+        assert_eq!(interp.env.get("v"), Some(Value::Int(5)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn require_loads_precompiled_luarb_modules() {
+        let dir = std::env::temp_dir().join(format!("luar_luarb_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bytes = crate::precompile_source("local M = { speed = 9 }\nreturn M").unwrap();
+        std::fs::write(dir.join("packed.luarb"), &bytes).unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.module_dir = dir.clone();
+        let program =
+            parse(tokenize("local m = require(\"./packed\")\npub local got = m.speed").unwrap())
+                .unwrap();
+        interp.run(&program).unwrap();
+        assert_eq!(interp.env.get("got"), Some(Value::Int(9)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn native_test_wait(
+        _i: &mut Interpreter,
+        args: Vec<Value>,
+    ) -> std::result::Result<Vec<Value>, String> {
+        let secs = match args.first() {
+            Some(Value::Int(i)) => *i as f64,
+            Some(Value::Float(f)) => *f,
+            _ => 0.0,
+        };
+        crate::runtime::blocking(move || {
+            std::thread::sleep(std::time::Duration::from_secs_f64(secs))
+        })?;
+        Ok(vec![])
+    }
+
+    #[test]
+    fn detached_coroutines_run_together() {
+        let mut interp = Interpreter::new();
+        interp.set_global_fn("wait", native_test_wait);
+        let program = parse(
+            tokenize(
+                r#"pub local order = ""
+for i = 1, 3 do
+    coroutine.resume(coroutine.create(function()
+        order = order .. "s" .. i
+        wait(0.05 * i)
+        order = order .. "e" .. i
+    end))
+    order = order .. "p"
+end
+order = order .. "|""#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        interp.run(&program).unwrap();
+        crate::runtime::run_pending();
+        let elapsed = started.elapsed();
+        assert_eq!(interp.env.get("order"), Some(Value::str("s1ps2ps3p|e1e2e3")));
+        assert!(elapsed.as_millis() < 400, "waits ran sequentially: {elapsed:?}");
+    }
+
+    #[test]
+    fn busy_coroutines_run_in_background() {
+        let mut interp = Interpreter::new();
+        let program = parse(
+            tokenize(
+                r#"pub local order = ""
+local function spin(seconds)
+    local target = os.clock() + seconds
+    while os.clock() < target do
+    end
+end
+for i = 1, 2 do
+    coroutine.resume(coroutine.create(function()
+        spin(0.15 + i * 0.1)
+        order = order .. "e" .. i
+    end))
+    order = order .. "p"
+end
+order = order .. "|""#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        interp.run(&program).unwrap();
+        let main_elapsed = started.elapsed();
+        crate::runtime::run_pending();
+        let order = match interp.env.get("order") {
+            Some(Value::Str(s)) => s.to_string(),
+            other => panic!("expected string order, got {other:?}"),
+        };
+        assert!(order.starts_with("pp|"), "main did not run ahead: {order}");
+        assert!(order.contains("e1") && order.contains("e2"), "{order}");
+        assert!(
+            main_elapsed.as_millis() < 200,
+            "resume blocked on busy coroutine: {main_elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn waiting_coroutine_reports_status_and_rejects_resume() {
+        let mut interp = Interpreter::new();
+        interp.set_global_fn("wait", native_test_wait);
+        let program = parse(
+            tokenize(
+                r#"local co = coroutine.create(function()
+    wait(0.2)
+end)
+coroutine.resume(co)
+pub local st = coroutine.status(co)
+local ok, err = coroutine.resume(co)
+pub local rejected = err"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        interp.run(&program).unwrap();
+        crate::runtime::run_pending();
+        assert_eq!(interp.env.get("st"), Some(Value::str("waiting")));
+        assert_eq!(
+            interp.env.get("rejected"),
+            Some(Value::str("cannot resume waiting coroutine"))
+        );
     }
 }

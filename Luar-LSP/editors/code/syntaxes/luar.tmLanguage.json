@@ -70,27 +70,12 @@
         {
           "name": "comment.block.luar",
           "begin": "--\\[(=*)\\[",
-          "end": "\\]\\1\\]",
-          "beginCaptures": {
-            "0": {
-              "name": "comment.block.luar punctuation.definition.comment.begin.luar"
-            }
-          },
-          "endCaptures": {
-            "0": {
-              "name": "comment.block.luar punctuation.definition.comment.end.luar"
-            }
-          }
+          "end": "\\]\\1\\]"
         },
         {
           "name": "comment.line.double-dash.luar",
           "begin": "--",
-          "end": "$",
-          "beginCaptures": {
-            "0": {
-              "name": "comment.line.double-dash.luar punctuation.definition.comment.luar"
-            }
-          }
+          "end": "$"
         }
       ]
     },

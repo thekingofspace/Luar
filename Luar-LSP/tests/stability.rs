@@ -102,7 +102,7 @@ fn vararg_function_with_table_collect() {
     let main = root.join("main.luar");
     let info = p.file(&main).unwrap();
     assert!(
-        info.diagnostics.is_empty(),
+        !info.diagnostics.iter().any(|d| d.severity == 1),
         "vararg fn should parse cleanly: {:?}",
         info.diagnostics
     );
@@ -119,7 +119,7 @@ fn typed_vararg_annotation_accepted() {
     let main = root.join("main.luar");
     let info = p.file(&main).unwrap();
     assert!(
-        info.diagnostics.is_empty(),
+        !info.diagnostics.iter().any(|d| d.severity == 1),
         "typed vararg should parse cleanly: {:?}",
         info.diagnostics
     );
@@ -136,7 +136,7 @@ fn variadic_generics_tolerated() {
     let main = root.join("main.luar");
     let info = p.file(&main).unwrap();
     assert!(
-        info.diagnostics.is_empty(),
+        !info.diagnostics.iter().any(|d| d.severity == 1),
         "variadic generics should not error: {:?}",
         info.diagnostics
     );

@@ -1,0 +1,5 @@
+local settings = require("@Settings")
+local util = require("./util")
+
+print("volume:", settings.volume)
+print("doubled:", util.double(settings.volume))

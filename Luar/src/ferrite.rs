@@ -76,13 +76,13 @@ pub fn check(source: &str) -> Vec<Diagnostic> {
 }
 
 #[derive(Default)]
-struct Directives {
+pub struct Directives {
     global: HashSet<String>,
     per_line: HashMap<u32, HashSet<String>>,
 }
 
 impl Directives {
-    fn silences(&self, code: &str, line: u32) -> bool {
+    pub fn silences(&self, code: &str, line: u32) -> bool {
         if self.global.contains(code) || self.global.contains("all") {
             return true;
         }
@@ -92,7 +92,7 @@ impl Directives {
     }
 }
 
-fn collect_directives(source: &str) -> Directives {
+pub fn collect_directives(source: &str) -> Directives {
     let mut d = Directives::default();
     let codes = |line: &str, idx: usize, kw: &str| -> Vec<String> {
         line[idx + kw.len()..]

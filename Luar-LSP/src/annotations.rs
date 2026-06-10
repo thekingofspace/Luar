@@ -453,7 +453,37 @@ impl<'a> Scanner<'a> {
 
     fn handle_function(&mut self, kw_line: u32, class_ctx: Option<String>) {
         if self.kind(self.i) != TokenKind::Identifier {
-            self.skip_anonymous_function_header(kw_line);
+            let target = if class_ctx.is_none() {
+                self.assigned_name_before(self.i.saturating_sub(1))
+            } else {
+                None
+            };
+            self.skip_generics();
+            if self.is_delim(self.i, "(") {
+                let params = self.scan_params();
+                let ret = if self.is_op(self.i, ":") {
+                    self.i += 1;
+                    self.parse_type_here()
+                } else {
+                    None
+                };
+                if let Some((name, name_line)) = target {
+                    if !params.is_empty() {
+                        self.out
+                            .fn_params
+                            .insert((name.clone(), kw_line), params.clone());
+                        if name_line != kw_line {
+                            self.out.fn_params.insert((name.clone(), name_line), params);
+                        }
+                    }
+                    if let Some(r) = ret {
+                        self.out.fn_returns.insert((name.clone(), kw_line), r.clone());
+                        if name_line != kw_line {
+                            self.out.fn_returns.insert((name, name_line), r);
+                        }
+                    }
+                }
+            }
             return;
         }
         let name = self.text(self.i).to_string();
@@ -517,15 +547,22 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    fn skip_anonymous_function_header(&mut self, _kw_line: u32) {
-        self.skip_generics();
-        if self.is_delim(self.i, "(") {
-            let _ = self.scan_params();
-            if self.is_op(self.i, ":") {
-                self.i += 1;
-                let _ = self.parse_type_here();
-            }
+    fn assigned_name_before(&self, kw_idx: usize) -> Option<(String, u32)> {
+        if kw_idx == 0 {
+            return None;
         }
+        let eq = kw_idx - 1;
+        if !(self.kind(eq) == TokenKind::Operator && self.text(eq) == "=") {
+            return None;
+        }
+        if eq == 0 {
+            return None;
+        }
+        let id = eq - 1;
+        if self.kind(id) != TokenKind::Identifier || STOP_KEYWORDS.contains(&self.text(id)) {
+            return None;
+        }
+        Some((self.text(id).to_string(), self.line(id)))
     }
 
     fn skip_generics(&mut self) {

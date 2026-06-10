@@ -1,9 +1,9 @@
 {
-  "name": "luar-lsp",
+  "name": "luar-lang",
   "displayName": "Luar Language",
   "description": "Language support for Luar: syntax highlighting, language server integration, inlay hints, and auto-end insertion.",
-  "version": "0.1.19",
-  "publisher": "luar",
+  "version": "0.1.21",
+  "publisher": "Raikin7",
   "license": "MIT",
   "icon": "icons/laur_logo.png",
   "engines": {

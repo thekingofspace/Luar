@@ -14,8 +14,8 @@ pub use compiler::{compile, CompileError};
 pub use lexer::{LexError, Lexer, Span, Token, TokenKind};
 pub use parser::{parse, ParseError};
 pub use runtime::{
-    Context, Environment, EvalError, Interpreter, Mutability, NativeClassBuilder, Table, Value,
-    VarError, Variable, Visibility,
+    blocking, pump_ready, run_pending, Context, Environment, EvalError, Interpreter, Mutability,
+    NativeClassBuilder, Table, Value, VarError, Variable, Visibility,
 };
 pub use vm::{RuntimeError, Vm};
 
@@ -143,26 +143,32 @@ impl Interpreter {
     }
 
     pub fn get_global(&self, name: &str) -> Option<Value> {
+        let _fam = runtime::gil::FamilyScope::enter(&self.family);
         self.env.get(name)
     }
 
     pub fn set_global(&mut self, name: &str, value: Value) {
+        let _fam = runtime::gil::FamilyScope::enter(&self.family);
         self.env.declare(name.to_string(), value, Mutability::Mutable, Visibility::Pub);
     }
 
     pub fn set_global_const(&mut self, name: &str, value: Value) {
+        let _fam = runtime::gil::FamilyScope::enter(&self.family);
         self.env.declare(name.to_string(), value, Mutability::Const, Visibility::Pub);
     }
 
     pub fn force_set(&mut self, name: &str, value: Value) -> bool {
+        let _fam = runtime::gil::FamilyScope::enter(&self.family);
         self.env.force_set(name, value)
     }
 
     pub fn nil_value(&mut self, name: &str) -> bool {
+        let _fam = runtime::gil::FamilyScope::enter(&self.family);
         self.env.force_set(name, Value::nil())
     }
 
     pub fn remove_global(&mut self, name: &str) -> bool {
+        let _fam = runtime::gil::FamilyScope::enter(&self.family);
         self.env.remove(name).is_some()
     }
 
@@ -183,6 +189,7 @@ impl Interpreter {
     }
 
     pub fn call_value(&mut self, callee: &Value, args: Vec<Value>) -> Result<Vec<Value>, EvalError> {
+        let _fam = runtime::gil::FamilyScope::enter(&self.family);
         self.call(callee, args)
     }
 }

@@ -17,6 +17,7 @@ pub struct InferOptions<'a> {
     pub require: Option<&'a (dyn Fn(&str) -> Option<Type> + Sync)>,
     pub classes: HashMap<String, ClassInfo>,
     pub enums: HashMap<String, EnumInfo>,
+    pub ambient: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -466,7 +467,7 @@ impl<'a> Inferencer<'a> {
                 line,
             } => {
                 let vals = self.eval_multi(values, targets.len());
-                for (target, val) in targets.iter().zip(vals) {
+                for (i, (target, val)) in targets.iter().zip(vals).enumerate() {
                     match target {
                         LValue::Name(name) => {
                             let computed = if *op == AssignOp::Assign {
@@ -492,12 +493,33 @@ impl<'a> Inferencer<'a> {
                             });
                         }
                         LValue::Index { base, key } => {
-                            let new_val = if *op == AssignOp::Assign {
+                            let mut new_val = if *op == AssignOp::Assign {
                                 val
                             } else {
                                 let cur = self.eval_index(base, key);
                                 self.compound_result(*op, &cur)
                             };
+                            if *op == AssignOp::Assign {
+                                if let (
+                                    Some(Expr::Function {
+                                        name: fname,
+                                        params,
+                                        is_vararg,
+                                        body,
+                                    }),
+                                    Expr::Str(k),
+                                ) = (values.get(i), key.as_ref())
+                                {
+                                    new_val = self.annotated_function_type(
+                                        k,
+                                        *line,
+                                        params,
+                                        *is_vararg,
+                                        body,
+                                        fname,
+                                    );
+                                }
+                            }
                             self.assign_index(base, key, new_val);
                         }
                     }
@@ -903,6 +925,25 @@ impl<'a> Inferencer<'a> {
                 .map(|(k, v)| (k.clone(), self.env().value_type(v)))
                 .collect(),
         )
+    }
+
+    fn annotated_function_type(
+        &mut self,
+        key_name: &str,
+        line: u32,
+        params: &[String],
+        is_vararg: bool,
+        body: &[Stmt],
+        fname: &str,
+    ) -> Type {
+        let ptypes = self.fn_param_annotations(key_name, line);
+        let mut sig = self.infer_fn(params, is_vararg, body, None, Some(fname), ptypes.as_ref());
+        if let Some(ann) = self.opts.annotations {
+            if let Some(ret) = ann.fn_returns.get(&(key_name.to_string(), line)) {
+                sig.returns = self.annotation_returns(ret);
+            }
+        }
+        Type::Function(Some(Box::new(sig)))
     }
 
     fn infer_fn(
@@ -1540,7 +1581,27 @@ impl<'a> Inferencer<'a> {
                     }
                     return;
                 }
-                _ => {}
+                other => {
+                    if self.opts.ambient
+                        && matches!(other, None | Some(Type::Unknown) | Some(Type::Nil))
+                    {
+                        if let Some(k) = &key_name {
+                            let tt = crate::types::TableType {
+                                fields: vec![(k.clone(), val)],
+                                array: None,
+                                name: Some(n.clone()),
+                            };
+                            self.bind(n, Type::Table(tt.clone()), true);
+                            self.out.bindings.push(Binding {
+                                name: n.clone(),
+                                line: None,
+                                ty: Type::Table(tt),
+                                kind: BindingKind::BareAssign,
+                            });
+                            return;
+                        }
+                    }
+                }
             }
         }
         let bty = self.eval(base);

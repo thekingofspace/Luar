@@ -158,6 +158,23 @@ TICK_RATE: <span class="typ">number</span> = <span class="num">60</span></code><
 <code>TICK_RATE</code>, and use <code>EntityId</code> in annotations. Doc comments
 above the declarations appear on hover.</p>
 
+<h3>Ferrite lints in the editor</h3>
+<p>Every <code>.luar</code> file is checked live by
+<a href="#ferrite">Ferrite</a>, the built-in code analyzer. Warnings (unused
+variables, shadowing, unreachable code, duplicate keys, and the rest of the
+check table) appear as squiggles alongside the editor's own diagnostics.
+<code>.luard</code> ambient files are not linted.</p>
+<p>Silence checks with the same directives the runtime API honors &mdash; the
+editor autocompletes both the directive keywords and the check names after
+<code>--#</code>:</p>
+<pre><code><span class="com">--#disable UnusedVariable, ShadowedVariable</span>  <span class="com">-- whole file</span>
+x = <span class="num">2</span> <span class="com">--#disable-line MutateImmutable</span>      <span class="com">-- just this line</span>
+<span class="com">--#disable-next-line ConstantCondition</span>       <span class="com">-- the following line</span>
+<span class="com">--#disable all</span>                               <span class="com">-- everything</span></code></pre>
+<p>Editor-only diagnostics are toggleable with the same syntax using these
+extra codes: <code>DuplicateEnumVariant</code>, <code>GenericArity</code>,
+<code>UnknownClass</code>, and <code>RequireCycle</code>.</p>
+
 <h3>Building the extension</h3>
 <pre><code>cd Luar-LSP
 cargo build --release

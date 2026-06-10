@@ -32,15 +32,17 @@ impl Context {
     }
 
     pub fn spawn(&mut self, source: &str) -> Result<Value, Error> {
+        let _fam = super::gil::FamilyScope::enter(&self.interp.family);
         let program = crate::parse_source(source)?;
         let global = self.interp.env.global_scope();
 
         let func = Value::function("<script>".to_string(), Vec::new(), false, Rc::new(program), global.clone());
-        let state = coroutine::create(func, global);
+        let state = coroutine::create(func, global, self.interp.family.clone());
         Ok(Value::Coroutine(Rc::new(RefCell::new(state))))
     }
 
     pub fn resume(&mut self, coro: &Value, args: Vec<Value>) -> Result<Vec<Value>, Error> {
+        let _fam = super::gil::FamilyScope::enter(&self.interp.family);
         match coro {
             Value::Coroutine(rc) => Ok(coroutine::resume(rc, args)),
             other => Err(Error::Eval(EvalError(format!(

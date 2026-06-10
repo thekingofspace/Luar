@@ -470,6 +470,7 @@ impl Project {
         let opts = InferOptions {
             annotations: Some(&ann),
             env: Some(&env),
+            ambient: true,
             ..InferOptions::default()
         };
         let analysis = crate::identify_program_with(&program, &opts);
@@ -699,6 +700,7 @@ impl Project {
             require: Some(&hook),
             classes: import_classes,
             enums: import_enums,
+            ambient: false,
         };
         let mut analysis = crate::identify_program_with(&program, &opts);
         let return_type = label_module_return(
@@ -722,12 +724,13 @@ impl Project {
                 ann_sites.push((*line, t));
             }
         }
+        let directives = luar::ferrite::collect_directives(&source);
         for (line, t) in ann_sites {
             visit_named_segs(t, &mut |seg: &NameSeg| {
                 if let Some(alias) = env.aliases.get(&seg.name) {
                     let expected = alias.generics.len();
                     let got = seg.args.as_ref().map(|a| a.len()).unwrap_or(0);
-                    if expected != got {
+                    if expected != got && !directives.silences("GenericArity", line) {
                         diagnostics.push(crate::Diagnostic {
                             line,
                             col: 1,
@@ -754,6 +757,9 @@ impl Project {
                     if !seen_variants.insert(vname) {
                         let dup_line =
                             find_nth_word_line(&source, vname, 2, *line).unwrap_or(*line);
+                        if directives.silences("DuplicateEnumVariant", dup_line) {
+                            continue;
+                        }
                         diagnostics.push(crate::Diagnostic {
                             line: dup_line,
                             col: 1,
@@ -780,6 +786,7 @@ impl Project {
                 BindingKind::Assign => {
                     if mutability.get(b.name.as_str()) == Some(&Mutability::Const)
                         && b.ty != Type::Nil
+                        && !directives.silences("MutateImmutable", b.line.unwrap_or(1))
                     {
                         diagnostics.push(crate::Diagnostic {
                             line: b.line.unwrap_or(1),
@@ -793,6 +800,22 @@ impl Project {
                     }
                 }
                 _ => {}
+            }
+        }
+        if path.extension().map(|e| e == "luar").unwrap_or(false) {
+            for d in luar::ferrite::check(&source) {
+                if d.code == "SyntaxError" || d.code == "MutateImmutable" {
+                    continue;
+                }
+                diagnostics.push(crate::Diagnostic {
+                    line: d.line,
+                    col: 1,
+                    message: format!("{} [{}]", d.message, d.code),
+                    severity: match d.severity {
+                        luar::ferrite::Severity::Error => 1,
+                        luar::ferrite::Severity::Warning => 2,
+                    },
+                });
             }
         }
         for class in analysis.classes.values() {
@@ -809,6 +832,9 @@ impl Project {
             }
             for name in unknown {
                 let line = find_word_line(&source, name).unwrap_or(1);
+                if directives.silences("UnknownClass", line) {
+                    continue;
+                }
                 diagnostics.push(crate::Diagnostic {
                     line,
                     col: 1,
@@ -843,12 +869,16 @@ impl Project {
             };
             let source = info.source.clone();
             let reqs = info.require_requests.clone();
+            let directives = luar::ferrite::collect_directives(&source);
             let mut cycle_diags: Vec<crate::Diagnostic> = Vec::new();
             for (request, target) in &reqs {
                 if let Some(chain) = self.find_require_cycle(target, &path) {
                     let line = find_line_containing(&source, &format!("\"{request}\""))
                         .or_else(|| find_line_containing(&source, &format!("'{request}'")))
                         .unwrap_or(1);
+                    if directives.silences("RequireCycle", line) {
+                        continue;
+                    }
                     cycle_diags.push(crate::Diagnostic {
                         line,
                         col: 1,

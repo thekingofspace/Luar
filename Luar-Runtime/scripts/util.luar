@@ -1,0 +1,7 @@
+local M = {}
+
+function M.double(n)
+    return n * 2
+end
+
+return M

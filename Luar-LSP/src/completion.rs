@@ -714,6 +714,47 @@ fn in_open_string(line: &str, col: usize) -> Option<(char, String)> {
     open.map(|(q, start)| (q, chars[start + 1..].iter().collect()))
 }
 
+const DIRECTIVE_KEYWORDS: [&str; 3] = ["disable", "disable-line", "disable-next-line"];
+
+const EDITOR_CHECKS: [&str; 5] = [
+    "DuplicateEnumVariant",
+    "GenericArity",
+    "UnknownClass",
+    "RequireCycle",
+    "all",
+];
+
+fn directive_completion(line: &str, col: usize) -> Option<Vec<Item>> {
+    let prefix: String = line.chars().take(col).collect();
+    let idx = prefix.rfind("--#")?;
+    let after = &prefix[idx + 3..];
+    if !after.contains(char::is_whitespace) {
+        let items: Vec<Item> = DIRECTIVE_KEYWORDS
+            .iter()
+            .filter(|k| k.starts_with(after))
+            .map(|k| Item::plain(*k, KIND_KEYWORD, "ferrite directive"))
+            .collect();
+        return Some(items);
+    }
+    let keyword = after.split_whitespace().next().unwrap_or("");
+    if !DIRECTIVE_KEYWORDS.contains(&keyword) {
+        return Some(Vec::new());
+    }
+    let partial = after
+        .rsplit(|c: char| c.is_whitespace() || c == ',')
+        .next()
+        .unwrap_or("");
+    let mut names: Vec<&str> = luar::ferrite::CHECKS.to_vec();
+    names.extend(EDITOR_CHECKS);
+    names.sort();
+    let items: Vec<Item> = names
+        .iter()
+        .filter(|c| partial.is_empty() || c.to_lowercase().starts_with(&partial.to_lowercase()))
+        .map(|c| Item::plain(*c, KIND_CONSTANT, "ferrite check"))
+        .collect();
+    Some(items)
+}
+
 pub fn in_comment(line: &str, col: usize) -> bool {
     let chars: Vec<char> = line.chars().take(col).collect();
     let mut quote: Option<char> = None;
@@ -783,15 +824,15 @@ pub fn is_type_position(line: &str, col: usize) -> bool {
     if decl {
         return true;
     }
-    if upto.contains("function") && upto.matches('(').count() > upto.matches(')').count() {
+    if function_like_line(&upto) && upto.matches('(').count() > upto.matches(')').count() {
         return true;
     }
-    let on_function_line = line_has_word(&upto, "function");
+    let on_function_line = function_like_line(&upto);
     if on_function_line && (before.ends_with(')') || upto.contains("):")) {
         return true;
     }
     let paren_open = upto.matches('(').count() > upto.matches(')').count();
-    if paren_open && upto.contains("function") {
+    if paren_open && on_function_line {
         return true;
     }
     if on_function_line
@@ -803,6 +844,24 @@ pub fn is_type_position(line: &str, col: usize) -> bool {
         return true;
     }
     false
+}
+
+fn function_like_line(upto: &str) -> bool {
+    if line_has_word(upto, "function") {
+        return true;
+    }
+    let mut rest = upto.trim_start();
+    loop {
+        let word_end = rest
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        match &rest[..word_end] {
+            "public" | "private" | "protected" | "static" | "abstract" | "final"
+            | "override" => rest = rest[word_end..].trim_start(),
+            "get" | "set" | "operator" | "constructor" | "destructor" => return true,
+            _ => return false,
+        }
+    }
 }
 
 fn find_annotation_colon(upto: &str) -> Option<usize> {
@@ -829,7 +888,7 @@ pub fn complete(view: &FileView, text: &str, line0: usize, col0: usize) -> Vec<I
     let cur_line = line0 as u32 + 1;
 
     if in_comment(line, col0) {
-        return Vec::new();
+        return directive_completion(line, col0).unwrap_or_default();
     }
 
     if let Some(partial) = require_partial(line, col0) {
@@ -920,13 +979,15 @@ pub fn complete(view: &FileView, text: &str, line0: usize, col0: usize) -> Vec<I
     if let Some(chain) = chain_before(line, col0) {
         if type_pos {
             if chain.separator == '.' {
-                if chain.segments.len() == 1 && !chain.segments[0].called {
-                    if let Some(menv) = view.env.modules.get(&chain.segments[0].name) {
-                        return menv
-                            .exported_type_names()
-                            .into_iter()
-                            .map(|n| Item::plain(n, KIND_CLASS, "exported type"))
-                            .collect();
+                if let Some(seg) = chain.segments.last() {
+                    if !seg.called {
+                        if let Some(menv) = view.env.modules.get(&seg.name) {
+                            return menv
+                                .exported_type_names()
+                                .into_iter()
+                                .map(|n| Item::plain(n, KIND_CLASS, "exported type"))
+                                .collect();
+                        }
                     }
                 }
                 return Vec::new();

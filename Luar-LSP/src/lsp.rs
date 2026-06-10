@@ -375,7 +375,9 @@ impl Server {
             if member_ty == Type::Unknown {
                 return None;
             }
-            let docs = self.member_docs(&view, &recv, &word);
+            let docs = self
+                .member_docs(&view, &recv, &word)
+                .or_else(|| self.luard_docs(&word));
             hover_markdown(&word, &member_ty, docs)
         } else if word == "self" {
             let class = self_class?;
@@ -401,7 +403,7 @@ impl Server {
                 }
                 None => {
                     let ty = view.type_of_name(&word, cur_line)?;
-                    hover_markdown(&word, &ty, None)
+                    hover_markdown(&word, &ty, self.luard_docs(&word))
                 }
             }
         };
@@ -441,6 +443,21 @@ impl Server {
                 }
             }
             current = view.find_class(&c).and_then(|i| i.parent.clone());
+        }
+        None
+    }
+
+    fn luard_docs(&self, name: &str) -> Option<String> {
+        let project = self.project.as_ref()?;
+        for p in &project.luard_files {
+            let Ok(src) = std::fs::read_to_string(p) else {
+                continue;
+            };
+            if let Some(line) = luard_decl_line(&src, name) {
+                if let Some(docs) = doc_comment_above(&src, Some(line)) {
+                    return Some(docs);
+                }
+            }
         }
         None
     }
@@ -533,7 +550,7 @@ fn capabilities() -> Json {
                 Json::obj(vec![(
                     "triggerCharacters",
                     Json::Array(
-                        [".", ":", "\"", "'", "@", "/"]
+                        [".", ":", "\"", "'", "@", "/", "#"]
                             .iter()
                             .map(|s| Json::str(*s))
                             .collect(),
@@ -660,6 +677,44 @@ fn find_member_line(src: &str, class: &str, member: &str) -> Option<u32> {
         }
         if opened && depth <= 0 {
             break;
+        }
+    }
+    None
+}
+
+fn luard_decl_line(src: &str, name: &str) -> Option<u32> {
+    for (i, raw) in src.lines().enumerate() {
+        let line = raw.trim_start();
+        if line.starts_with("--") {
+            continue;
+        }
+        let mut search = 0;
+        while let Some(pos) = line[search..].find(name) {
+            let start = search + pos;
+            let end = start + name.len();
+            search = end;
+            let before = line[..start].chars().last();
+            let boundary_before = before
+                .map(|c| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(true);
+            let after = line[end..].trim_start();
+            let boundary_after = line[end..]
+                .chars()
+                .next()
+                .map(|c| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(true);
+            if !(boundary_before && boundary_after) {
+                continue;
+            }
+            let declares = (after.starts_with('=') && !after.starts_with("=="))
+                || after.starts_with('(')
+                || after.starts_with(':')
+                || line.starts_with(&format!("function {name}"))
+                || line.starts_with(&format!("class {name}"))
+                || line.starts_with(&format!("enum {name}"));
+            if declares {
+                return Some(i as u32 + 1);
+            }
         }
     }
     None

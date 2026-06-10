@@ -131,7 +131,13 @@ async function insertEndAfterBlockOpener(event: vscode.TextDocumentChangeEvent):
         edit.insert(document.uri, document.lineAt(openerLineNumber).range.end, keyword);
     }
     if (wantsEnd) {
-        const insertPosition = document.lineAt(cursorLineNumber).range.end;
+        const cursorLine = document.lineAt(cursorLineNumber);
+        const trailing = cursorLine.text;
+        const firstNonWs = trailing.search(/\S/);
+        const closersOnly = firstNonWs >= 0 && /^[)\]},;]+$/.test(trailing.slice(firstNonWs).trimEnd());
+        const insertPosition = closersOnly
+            ? new vscode.Position(cursorLineNumber, firstNonWs)
+            : cursorLine.range.end;
         const openerIndent = rawOpener.match(/^[ \t]*/)?.[0] ?? "";
         const eol = document.eol === vscode.EndOfLine.CRLF ? "\r\n" : "\n";
         edit.insert(document.uri, insertPosition, `${eol}${openerIndent}end`);
