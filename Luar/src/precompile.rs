@@ -853,6 +853,49 @@ mod tests {
     }
 
     #[test]
+    fn precompiled_module_returns_flow_to_host_and_other_script() {
+        use crate::runtime::Value;
+
+        let module_src = r#"
+            pub local name = "mathmod"
+            local M = {}
+            function M.add(a, b) return a + b end
+            function M.mul(a, b) return a * b end
+            return M
+        "#;
+        let bytes = crate::precompile_source(module_src).expect("precompiles");
+
+        let (interp, returns) = crate::run_precompiled_returns(&bytes).expect("runs");
+        assert_eq!(interp.env.get("name"), Some(Value::str("mathmod")));
+        assert_eq!(returns.len(), 1, "module returned exactly one value");
+
+        let module = crate::load_precompiled_module(&bytes).expect("loads");
+        assert!(matches!(module, Value::Table(_)), "module is a table");
+
+        let mut host = crate::Interpreter::new();
+        host.set_global("math", module);
+        host.run_source("pub local sum = math.add(2, 3)  pub local prod = math.mul(4, 5)")
+            .expect("other script runs");
+        assert_eq!(host.get_global("sum"), Some(Value::Int(5)));
+        assert_eq!(host.get_global("prod"), Some(Value::Int(20)));
+
+        let mut shared = crate::Interpreter::new();
+        let returned = shared.run_precompiled(&bytes).expect("runs into shared interp");
+        assert_eq!(returned.len(), 1);
+        assert_eq!(shared.get_global("name"), Some(Value::str("mathmod")));
+    }
+
+    #[test]
+    fn precompiled_module_with_no_return_yields_nil() {
+        use crate::runtime::Value;
+        let bytes = crate::precompile_source("pub local x = 1").expect("precompiles");
+        let module = crate::load_precompiled_module(&bytes).expect("loads");
+        assert_eq!(module, Value::Nil);
+        let (_, returns) = crate::run_precompiled_returns(&bytes).expect("runs");
+        assert!(returns.is_empty());
+    }
+
+    #[test]
     fn precompiled_enum_switch_interface_loops() {
         let src = r#"
             pub enum Color { Red Green Blue }

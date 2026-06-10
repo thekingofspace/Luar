@@ -1,12 +1,130 @@
 
-use std::cell::RefCell as StdRefCell;
+use std::cell::{Cell, RefCell as StdRefCell};
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
-use super::env::scope_values;
+use super::env::{nil_dead_functions_in_scope, scope_parent, scope_values, ScopeRef};
 use super::value::{Class, Function, Table, Value};
 
 thread_local! {
     static HEAP: StdRefCell<Heap> = StdRefCell::new(Heap::new());
+
+    static CURRENT_SCRIPT: Cell<u64> = const { Cell::new(0) };
+
+    static NEXT_SCRIPT_ID: Cell<u64> = const { Cell::new(1) };
+
+    static SCRIPT_ROOTS: StdRefCell<HashMap<u64, ScopeRef>> = StdRefCell::new(HashMap::new());
+}
+
+pub fn current_script() -> u64 {
+    CURRENT_SCRIPT.with(|c| c.get())
+}
+
+pub fn new_script_id() -> u64 {
+    NEXT_SCRIPT_ID.with(|c| {
+        let id = c.get();
+        c.set(id + 1);
+        id
+    })
+}
+
+pub(crate) struct ScriptScope(u64);
+
+pub(crate) fn enter_script(id: u64) -> ScriptScope {
+    ScriptScope(CURRENT_SCRIPT.with(|c| c.replace(id)))
+}
+
+impl Drop for ScriptScope {
+    fn drop(&mut self) {
+        CURRENT_SCRIPT.with(|c| c.set(self.0));
+    }
+}
+
+pub(crate) fn register_script_root(id: u64, scope: ScopeRef) {
+    SCRIPT_ROOTS.with(|r| r.borrow_mut().insert(id, scope));
+}
+
+pub(crate) fn script_root(id: u64) -> Option<ScopeRef> {
+    SCRIPT_ROOTS.with(|r| r.borrow().get(&id).cloned())
+}
+
+pub(crate) fn unregister_script(id: u64) {
+    SCRIPT_ROOTS.with(|r| r.borrow_mut().remove(&id));
+}
+
+pub fn live_function_count(script: u64) -> usize {
+    HEAP.with(|h| {
+        let mut h = h.borrow_mut();
+        h.functions.retain(|w| w.strong_count() > 0);
+        h.functions
+            .iter()
+            .filter_map(|w| w.upgrade())
+            .filter(|f| f.script == script)
+            .count()
+    })
+}
+
+pub fn has_live_functions(script: u64) -> bool {
+    live_function_count(script) > 0
+}
+
+fn collect_scope_chain(start: ScopeRef, scopes: &mut Vec<ScopeRef>) {
+    let mut cur = Some(start);
+    while let Some(s) = cur {
+        if scopes.iter().any(|e| Rc::ptr_eq(e, &s)) {
+            break;
+        }
+        let parent = scope_parent(&s);
+        scopes.push(s);
+        cur = parent;
+    }
+}
+
+pub(crate) fn free_script_functions(script: u64, global: &ScopeRef) {
+    let funcs: Vec<Rc<Function>> = HEAP.with(|h| {
+        let mut h = h.borrow_mut();
+        h.functions.retain(|w| w.strong_count() > 0);
+        h.functions.iter().filter_map(|w| w.upgrade()).collect()
+    });
+    for f in &funcs {
+        if f.script == script {
+            f.dead.set(true);
+        }
+    }
+
+    let mut scopes: Vec<ScopeRef> = Vec::new();
+    collect_scope_chain(global.clone(), &mut scopes);
+    let roots: Vec<ScopeRef> = SCRIPT_ROOTS.with(|r| r.borrow().values().cloned().collect());
+    for r in roots {
+        collect_scope_chain(r, &mut scopes);
+    }
+    for f in &funcs {
+        collect_scope_chain(f.captured.clone(), &mut scopes);
+    }
+    for s in &scopes {
+        nil_dead_functions_in_scope(s);
+    }
+
+    let tables: Vec<Weak<std::cell::RefCell<Table>>> = HEAP.with(|h| {
+        let mut h = h.borrow_mut();
+        h.tables.retain(|w| w.strong_count() > 0);
+        h.tables.clone()
+    });
+    for w in &tables {
+        if let Some(rc) = w.upgrade() {
+            let mut t = rc.borrow_mut();
+            for v in t.array.iter_mut() {
+                if v.is_dead_function() {
+                    *v = Value::Nil;
+                }
+            }
+            for v in t.map.values_mut() {
+                if v.is_dead_function() {
+                    *v = Value::Nil;
+                }
+            }
+        }
+    }
 }
 
 const DEFAULT_THRESHOLD: usize = 10_000;

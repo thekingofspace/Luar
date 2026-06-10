@@ -48,6 +48,10 @@ pub struct Function {
     pub body: Rc<Vec<Stmt>>,
     pub captured: ScopeRef,
 
+    pub(crate) script: u64,
+
+    pub(crate) dead: Cell<bool>,
+
     pub(crate) gc_mark: Cell<bool>,
 }
 
@@ -414,9 +418,22 @@ impl Value {
         body: Rc<Vec<Stmt>>,
         captured: ScopeRef,
     ) -> Value {
-        let rc = Rc::new(Function { name, params, is_vararg, body, captured, gc_mark: Cell::new(false) });
+        let rc = Rc::new(Function {
+            name,
+            params,
+            is_vararg,
+            body,
+            captured,
+            script: gc::current_script(),
+            dead: Cell::new(false),
+            gc_mark: Cell::new(false),
+        });
         gc::register_function(&rc);
         Value::Function(rc)
+    }
+
+    pub(crate) fn is_dead_function(&self) -> bool {
+        matches!(self, Value::Function(f) if f.dead.get())
     }
 
     pub fn is_truthy(&self) -> bool {

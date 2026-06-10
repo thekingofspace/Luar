@@ -95,11 +95,21 @@ pub fn precompile_source(source: &str) -> Result<Vec<u8>, Error> {
 }
 
 pub fn run_precompiled(bytes: &[u8]) -> Result<Interpreter, Error> {
+    let (interp, _) = run_precompiled_returns(bytes)?;
+    Ok(interp)
+}
+
+pub fn run_precompiled_returns(bytes: &[u8]) -> Result<(Interpreter, Vec<Value>), Error> {
     let program =
         precompile::unpack(bytes).map_err(|e| Error::Compile(CompileError(e)))?;
     let mut interp = Interpreter::new();
-    interp.run(&program)?;
-    Ok(interp)
+    let returned = interp.run(&program)?;
+    Ok((interp, returned))
+}
+
+pub fn load_precompiled_module(bytes: &[u8]) -> Result<Value, Error> {
+    let (_, returned) = run_precompiled_returns(bytes)?;
+    Ok(returned.into_iter().next().unwrap_or(Value::Nil))
 }
 
 pub fn compile_source(source: &str) -> Result<Program, Error> {
@@ -117,6 +127,12 @@ impl Interpreter {
 
     pub fn run_source(&mut self, source: &str) -> Result<Vec<Value>, Error> {
         let program = parse_source(source)?;
+        Ok(self.run(&program)?)
+    }
+
+    pub fn run_precompiled(&mut self, bytes: &[u8]) -> Result<Vec<Value>, Error> {
+        let program =
+            precompile::unpack(bytes).map_err(|e| Error::Compile(CompileError(e)))?;
         Ok(self.run(&program)?)
     }
 

@@ -331,9 +331,21 @@ pub(crate) fn scope_values(scope: &ScopeRef) -> Vec<Value> {
     scope.borrow().vars.values().map(|v| v.value().clone()).collect()
 }
 
+pub(crate) fn scope_parent(scope: &ScopeRef) -> Option<ScopeRef> {
+    scope.borrow().parent.clone()
+}
+
 pub(crate) fn nil_scope_vars(scope: &ScopeRef) {
     for var in scope.borrow_mut().vars.values_mut() {
         var.force_set(Value::Nil);
+    }
+}
+
+pub(crate) fn nil_dead_functions_in_scope(scope: &ScopeRef) {
+    for var in scope.borrow_mut().vars.values_mut() {
+        if var.value().is_dead_function() {
+            var.force_set(Value::Nil);
+        }
     }
 }
 

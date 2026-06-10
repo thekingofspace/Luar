@@ -49,6 +49,8 @@ pub struct Interpreter {
     class_hooks: Vec<(String, Box<dyn FnMut(&mut Interpreter, Value)>)>,
 
     instance_hooks: Vec<(String, Box<dyn FnMut(&mut Interpreter, Value)>)>,
+
+    script_id: u64,
 }
 
 impl Default for Interpreter {
@@ -62,6 +64,8 @@ impl Interpreter {
     pub fn new() -> Self {
         let mut env = Environment::new();
         register_builtins(&mut env);
+        let script_id = gc::new_script_id();
+        gc::register_script_root(script_id, env.global_scope());
         Interpreter {
             env,
             varargs: Vec::new(),
@@ -70,6 +74,7 @@ impl Interpreter {
             has_destructors: false,
             class_hooks: Vec::new(),
             instance_hooks: Vec::new(),
+            script_id,
         }
     }
 
@@ -93,15 +98,40 @@ impl Interpreter {
         self.instance_hooks.push((base.into(), Box::new(callback)));
     }
 
+    pub fn current_script_id(&self) -> u64 {
+        self.script_id
+    }
+
+    pub fn has_live_functions(&self, script_id: u64) -> bool {
+        gc::has_live_functions(script_id)
+    }
+
+    pub fn live_function_count(&self, script_id: u64) -> usize {
+        gc::live_function_count(script_id)
+    }
+
+    pub fn free_script(&mut self, script_id: u64) -> bool {
+        let global = self.env.global_scope();
+        let root = gc::script_root(script_id);
+        gc::free_script_functions(script_id, &global);
+        if let Some(scope) = &root {
+            if !Rc::ptr_eq(scope, &global) {
+                super::env::nil_scope_vars(scope);
+            }
+        }
+        gc::unregister_script(script_id);
+        root.is_some()
+    }
+
     pub fn free_module(&mut self, name: &str) -> bool {
         let Some(key) = resolve_module_key(&self.module_dir, name) else {
             return false;
         };
-        let scope = MODULE_SCOPES.with(|s| s.borrow_mut().remove(&key));
+        let id = MODULE_SCOPES.with(|s| s.borrow_mut().remove(&key));
         MODULE_CACHE.with(|c| c.borrow_mut().remove(&key));
-        match scope {
-            Some(scope) => {
-                super::env::nil_scope_vars(&scope);
+        match id {
+            Some(id) => {
+                self.free_script(id);
                 true
             }
             None => false,
@@ -145,10 +175,12 @@ impl Interpreter {
             has_destructors: false,
             class_hooks: Vec::new(),
             instance_hooks: Vec::new(),
+            script_id: gc::new_script_id(),
         }
     }
 
     pub fn run(&mut self, program: &[Stmt]) -> Result<Vec<Value>> {
+        let _script = gc::enter_script(self.script_id);
         for stmt in program {
             match self.exec(stmt)? {
                 Flow::Normal => {}
@@ -725,12 +757,55 @@ impl Interpreter {
         Ok(self.call(callee, args)?.into_iter().next().unwrap_or(Value::Nil))
     }
 
+    pub fn call_method(&mut self, receiver: &Value, method: &str, args: Vec<Value>) -> Result<Vec<Value>> {
+        if let Value::Class(c) = receiver {
+            let c = c.clone();
+            self.check_access(&c, method)?;
+            let (m, defining) = c
+                .find_method(method)
+                .ok_or_else(|| EvalError(format!("class '{}' has no method '{method}'", c.name)))?;
+            check_abstract(&defining, method)?;
+            let self_v = self.env.get("self").unwrap_or(Value::Nil);
+            return self.invoke_method(m, self_v, defining, args);
+        }
+        if let Some(class) = instance_class(receiver) {
+            self.check_access(&class, method)?;
+            let (m, defining) = class
+                .find_method(method)
+                .ok_or_else(|| EvalError(format!("class '{}' has no method '{method}'", class.name)))?;
+            check_abstract(&defining, method)?;
+            return self.invoke_method(m, receiver.clone(), defining, args);
+        }
+        if let Value::Table(t) = receiver {
+            let m = self.index_get(t.clone(), Value::str(method))?;
+            let mut full = Vec::with_capacity(args.len() + 1);
+            full.push(receiver.clone());
+            full.extend(args);
+            return self.call(&m, full);
+        }
+        Err(EvalError(format!("attempt to call method '{method}' on a {}", receiver.type_name())))
+    }
+
+    pub fn instance_has_method(&self, receiver: &Value, method: &str) -> bool {
+        if let Some(class) = instance_class(receiver) {
+            return class.find_method(method).is_some();
+        }
+        if let Value::Class(c) = receiver {
+            return c.find_method(method).is_some();
+        }
+        false
+    }
+
     fn invoke(
         &mut self,
         f: &Rc<Function>,
         args: Vec<Value>,
         method: Option<(Value, Value, Rc<Class>)>,
     ) -> Result<Vec<Value>> {
+        if f.dead.get() {
+            return Err(EvalError("attempt to call a function from a freed script".into()));
+        }
+        let _script = gc::enter_script(f.script);
         let saved = self.env.swap_current(f.captured.clone());
         self.env.push_scope();
 
@@ -2479,7 +2554,7 @@ thread_local! {
     static MODULE_CACHE: RefCell<std::collections::HashMap<String, Value>> =
         RefCell::new(std::collections::HashMap::new());
 
-    static MODULE_SCOPES: RefCell<std::collections::HashMap<String, super::env::ScopeRef>> =
+    static MODULE_SCOPES: RefCell<std::collections::HashMap<String, u64>> =
         RefCell::new(std::collections::HashMap::new());
 }
 
@@ -2538,7 +2613,8 @@ fn builtin_require(interp: &mut Interpreter, args: Vec<Value>) -> NativeResult {
     let value = returned.into_iter().next().unwrap_or(Value::Nil);
 
     let scope = module.env.module_root_scope();
-    MODULE_SCOPES.with(|s| s.borrow_mut().insert(key.clone(), scope));
+    gc::register_script_root(module.script_id, scope);
+    MODULE_SCOPES.with(|s| s.borrow_mut().insert(key.clone(), module.script_id));
     MODULE_CACHE.with(|c| c.borrow_mut().insert(key, value.clone()));
     Ok(vec![value])
 }
@@ -2648,7 +2724,8 @@ fn require_file(interp: &mut Interpreter, path: &std::path::Path) -> std::result
     let returned = module.run(&program).map_err(|e| e.0)?;
     let value = returned.into_iter().next().unwrap_or(Value::Nil);
     let scope = module.env.module_root_scope();
-    MODULE_SCOPES.with(|s| s.borrow_mut().insert(key.clone(), scope));
+    gc::register_script_root(module.script_id, scope);
+    MODULE_SCOPES.with(|s| s.borrow_mut().insert(key.clone(), module.script_id));
     MODULE_CACHE.with(|c| c.borrow_mut().insert(key, value.clone()));
     Ok(value)
 }
@@ -3290,6 +3367,169 @@ pub local b = "2.5" * 2"#);
             .unwrap();
         assert_eq!(interp.env.get("g"), Some(Value::str("hi from rust")));
         assert_eq!(interp.env.get("n"), Some(Value::Int(12)));
+    }
+
+    #[test]
+    fn native_fn_returns_local_class_and_table() {
+        fn speak(_i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
+            let this = &args[0];
+            let n = this.field(&Value::str("sound"));
+            Ok(vec![n])
+        }
+        fn dog_init(_i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
+            args[0].set_field(Value::str("sound"), Value::str("woof"))?;
+            Ok(vec![])
+        }
+        fn make_animal(_i: &mut Interpreter, _args: Vec<Value>) -> NativeResult {
+            let class = NativeClassBuilder::new("Dog")
+                .field("sound", Value::str("?"))
+                .constructor(dog_init)
+                .method("speak", speak)
+                .build();
+            Ok(vec![class])
+        }
+        fn make_point(i: &mut Interpreter, _args: Vec<Value>) -> NativeResult {
+            let t = i.create_table();
+            t.set_field(Value::str("x"), Value::Int(3))?;
+            t.set_field(Value::str("y"), Value::Int(4))?;
+            Ok(vec![t])
+        }
+
+        let mut interp = Interpreter::new();
+        interp.set_global_fn("make_animal", make_animal);
+        interp.set_global_fn("make_point", make_point);
+        interp
+            .run_source(
+                r#"local function bark()
+                     local Dog = make_animal()
+                     local d = Dog()
+                     return d:speak()
+                   end
+                   pub local noise = bark()
+                   local p = make_point()
+                   pub local sx = p.x
+                   pub local sy = p.y"#,
+            )
+            .unwrap();
+        assert_eq!(interp.env.get("noise"), Some(Value::str("woof")));
+        assert_eq!(interp.env.get("sx"), Some(Value::Int(3)));
+        assert_eq!(interp.env.get("sy"), Some(Value::Int(4)));
+        assert_eq!(interp.env.get("Dog"), None);
+    }
+
+    #[test]
+    fn call_value_invokes_a_module_function() {
+        let bytes = crate::precompile_source(
+            "local M = {}\nfunction M.add(a, b) return a + b end\nM.label = \"m\"\nreturn M",
+        )
+        .unwrap();
+        let module = crate::load_precompiled_module(&bytes).unwrap();
+
+        let add = module.field(&Value::str("add"));
+        assert!(matches!(add, Value::Function(_)));
+
+        let mut host = Interpreter::new();
+        let out = host.call_value(&add, vec![Value::Int(2), Value::Int(3)]).unwrap();
+        assert_eq!(out, vec![Value::Int(5)]);
+
+        assert_eq!(module.field(&Value::str("label")), Value::str("m"));
+    }
+
+    #[test]
+    fn if_and_do_blocks_still_scope_locals() {
+        let i = run(
+            r#"do
+                 local only_here = 5
+                 pub local escaped = only_here
+               end
+               if true then
+                 local inside_if = 9
+                 pub local seen = inside_if
+               end
+               local outer = 1
+               do local outer = 2  pub local shadow = outer end
+               pub local outer_unchanged = outer"#,
+        );
+        assert_eq!(i.env.get("escaped"), Some(Value::Int(5)));
+        assert_eq!(i.env.get("seen"), Some(Value::Int(9)));
+        assert_eq!(i.env.get("shadow"), Some(Value::Int(2)));
+        assert_eq!(i.env.get("outer_unchanged"), Some(Value::Int(1)));
+        assert_eq!(i.env.get("only_here"), None);
+        assert_eq!(i.env.get("inside_if"), None);
+    }
+
+    #[test]
+    fn freeing_a_script_nils_its_functions_but_keeps_data() {
+        let mut interp = Interpreter::new();
+        let id = interp.current_script_id();
+        interp
+            .run_source(
+                r#"pub local handler = function() return 42 end
+                   pub local data = { run = function() return 1 end, n = 7 }
+                   pub local count = 10
+                   pub local shared = { a = 1 }"#,
+            )
+            .unwrap();
+
+        assert!(interp.has_live_functions(id));
+
+        assert!(interp.free_script(id));
+
+        assert_eq!(interp.env.get("handler"), Some(Value::Nil));
+        assert_eq!(interp.env.get("count"), Some(Value::Int(10)));
+        assert!(matches!(interp.env.get("shared"), Some(Value::Table(_))));
+
+        let data = interp.env.get("data").unwrap();
+        assert_eq!(data.field(&Value::str("run")), Value::Nil);
+        assert_eq!(data.field(&Value::str("n")), Value::Int(7));
+
+        assert!(!interp.has_live_functions(id));
+    }
+
+    #[test]
+    fn calling_a_freed_function_errors_and_live_check_tracks_refs() {
+        let mut interp = Interpreter::new();
+        let id = interp.current_script_id();
+        interp.run_source("pub local f = function() return 1 end").unwrap();
+
+        let f = interp.env.get("f").unwrap();
+        interp.free_script(id);
+
+        assert_eq!(interp.env.get("f"), Some(Value::Nil));
+        assert!(interp.call_value(&f, Vec::new()).is_err());
+
+        assert!(interp.has_live_functions(id));
+        drop(f);
+        assert!(!interp.has_live_functions(id));
+    }
+
+    #[test]
+    fn freeing_module_nils_functions_in_exported_table() {
+        let dir = std::env::temp_dir().join("luar_free_module_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = "pub local VERSION = \"1.0\"\nlocal M = {}\nfunction M.add(a, b) return a + b end\nM.tag = \"mathmod\"\nreturn M\n";
+        std::fs::write(dir.join("mathmod.luar"), source).unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.set_module_dir(&dir);
+        interp
+            .run_source(
+                r#"local m = require("mathmod")
+                   pub local before = m.add(2, 3)
+                   pub local mod = m"#,
+            )
+            .unwrap();
+        assert_eq!(interp.env.get("before"), Some(Value::Int(5)));
+        let mod_tbl = interp.env.get("mod").unwrap();
+        assert!(matches!(mod_tbl.field(&Value::str("add")), Value::Function(_)));
+
+        assert!(interp.free_module("mathmod"));
+
+        assert_eq!(mod_tbl.field(&Value::str("add")), Value::Nil);
+        assert_eq!(mod_tbl.field(&Value::str("tag")), Value::str("mathmod"));
+        assert_eq!(interp.env.get("VERSION"), Some(Value::str("1.0")));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
