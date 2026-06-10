@@ -38,3 +38,5 @@ scratch/
 docs/_site/
 docs/.jekyll-cache/
 docs/.jekyll-metadata
+.claude
+testbed

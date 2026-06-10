@@ -1,0 +1,28 @@
+-- Sample language-extension library.
+-- Everything declared in a .luard file is globally visible to every
+-- .luar file in the project, without any require. The code is never
+-- executed; it exists so the editor knows these names and types.
+
+export type EntityId = number
+export type Vec2 = { x: number, y: number }
+
+enum Layer { Background World UI }
+
+class Entity {
+  public id: number = 0
+  public name: string = ""
+  function position(): Vec2
+  end
+  function destroy()
+  end
+}
+
+-- Spawns an entity by prefab name and returns it.
+function spawn(prefab: string): Entity
+end
+
+-- Writes a line to the host log.
+function log(message: string)
+end
+
+TICK_RATE: number = 60

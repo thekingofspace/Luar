@@ -1,0 +1,127 @@
+{
+  "name": "luar-lsp",
+  "displayName": "Luar Language",
+  "description": "Language support for Luar: syntax highlighting, language server integration, inlay hints, and auto-end insertion.",
+  "version": "0.1.19",
+  "publisher": "luar",
+  "license": "MIT",
+  "icon": "icons/laur_logo.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:luar"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "luar",
+        "extensions": [
+          ".luar",
+          ".luard"
+        ],
+        "aliases": [
+          "Luar"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/laur_logo.png",
+          "dark": "./icons/laur_logo.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "luar",
+        "scopeName": "source.luar",
+        "path": "./syntaxes/luar.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "luar.restartServer",
+        "title": "Luar: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "Luar",
+      "properties": {
+        "luar.inlayHints": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inlay hints with the resolved type of each binding."
+        },
+        "luar.showMutability": {
+          "type": "boolean",
+          "default": true,
+          "description": "Prefix inlay hints with imut/mut to show binding mutability."
+        },
+        "luar.autoIndent": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically insert 'end' when pressing Enter after a block opener (if/then, do, function, switch, case, default), when the block is not already closed."
+        },
+        "luar.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the luar-lsp server executable. Leave empty to use the bundled server."
+        },
+        "luar.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the Luar language server."
+        }
+      }
+    },
+    "configurationDefaults": {
+      "editor.tokenColorCustomizations": {
+        "textMateRules": [
+          {
+            "scope": "entity.name.type.enum.luar",
+            "settings": {
+              "foreground": "#1AD9C9",
+              "fontStyle": "bold"
+            }
+          },
+          {
+            "scope": "variable.other.enummember.luar",
+            "settings": {
+              "foreground": "#5CE0D3"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node",
+    "watch": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --watch",
+    "check": "tsc --noEmit",
+    "package": "npx @vscode/vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "~1.85.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.4.0",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2"
+  },
+  "__metadata": {
+    "installedTimestamp": 1781080942213,
+    "targetPlatform": "undefined",
+    "size": 2571865
+  }
+}

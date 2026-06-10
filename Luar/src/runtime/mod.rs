@@ -1,5 +1,6 @@
 
 mod context;
+pub(crate) mod fxhash;
 mod coroutine;
 mod env;
 pub mod gc;

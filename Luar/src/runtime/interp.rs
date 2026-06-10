@@ -1,8 +1,9 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use super::fxhash::FxHashMap as HashMap;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use super::env::{Environment, VarError};
 use super::gc;
@@ -44,7 +45,11 @@ pub struct Interpreter {
 
     module_dir: std::path::PathBuf,
 
+    module_is_init: bool,
+
     has_destructors: bool,
+
+    destructing: std::collections::HashSet<usize>,
 
     class_hooks: Vec<(String, Box<dyn FnMut(&mut Interpreter, Value)>)>,
 
@@ -71,7 +76,9 @@ impl Interpreter {
             varargs: Vec::new(),
             class_ctx: Vec::new(),
             module_dir: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            module_is_init: false,
             has_destructors: false,
+            destructing: std::collections::HashSet::new(),
             class_hooks: Vec::new(),
             instance_hooks: Vec::new(),
             script_id,
@@ -172,7 +179,9 @@ impl Interpreter {
             varargs: Vec::new(),
             class_ctx: Vec::new(),
             module_dir: std::path::PathBuf::from("."),
+            module_is_init: false,
             has_destructors: false,
+            destructing: std::collections::HashSet::new(),
             class_hooks: Vec::new(),
             instance_hooks: Vec::new(),
             script_id: gc::new_script_id(),
@@ -230,16 +239,64 @@ impl Interpreter {
         }
     }
 
+    fn assign_name_with_cleanup(&mut self, name: &str, value: Value) -> Result<()> {
+        let old = if self.has_destructors {
+            self.env.get(name)
+        } else {
+            None
+        };
+        self.env.assign(name, value)?;
+        self.destroy_if_last(old)
+    }
+
+    fn destroy_if_last(&mut self, old: Option<Value>) -> Result<()> {
+        let Some(Value::Table(rc)) = old else {
+            return Ok(());
+        };
+        if Rc::strong_count(&rc) != 1 {
+            return Ok(());
+        }
+        let ptr = Rc::as_ptr(&rc) as *const () as usize;
+        if !self.destructing.insert(ptr) {
+            return Ok(());
+        }
+        let inst = Value::Table(rc);
+        let result = match instance_class(&inst) {
+            Some(class) => match class.destructor.clone() {
+                Some(dtor) => self
+                    .invoke_method(dtor, inst.clone(), class, Vec::new())
+                    .map(|_| ()),
+                None => Ok(()),
+            },
+            None => Ok(()),
+        };
+        self.destructing.remove(&ptr);
+        result
+    }
+
     fn run_scope_destructors(&mut self) -> Result<()> {
         if !self.has_destructors {
             return Ok(());
         }
         for inst in self.env.current_scope_sole_tables() {
-            if let Some(class) = instance_class(&inst) {
-                if let Some(dtor) = class.destructor.clone() {
-                    self.invoke_method(dtor, inst.clone(), class, Vec::new())?;
-                }
+            let ptr = match &inst {
+                Value::Table(rc) => Rc::as_ptr(rc) as *const () as usize,
+                _ => continue,
+            };
+            if !self.destructing.insert(ptr) {
+                continue;
             }
+            let result = match instance_class(&inst) {
+                Some(class) => match class.destructor.clone() {
+                    Some(dtor) => self
+                        .invoke_method(dtor, inst.clone(), class, Vec::new())
+                        .map(|_| ()),
+                    None => Ok(()),
+                },
+                None => Ok(()),
+            };
+            self.destructing.remove(&ptr);
+            result?;
         }
         Ok(())
     }
@@ -250,7 +307,13 @@ impl Interpreter {
                 let values = self.eval_values(inits)?;
                 for (i, name) in names.iter().enumerate() {
                     let v = values.get(i).cloned().unwrap_or(Value::Nil);
+                    let old = if self.has_destructors {
+                        self.env.get(name)
+                    } else {
+                        None
+                    };
                     self.env.declare(name.clone(), v, *mutability, *visibility);
+                    self.destroy_if_last(old)?;
                 }
             }
             Stmt::Assign { targets, op, values, .. } => self.exec_assign(targets, *op, values)?,
@@ -335,7 +398,7 @@ impl Interpreter {
                         .ok_or_else(|| EvalError(format!("undefined variable '{name}'")))?;
                     let rhs = self.eval(rhs_expr)?;
                     let new_value = self.eval_binop(compound_binop(op), current, rhs)?;
-                    self.env.assign(name, new_value)?;
+                    self.assign_name_with_cleanup(name, new_value)?;
                 }
                 LValue::Index { base, key } => {
                     let base_val = self.eval(base)?;
@@ -392,7 +455,7 @@ impl Interpreter {
                         stamp_buff_cap(&v, size);
                     }
                     if self.env.contains(name) {
-                        self.env.assign(name, v)?;
+                        self.assign_name_with_cleanup(name, v)?;
                     } else {
                         self.env.declare(name.clone(), v, Mutability::Const, Visibility::Local);
                     }
@@ -430,37 +493,117 @@ impl Interpreter {
         step: Option<&Expr>,
         body: &[Stmt],
     ) -> Result<Flow> {
-        let start = self.eval(start)?;
-        let stop = self.eval(stop)?;
-        let step = match step {
+        let start_v = self.eval(start)?;
+        let stop_v = self.eval(stop)?;
+        let step_v = match step {
             Some(e) => self.eval(e)?,
             None => Value::Int(1),
         };
-        let start = loop_number(&start)?;
-        let stop = loop_number(&stop)?;
-        let step = loop_number(&step)?;
+        let all_int = matches!(
+            (&start_v, &stop_v, &step_v),
+            (Value::Int(_), Value::Int(_), Value::Int(_))
+        );
+        let start = loop_number(&start_v)?;
+        let stop = loop_number(&stop_v)?;
+        let step = loop_number(&step_v)?;
         if step == 0.0 {
             return Err(EvalError("'for' step must not be zero".into()));
         }
 
-        let mut i = start;
-        loop {
-            let keep_going = if step > 0.0 { i <= stop } else { i >= stop };
-            if !keep_going {
-                break;
+        if block_creates_functions(body) {
+            let mut i = start;
+            loop {
+                let keep_going = if step > 0.0 { i <= stop } else { i >= stop };
+                if !keep_going {
+                    break;
+                }
+                self.env.push_scope();
+                self.env.declare(var.to_string(), float_to_value(i), Mutability::Mutable, Visibility::Local);
+                let flow = self.exec_block(body);
+                self.env.pop_scope();
+                match flow? {
+                    Flow::Break => break,
+                    Flow::Return(v) => return Ok(Flow::Return(v)),
+                    Flow::Normal => {}
+                }
+                i += step;
             }
-            self.env.push_scope();
-            self.env.declare(var.to_string(), float_to_value(i), Mutability::Mutable, Visibility::Local);
-            let flow = self.exec_block(body);
-            self.env.pop_scope();
-            match flow? {
-                Flow::Break => break,
-                Flow::Return(v) => return Ok(Flow::Return(v)),
-                Flow::Normal => {}
-            }
-            i += step;
+            return Ok(Flow::Normal);
         }
-        Ok(Flow::Normal)
+
+        self.env.push_scope();
+        self.env.declare(var.to_string(), float_to_value(start), Mutability::Mutable, Visibility::Local);
+        let var_scope = self.env.capture();
+        self.env.push_scope();
+        let mut out = Ok(Flow::Normal);
+        if all_int {
+            let (mut i, istop, istep) = (start as i64, stop as i64, step as i64);
+            loop {
+                let keep_going = if istep > 0 { i <= istop } else { i >= istop };
+                if !keep_going {
+                    break;
+                }
+                Environment::scope_force_set(&var_scope, var, Value::Int(i));
+                match self.exec_block_reused(body) {
+                    Ok(Flow::Break) => break,
+                    Ok(Flow::Return(v)) => {
+                        out = Ok(Flow::Return(v));
+                        break;
+                    }
+                    Ok(Flow::Normal) => {}
+                    Err(e) => {
+                        out = Err(e);
+                        break;
+                    }
+                }
+                self.env.clear_current();
+                match i.checked_add(istep) {
+                    Some(next) => i = next,
+                    None => break,
+                }
+            }
+        } else {
+            let mut i = start;
+            loop {
+                let keep_going = if step > 0.0 { i <= stop } else { i >= stop };
+                if !keep_going {
+                    break;
+                }
+                Environment::scope_force_set(&var_scope, var, float_to_value(i));
+                match self.exec_block_reused(body) {
+                    Ok(Flow::Break) => break,
+                    Ok(Flow::Return(v)) => {
+                        out = Ok(Flow::Return(v));
+                        break;
+                    }
+                    Ok(Flow::Normal) => {}
+                    Err(e) => {
+                        out = Err(e);
+                        break;
+                    }
+                }
+                self.env.clear_current();
+                i += step;
+            }
+        }
+        self.env.pop_scope();
+        self.env.pop_scope();
+        out
+    }
+
+    fn exec_block_reused(&mut self, stmts: &[Stmt]) -> Result<Flow> {
+        let mut flow = Flow::Normal;
+        for stmt in stmts {
+            match self.exec(stmt)? {
+                Flow::Normal => {}
+                other => {
+                    flow = other;
+                    break;
+                }
+            }
+        }
+        self.run_scope_destructors()?;
+        Ok(flow)
     }
 
     fn exec_for_in(&mut self, names: &[String], iters: &[Expr], body: &[Stmt]) -> Result<Flow> {
@@ -863,6 +1006,33 @@ impl Interpreter {
     fn eval_binop(&mut self, op: BinOp, a: Value, b: Value) -> Result<Value> {
         use BinOp::*;
 
+        match (&a, &b) {
+            (Value::Int(x), Value::Int(y)) => match op {
+                Add => return Ok(Value::Int(x.wrapping_add(*y))),
+                Sub => return Ok(Value::Int(x.wrapping_sub(*y))),
+                Mul => return Ok(Value::Int(x.wrapping_mul(*y))),
+                Lt => return Ok(Value::Bool(x < y)),
+                Le => return Ok(Value::Bool(x <= y)),
+                Gt => return Ok(Value::Bool(x > y)),
+                Ge => return Ok(Value::Bool(x >= y)),
+                Eq => return Ok(Value::Bool(x == y)),
+                Ne => return Ok(Value::Bool(x != y)),
+                _ => {}
+            },
+            (Value::Float(x), Value::Float(y)) => match op {
+                Add => return Ok(Value::Float(x + y)),
+                Sub => return Ok(Value::Float(x - y)),
+                Mul => return Ok(Value::Float(x * y)),
+                Div => return Ok(Value::Float(x / y)),
+                Lt => return Ok(Value::Bool(x < y)),
+                Le => return Ok(Value::Bool(x <= y)),
+                Gt => return Ok(Value::Bool(x > y)),
+                Ge => return Ok(Value::Bool(x >= y)),
+                _ => {}
+            },
+            _ => {}
+        }
+
         if instance_class(&a).is_some() || instance_class(&b).is_some() {
             if let Some(result) = self.try_class_binop(op, &a, &b)? {
                 return Ok(result);
@@ -979,14 +1149,14 @@ impl Interpreter {
         }
 
         let captured = self.env.capture();
-        let mut methods: HashMap<String, Value> = HashMap::new();
-        let mut operators: HashMap<String, Value> = HashMap::new();
-        let mut getters: HashMap<String, Value> = HashMap::new();
-        let mut setters: HashMap<String, Value> = HashMap::new();
+        let mut methods: HashMap<String, Value> = HashMap::default();
+        let mut operators: HashMap<String, Value> = HashMap::default();
+        let mut getters: HashMap<String, Value> = HashMap::default();
+        let mut setters: HashMap<String, Value> = HashMap::default();
         let mut constructor: Option<Value> = None;
         let mut destructor: Option<Value> = None;
         let mut fields: Vec<FieldDef> = Vec::new();
-        let mut access_map: HashMap<String, Access> = HashMap::new();
+        let mut access_map: HashMap<String, Access> = HashMap::default();
         let mut abstracts: HashSet<String> = HashSet::new();
         let mut finals: HashSet<String> = HashSet::new();
         let statics = Value::table();
@@ -1439,6 +1609,80 @@ fn operator_to_metamethod(sym: &str, user_params: usize) -> Option<&'static str>
         "tostring" => "__tostring",
         _ => return None,
     })
+}
+
+fn block_creates_functions(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(stmt_creates_functions)
+}
+
+fn stmt_creates_functions(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Class { .. } => true,
+        Stmt::Declare { inits, .. } => inits.iter().any(expr_creates_functions),
+        Stmt::Assign { targets, values, .. } => {
+            values.iter().any(expr_creates_functions)
+                || targets.iter().any(|t| match t {
+                    LValue::Index { base, key } => {
+                        expr_creates_functions(base) || expr_creates_functions(key)
+                    }
+                    LValue::Name(_) => false,
+                })
+        }
+        Stmt::Do(body) => block_creates_functions(body),
+        Stmt::If { branches, else_block, .. } => {
+            branches
+                .iter()
+                .any(|(c, b)| expr_creates_functions(c) || block_creates_functions(b))
+                || else_block.as_ref().map(|b| block_creates_functions(b)).unwrap_or(false)
+        }
+        Stmt::While { cond, body, .. } => {
+            expr_creates_functions(cond) || block_creates_functions(body)
+        }
+        Stmt::ForNumeric { start, stop, step, body, .. } => {
+            expr_creates_functions(start)
+                || expr_creates_functions(stop)
+                || step.as_ref().map(expr_creates_functions).unwrap_or(false)
+                || block_creates_functions(body)
+        }
+        Stmt::ForIn { iters, body, .. } => {
+            iters.iter().any(expr_creates_functions) || block_creates_functions(body)
+        }
+        Stmt::Return { values, .. } => values.iter().any(expr_creates_functions),
+        Stmt::Buff { init, .. } => expr_creates_functions(init),
+        Stmt::Expr(e, _) => expr_creates_functions(e),
+        _ => false,
+    }
+}
+
+fn expr_creates_functions(e: &Expr) -> bool {
+    match e {
+        Expr::Function { .. } => true,
+        Expr::Table(entries) => entries.iter().any(|entry| match entry {
+            TableEntry::Positional(v) => expr_creates_functions(v),
+            TableEntry::Keyed { key, value } => {
+                expr_creates_functions(key) || expr_creates_functions(value)
+            }
+        }),
+        Expr::Index { base, key } => expr_creates_functions(base) || expr_creates_functions(key),
+        Expr::Call { callee, args } => {
+            expr_creates_functions(callee) || args.iter().any(expr_creates_functions)
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            expr_creates_functions(receiver) || args.iter().any(expr_creates_functions)
+        }
+        Expr::Switch { subject, cases, default } => {
+            expr_creates_functions(subject)
+                || cases.iter().any(|c| {
+                    expr_creates_functions(&c.pattern) || block_creates_functions(&c.body)
+                })
+                || default.as_ref().map(|b| block_creates_functions(b)).unwrap_or(false)
+        }
+        Expr::Unary { expr, .. } => expr_creates_functions(expr),
+        Expr::Binary { lhs, rhs, .. } | Expr::Logical { lhs, rhs, .. } => {
+            expr_creates_functions(lhs) || expr_creates_functions(rhs)
+        }
+        _ => false,
+    }
 }
 
 fn loop_number(v: &Value) -> Result<f64> {
@@ -2343,10 +2587,10 @@ impl NativeClassBuilder {
     pub fn new(name: impl Into<String>) -> Self {
         NativeClassBuilder {
             name: name.into(),
-            methods: HashMap::new(),
-            operators: HashMap::new(),
-            getters: HashMap::new(),
-            setters: HashMap::new(),
+            methods: HashMap::default(),
+            operators: HashMap::default(),
+            getters: HashMap::default(),
+            setters: HashMap::default(),
             fields: Vec::new(),
             constructor: None,
             parent: None,
@@ -2461,7 +2705,7 @@ impl NativeClassBuilder {
             statics: statics_rc.clone(),
             getters,
             setters,
-            access: HashMap::new(),
+            access: HashMap::default(),
             abstracts: HashSet::new(),
             finals: HashSet::new(),
             is_final: self.is_final,
@@ -2556,6 +2800,33 @@ thread_local! {
 
     static MODULE_SCOPES: RefCell<std::collections::HashMap<String, u64>> =
         RefCell::new(std::collections::HashMap::new());
+
+    static REQUIRE_STACK: RefCell<Vec<String>> = RefCell::new(Vec::new());
+}
+
+fn require_in_progress(key: &str) -> bool {
+    REQUIRE_STACK.with(|s| s.borrow().iter().any(|k| k == key))
+}
+
+fn require_chain_message(raw: &str, key: &str) -> String {
+    let chain = REQUIRE_STACK.with(|s| {
+        s.borrow()
+            .iter()
+            .map(|k| short_module_name(k))
+            .collect::<Vec<String>>()
+            .join(" -> ")
+    });
+    format!(
+        "require: circular require of '{raw}' ({chain} -> {})",
+        short_module_name(key)
+    )
+}
+
+fn short_module_name(key: &str) -> String {
+    std::path::Path::new(key)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| key.to_string())
 }
 
 fn builtin_require(interp: &mut Interpreter, args: Vec<Value>) -> NativeResult {
@@ -2584,6 +2855,8 @@ fn builtin_require(interp: &mut Interpreter, args: Vec<Value>) -> NativeResult {
             Some(t) => target.join(t),
             None => target,
         }
+    } else if raw.starts_with('.') && interp.module_is_init {
+        dir.join("..").join(&raw)
     } else {
         dir.join(&raw)
     };
@@ -2598,6 +2871,9 @@ fn builtin_require(interp: &mut Interpreter, args: Vec<Value>) -> NativeResult {
     if let Some(cached) = MODULE_CACHE.with(|c| c.borrow().get(&key).cloned()) {
         return Ok(vec![cached]);
     }
+    if require_in_progress(&key) {
+        return Err(require_chain_message(&raw, &key));
+    }
 
     let source = std::fs::read_to_string(&file)
         .map_err(|e| format!("require: cannot read '{}': {e}", file.display()))?;
@@ -2607,9 +2883,15 @@ fn builtin_require(interp: &mut Interpreter, args: Vec<Value>) -> NativeResult {
     let global = interp.env.global_scope();
     let mut module = Interpreter::with_shared_global(global);
     module.module_dir = file.parent().map(PathBuf::from).unwrap_or(dir);
+    module.module_is_init = file.file_name().map(|n| n == "init.luar").unwrap_or(false);
     module.env.push_scope();
     module.env.mark_module_root();
-    let returned = module.run(&program).map_err(|e| e.0)?;
+    REQUIRE_STACK.with(|s| s.borrow_mut().push(key.clone()));
+    let run_result = module.run(&program);
+    REQUIRE_STACK.with(|s| {
+        s.borrow_mut().pop();
+    });
+    let returned = run_result.map_err(|e| e.0)?;
     let value = returned.into_iter().next().unwrap_or(Value::Nil);
 
     let scope = module.env.module_root_scope();
@@ -2697,6 +2979,13 @@ fn folder_children_table(interp: &mut Interpreter, dir: &std::path::Path) -> std
     }
     names.sort();
     for (name, path) in names {
+        let file = if path.is_dir() { path.join("init.luar") } else { path.clone() };
+        let key = std::fs::canonicalize(&file)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| file.to_string_lossy().into_owned());
+        if require_in_progress(&key) {
+            continue;
+        }
         let value = require_file(interp, &path)?;
         rc.borrow_mut().set(Value::str(name.as_str()), value)?;
     }
@@ -2712,6 +3001,9 @@ fn require_file(interp: &mut Interpreter, path: &std::path::Path) -> std::result
     if let Some(cached) = MODULE_CACHE.with(|c| c.borrow().get(&key).cloned()) {
         return Ok(cached);
     }
+    if require_in_progress(&key) {
+        return Err(require_chain_message(&file.to_string_lossy(), &key));
+    }
     let source = std::fs::read_to_string(&file)
         .map_err(|e| format!("require: cannot read '{}': {e}", file.display()))?;
     let tokens = crate::lexer::tokenize(&source).map_err(|e| e.to_string())?;
@@ -2719,9 +3011,15 @@ fn require_file(interp: &mut Interpreter, path: &std::path::Path) -> std::result
     let global = interp.env.global_scope();
     let mut module = Interpreter::with_shared_global(global);
     module.module_dir = file.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    module.module_is_init = file.file_name().map(|n| n == "init.luar").unwrap_or(false);
     module.env.push_scope();
     module.env.mark_module_root();
-    let returned = module.run(&program).map_err(|e| e.0)?;
+    REQUIRE_STACK.with(|s| s.borrow_mut().push(key.clone()));
+    let run_result = module.run(&program);
+    REQUIRE_STACK.with(|s| {
+        s.borrow_mut().pop();
+    });
+    let returned = run_result.map_err(|e| e.0)?;
     let value = returned.into_iter().next().unwrap_or(Value::Nil);
     let scope = module.env.module_root_scope();
     gc::register_script_root(module.script_id, scope);
@@ -3544,6 +3842,55 @@ pub local b = "2.5" * 2"#);
     }
 
     #[test]
+    fn destructor_runs_on_reassignment() {
+        let interp = run(
+            r#"pub local log = ""
+class R {
+    destructor()
+        log = log .. "ran"
+    end
+}
+local varg = R()
+varg = nil
+log = log .. "|here""#,
+        );
+        assert_eq!(interp.env.get("log"), Some(Value::str("ran|here")));
+    }
+
+    #[test]
+    fn destructor_skipped_when_other_reference_alive() {
+        let interp = run(
+            r#"pub local log = ""
+class R {
+    destructor()
+        log = log .. "ran"
+    end
+}
+local a = R()
+local keep = a
+a = nil
+log = log .. "|after""#,
+        );
+        assert_eq!(interp.env.get("log"), Some(Value::str("|after")));
+    }
+
+    #[test]
+    fn destructor_runs_on_redeclare() {
+        let interp = run(
+            r#"pub local log = ""
+class R {
+    destructor()
+        log = log .. "x"
+    end
+}
+local v = R()
+local v = R()
+local v = nil"#,
+        );
+        assert_eq!(interp.env.get("log"), Some(Value::str("xx")));
+    }
+
+    #[test]
     fn destructor_skips_returned_instance() {
         let i = run(
             r#"pub local freed = false
@@ -4212,5 +4559,54 @@ y = 100
 pub local original = x"#,
         );
         assert_eq!(copied.env.get("original"), Some(Value::Int(5)));
+    }
+
+    #[test]
+    fn circular_require_errors_instead_of_recursing() {
+        let dir = std::env::temp_dir().join(format!("luar_cycle_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.luar"), "local b = require(\"./b\")
+return 1").unwrap();
+        std::fs::write(dir.join("b.luar"), "local a = require(\"./a\")
+return 2").unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.module_dir = dir.clone();
+        let program = parse(tokenize("local a = require(\"./a\")").unwrap()).unwrap();
+        let err = interp.run(&program).unwrap_err();
+        assert!(err.0.contains("circular require"), "got: {}", err.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn init_dot_requires_resolve_from_parent() {
+        let dir = std::env::temp_dir().join(format!("luar_initdot_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("pack")).unwrap();
+        std::fs::write(dir.join("other.luar"), "return 41").unwrap();
+        std::fs::write(dir.join("pack").join("init.luar"), "return require(\"./other\")").unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.module_dir = dir.clone();
+        let program = parse(tokenize("pub local got = require(\"./pack\")").unwrap()).unwrap();
+        interp.run(&program).unwrap();
+        assert_eq!(interp.env.get("got"), Some(Value::Int(41)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn self_require_errors() {
+        let dir = std::env::temp_dir().join(format!("luar_selfreq_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("loop.luar"), "return require(\"./loop\")").unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.module_dir = dir.clone();
+        let program = parse(tokenize("local v = require(\"./loop\")").unwrap()).unwrap();
+        let err = interp.run(&program).unwrap_err();
+        assert!(err.0.contains("circular require"), "got: {}", err.0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

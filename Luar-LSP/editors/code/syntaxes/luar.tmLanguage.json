@@ -1,0 +1,789 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Luar",
+  "scopeName": "source.luar",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#class-declaration"
+    },
+    {
+      "include": "#type-declaration"
+    },
+    {
+      "include": "#function-declaration"
+    },
+    {
+      "include": "#cast-operator"
+    },
+    {
+      "include": "#type-annotation"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#builtins"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#function-call"
+    },
+    {
+      "include": "#property-access"
+    },
+    {
+      "include": "#identifiers"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "meta.preprocessor.directive.luar",
+          "match": "^\\s*(--#)(\\S*)(.*)$",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.directive.luar keyword.control.directive.luar"
+            },
+            "2": {
+              "name": "keyword.control.directive.luar"
+            },
+            "3": {
+              "name": "meta.preprocessor.string.luar"
+            }
+          }
+        },
+        {
+          "name": "comment.block.luar",
+          "begin": "--\\[(=*)\\[",
+          "end": "\\]\\1\\]",
+          "beginCaptures": {
+            "0": {
+              "name": "comment.block.luar punctuation.definition.comment.begin.luar"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "comment.block.luar punctuation.definition.comment.end.luar"
+            }
+          }
+        },
+        {
+          "name": "comment.line.double-dash.luar",
+          "begin": "--",
+          "end": "$",
+          "beginCaptures": {
+            "0": {
+              "name": "comment.line.double-dash.luar punctuation.definition.comment.luar"
+            }
+          }
+        }
+      ]
+    },
+    "string-escape": {
+      "patterns": [
+        {
+          "name": "constant.character.escape.unicode.luar",
+          "match": "\\\\u\\{[0-9a-fA-F]+\\}"
+        },
+        {
+          "name": "constant.character.escape.byte.luar",
+          "match": "\\\\x[0-9a-fA-F]{2}"
+        },
+        {
+          "name": "constant.character.escape.luar",
+          "match": "\\\\(\\r?\\n|.)"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.luar",
+          "begin": "\"",
+          "end": "\"",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.luar"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.luar"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#string-escape"
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.luar",
+          "begin": "'",
+          "end": "'",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.luar"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.luar"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#string-escape"
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.other.multiline.luar",
+          "begin": "\\[(=*)\\[",
+          "end": "\\]\\1\\]",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.luar"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.luar"
+            }
+          }
+        },
+        {
+          "name": "string.interpolated.luar",
+          "begin": "`",
+          "end": "`",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.luar"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.luar"
+            }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.luar",
+              "match": "\\\\[{}`]"
+            },
+            {
+              "include": "#string-escape"
+            },
+            {
+              "name": "meta.embedded.line.luar",
+              "begin": "\\{",
+              "end": "\\}",
+              "beginCaptures": {
+                "0": {
+                  "name": "punctuation.section.interpolation.begin.luar"
+                }
+              },
+              "endCaptures": {
+                "0": {
+                  "name": "punctuation.section.interpolation.end.luar"
+                }
+              },
+              "contentName": "source.luar",
+              "patterns": [
+                {
+                  "include": "$self"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.luar",
+          "match": "\\b0[xX][0-9a-fA-F][0-9a-fA-F_]*\\b"
+        },
+        {
+          "name": "constant.numeric.float.luar",
+          "match": "\\b\\d[\\d_]*\\.[\\d_]*(?:[eE][+-]?\\d[\\d_]*)?\\b"
+        },
+        {
+          "name": "constant.numeric.float.luar",
+          "match": "\\b\\d[\\d_]*[eE][+-]?\\d[\\d_]*\\b"
+        },
+        {
+          "name": "constant.numeric.integer.luar",
+          "match": "\\b\\d[\\d_]*\\b"
+        }
+      ]
+    },
+    "class-declaration": {
+      "patterns": [
+        {
+          "match": "\\b(class)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.class.luar"
+            },
+            "2": {
+              "name": "entity.name.type.class.luar"
+            }
+          }
+        },
+        {
+          "match": "\\b(extends)\\s+([A-Za-z_][\\w.]*)",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.extends.luar"
+            },
+            "2": {
+              "name": "entity.other.inherited-class.luar"
+            }
+          }
+        },
+        {
+          "begin": "\\b(mixin|implements)\\b",
+          "end": "(?=\\b(?:extends|mixin|implements)\\b|\\{|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.modifier.luar"
+            }
+          },
+          "patterns": [
+            {
+              "name": "entity.other.inherited-class.luar",
+              "match": "[A-Za-z_][\\w.]*"
+            },
+            {
+              "name": "punctuation.separator.luar",
+              "match": ","
+            }
+          ]
+        }
+      ]
+    },
+    "type-declaration": {
+      "patterns": [
+        {
+          "include": "#enum-declaration"
+        },
+        {
+          "begin": "\\b(type)\\s+([A-Za-z_]\\w*)\\s*(<[^<>\\n]*>)?\\s*(=)",
+          "end": "(?=$)",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.type.luar"
+            },
+            "2": {
+              "name": "entity.name.type.luar"
+            },
+            "3": {
+              "patterns": [
+                {
+                  "match": "[<>]",
+                  "name": "keyword.control.generic.luar"
+                },
+                {
+                  "match": "[A-Za-z_]\\w*",
+                  "name": "variable.other.property.luar"
+                }
+              ]
+            },
+            "4": {
+              "name": "keyword.operator.assignment.luar"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#type-expr"
+            }
+          ]
+        },
+        {
+          "match": "\\b(interface|enum|type)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.luar"
+            },
+            "2": {
+              "name": "entity.name.type.luar"
+            }
+          }
+        }
+      ]
+    },
+    "function-declaration": {
+      "patterns": [
+        {
+          "match": "\\b(function)\\b\\s*([A-Za-z_]\\w*(?:[.:][A-Za-z_]\\w*)*)?\\s*(<(?:[^<>\\n]|<[^<>\\n]*>)*>)?\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "storage.type.function.luar"
+            },
+            "2": {
+              "name": "entity.name.function.luar"
+            },
+            "3": {
+              "patterns": [
+                {
+                  "match": "[<>]",
+                  "name": "keyword.control.generic.luar"
+                },
+                {
+                  "match": "[A-Za-z_]\\w*",
+                  "name": "variable.other.property.luar"
+                },
+                {
+                  "match": ",",
+                  "name": "punctuation.separator.luar"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "match": "\\b([A-Za-z_]\\w*)\\s*(=)\\s*(function)\\b",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.luar"
+            },
+            "2": {
+              "name": "keyword.operator.assignment.luar"
+            },
+            "3": {
+              "name": "storage.type.function.luar"
+            }
+          }
+        },
+        {
+          "match": "\\b(constructor|destructor)\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "storage.type.function.luar entity.name.function.constructor.luar"
+            }
+          }
+        },
+        {
+          "match": "\\b(operator)\\s*([+\\-*/%^#]|\\.\\.|==|~=|<=?|>=?)?",
+          "captures": {
+            "1": {
+              "name": "storage.type.function.luar"
+            },
+            "2": {
+              "name": "entity.name.function.operator.luar"
+            }
+          }
+        },
+        {
+          "match": "\\b(get|set)\\s+([A-Za-z_]\\w*)\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "storage.type.function.luar"
+            },
+            "2": {
+              "name": "entity.name.function.luar"
+            }
+          }
+        }
+      ]
+    },
+    "cast-operator": {
+      "begin": "(::)",
+      "end": "(?=[=;,)\\]}]|$|-(?!>)|[+*/%^#]|\\.\\.(?!\\.)|\\b(?:and|or|then|do|end|in)\\b)",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.operator.cast.luar"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#type-expr"
+        }
+      ]
+    },
+    "type-annotation": {
+      "begin": "(?<=[\\w?)\\]])(:)(?!:)(?!\\s*[A-Za-z_][\\w.]*\\s*[({\\\"\\x27`\\[])",
+      "end": "(?=[=;,)\\]}]|$|-(?!>)|[+*/%^#]|\\.\\.(?!\\.)|\\b(?:and|or|then|do|end|in)\\b)",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.separator.type-annotation.luar"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#type-expr"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "storage.modifier.control.conditional.luar",
+          "match": "\\b(if|then|elseif|else)\\b"
+        },
+        {
+          "name": "storage.modifier.control.switch.luar",
+          "match": "\\b(switch|case|default)\\b"
+        },
+        {
+          "name": "storage.modifier.control.loop.luar",
+          "match": "\\b(for|while|in|break)\\b"
+        },
+        {
+          "name": "storage.modifier.control.luar",
+          "match": "\\b(do|end|return)\\b"
+        },
+        {
+          "name": "storage.modifier.logical.luar",
+          "match": "\\b(and|or|not)\\b"
+        },
+        {
+          "name": "storage.modifier.visibility.luar",
+          "match": "\\b(pub|export|public|private|protected)\\b"
+        },
+        {
+          "name": "storage.modifier.luar",
+          "match": "\\b(local|const|static|abstract|final|override)\\b"
+        },
+        {
+          "name": "storage.modifier.buffer.luar",
+          "match": "\\b(buff|freebuff)\\b"
+        },
+        {
+          "name": "storage.type.function.luar",
+          "match": "\\b(function|constructor|destructor|operator)\\b"
+        },
+        {
+          "name": "storage.type.luar",
+          "match": "\\b(class|interface|enum|type)\\b"
+        },
+        {
+          "name": "storage.modifier.luar",
+          "match": "\\b(extends|mixin|implements)\\b"
+        },
+        {
+          "name": "storage.type.property.luar",
+          "match": "\\b(get|set)\\b(?=\\s+[A-Za-z_]\\w*\\s*\\()"
+        },
+        {
+          "name": "variable.language.self.luar",
+          "match": "\\bself\\b"
+        },
+        {
+          "name": "variable.language.super.luar",
+          "match": "\\bsuper\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.luar",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.language.nil.luar",
+          "match": "\\bnil\\b"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.luar",
+          "match": "(?<![.:\\w])(print|warn|type|tostring|tonumber|assert|error|select|pcall|ipairs|pairs|next|setmetatable|getmetatable|rawget|rawset|rawequal|rawlen|require|instanceof|classname|classof|superclass|methodsof|isabstract|collectgarbage)\\b(?!\\s*[=:]\\s*[^=])"
+        },
+        {
+          "name": "support.class.luar",
+          "match": "(?<![.:\\w])(math|string|table|bit32|os|coroutine)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.assignment.compound.luar",
+          "match": "(\\+=|-=|\\*=|/=|%=|\\.\\.=)"
+        },
+        {
+          "name": "keyword.operator.comparison.luar",
+          "match": "(==|~=|<=|>=|<|>)"
+        },
+        {
+          "name": "keyword.operator.assignment.luar",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.concat.luar",
+          "match": "\\.\\."
+        },
+        {
+          "name": "keyword.operator.arithmetic.luar",
+          "match": "[+\\-*/%^]"
+        },
+        {
+          "name": "keyword.operator.length.luar",
+          "match": "#"
+        }
+      ]
+    },
+    "function-call": {
+      "match": "\\b([A-Za-z_]\\w*)\\s*(?=\\()",
+      "captures": {
+        "1": {
+          "name": "entity.name.function.call.luar"
+        }
+      }
+    },
+    "identifiers": {
+      "patterns": [
+        {
+          "name": "entity.name.type.luar",
+          "match": "\\b[A-Z]\\w*\\b(?=\\s*[.(])"
+        },
+        {
+          "name": "variable.other.luar",
+          "match": "\\b[A-Za-z_]\\w*\\b"
+        }
+      ]
+    },
+    "property-access": {
+      "match": "(?<=[\\w)\\]])(\\.)([A-Za-z_]\\w*)(?!\\s*[\\w({\"\\x27`\\[])",
+      "captures": {
+        "1": {
+          "name": "punctuation.accessor.luar"
+        },
+        "2": {
+          "name": "variable.other.property.luar"
+        }
+      }
+    },
+    "type-expr": {
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#generic-args"
+        },
+        {
+          "include": "#type-braces"
+        },
+        {
+          "include": "#type-parens"
+        },
+        {
+          "match": "\"[^\"\\n]*\"",
+          "name": "entity.name.type.literal.luar string.quoted.double.luar"
+        },
+        {
+          "match": "'[^'\\n]*'",
+          "name": "entity.name.type.literal.luar string.quoted.single.luar"
+        },
+        {
+          "match": "-?\\b\\d[\\w.]*\\b",
+          "name": "entity.name.type.literal.luar constant.numeric.luar"
+        },
+        {
+          "match": "->",
+          "name": "keyword.operator.arrow.luar"
+        },
+        {
+          "match": "[|&?]",
+          "name": "keyword.operator.type.luar"
+        },
+        {
+          "match": "\\.\\.\\.",
+          "name": "keyword.operator.vararg.luar"
+        },
+        {
+          "match": "[.,;]",
+          "name": "punctuation.separator.luar"
+        },
+        {
+          "match": "\\b[A-Za-z_]\\w*\\b",
+          "name": "entity.name.type.luar support.type.luar"
+        }
+      ]
+    },
+    "type-expr-blue": {
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#generic-args"
+        },
+        {
+          "include": "#type-braces"
+        },
+        {
+          "include": "#type-parens"
+        },
+        {
+          "match": "\"[^\"\\n]*\"",
+          "name": "entity.name.type.literal.luar string.quoted.double.luar"
+        },
+        {
+          "match": "'[^'\\n]*'",
+          "name": "entity.name.type.literal.luar string.quoted.single.luar"
+        },
+        {
+          "match": "-?\\b\\d[\\w.]*\\b",
+          "name": "entity.name.type.literal.luar constant.numeric.luar"
+        },
+        {
+          "match": "->",
+          "name": "keyword.operator.arrow.luar"
+        },
+        {
+          "match": "[|&?]",
+          "name": "keyword.operator.type.luar"
+        },
+        {
+          "match": "\\.\\.\\.",
+          "name": "keyword.operator.vararg.luar"
+        },
+        {
+          "match": "[.,;]",
+          "name": "punctuation.separator.luar"
+        },
+        {
+          "match": "\\b[A-Za-z_]\\w*\\b",
+          "name": "variable.other.property.luar support.type.generic.luar"
+        }
+      ]
+    },
+    "generic-args": {
+      "begin": "(<)",
+      "end": "(>)",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.generic.luar"
+        }
+      },
+      "endCaptures": {
+        "1": {
+          "name": "keyword.control.generic.luar"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#type-expr-blue"
+        }
+      ]
+    },
+    "type-braces": {
+      "begin": "\\{",
+      "end": "\\}",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.type.table.begin.luar"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.type.table.end.luar"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "match": "[A-Za-z_]\\w*(?=\\s*\\??\\s*[:=])",
+          "name": "variable.other.luar"
+        },
+        {
+          "match": "[:=]",
+          "name": "punctuation.separator.type-annotation.luar"
+        },
+        {
+          "match": "\\[|\\]",
+          "name": "punctuation.definition.type.index.luar"
+        },
+        {
+          "include": "#type-expr"
+        }
+      ]
+    },
+    "type-parens": {
+      "begin": "\\(",
+      "end": "\\)",
+      "patterns": [
+        {
+          "match": "[A-Za-z_]\\w*(?=\\s*:)",
+          "name": "variable.parameter.luar"
+        },
+        {
+          "match": ":",
+          "name": "punctuation.separator.type-annotation.luar"
+        },
+        {
+          "include": "#type-expr"
+        }
+      ]
+    },
+    "enum-declaration": {
+      "begin": "\\b(enum)\\s+([A-Za-z_]\\w*)",
+      "end": "\\}",
+      "beginCaptures": {
+        "1": {
+          "name": "storage.type.luar"
+        },
+        "2": {
+          "name": "entity.name.type.enum.luar"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.enum.end.luar"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#strings"
+        },
+        {
+          "include": "#numbers"
+        },
+        {
+          "match": "\\{",
+          "name": "punctuation.definition.enum.begin.luar"
+        },
+        {
+          "match": "=",
+          "name": "keyword.operator.assignment.luar"
+        },
+        {
+          "match": "[A-Za-z_]\\w*",
+          "name": "variable.other.enummember.luar"
+        },
+        {
+          "match": "[,;]",
+          "name": "punctuation.separator.luar"
+        }
+      ]
+    }
+  }
+}

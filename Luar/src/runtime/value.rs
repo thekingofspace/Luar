@@ -1,6 +1,7 @@
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use super::fxhash::FxHashMap as HashMap;
+use std::collections::HashSet;
 use std::fmt;
 use std::rc::Rc;
 

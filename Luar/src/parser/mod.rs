@@ -579,6 +579,14 @@ impl Parser {
             loop {
                 if self.eat_op("...") {
                     is_vararg = true;
+                    if self.eat_op(":") {
+                        let _ = self.parse_type()?;
+                    }
+                    break;
+                }
+                if self.eat_op("...:") {
+                    is_vararg = true;
+                    let _ = self.parse_type()?;
                     break;
                 }
                 params.push(self.parse_typed_name()?);

@@ -172,6 +172,16 @@ impl Environment {
             .collect()
     }
 
+    pub fn clear_current(&mut self) {
+        self.current.borrow_mut().vars.clear();
+    }
+
+    pub fn scope_force_set(scope: &ScopeRef, name: &str, value: Value) {
+        if let Some(var) = scope.borrow_mut().vars.get_mut(name) {
+            var.force_set(value);
+        }
+    }
+
     pub fn push_scope(&mut self) {
         let child = Scope { vars: HashMap::new(), parent: Some(self.current.clone()) };
         self.current = Rc::new(RefCell::new(child));

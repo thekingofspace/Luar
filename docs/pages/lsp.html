@@ -1,0 +1,169 @@
+<h1 id="lsp">Editor &amp; LSP</h1>
+<p>LUAR ships with a language server and a VS Code extension (<code>luar-lsp</code>,
+in <code>Luar-LSP/</code>). The server resolves the type of every binding by walking the
+real parser's AST, honours every written annotation, and powers completion,
+hover, inlay hints, and diagnostics. This page explains what the tooling does,
+the built-in type functions, and <code>.luard</code> ambient files.</p>
+
+<div class="note">A manually written type always wins over an inferred one.
+Anywhere you write <code>: T</code> or cast with <code>:: T</code>, the tool takes your
+word for it.</div>
+
+<h3>Settings</h3>
+<table>
+<tr><th>Setting</th><th>Default</th><th>Effect</th></tr>
+<tr><td><code>luar.inlayHints</code></td><td><code>true</code></td><td>Show <code>: type</code> inlay hints on declarations. Hints appear only on the initial declaration (not on reassignments), and not on <code>local function name()</code> sugar. Casts such as <code>local x = nil :: T</code> do show their resolved type.</td></tr>
+<tr><td><code>luar.showMutability</code></td><td><code>true</code></td><td>Prefix hints with <code>imut</code> / <code>mut</code>.</td></tr>
+<tr><td><code>luar.autoIndent</code></td><td><code>true</code></td><td>Pressing Enter after a block opener inserts the matching <code>end</code> (checking the block is not already closed), and completes a missing <code>then</code> / <code>do</code> after <code>if x == "y"</code> or <code>for _, v in ipairs(t)</code>.</td></tr>
+<tr><td><code>luar.serverPath</code></td><td><code>""</code></td><td>Override the bundled server binary.</td></tr>
+<tr><td><code>luar.trace.server</code></td><td><code>off</code></td><td>LSP message tracing.</td></tr>
+</table>
+
+<h3>What gets resolved</h3>
+<p>Every value form the language has: literals, table constructors, class
+instantiation (<code><span class="typ">Point</span>(3, 4)</code> &rarr; <code>Point</code>), enum
+members, function signatures with per-position return unions, <code>switch</code>
+expressions, <code>and</code>/<code>or</code> operand unions, operator overloads resolved
+by symbol <em>and arity</em>, getters before fields along the whole parent chain,
+parent fields before mixin fields, and conditional assignments unioned at the
+join point. Reassigning a <code>const</code> or bare binding to anything but
+<code>nil</code> is flagged as an error, matching Ferrite.</p>
+
+<h3>Completion</h3>
+<ul>
+<li><b>Members</b> &mdash; <code>v.</code> lists fields and getters; <code>v:</code> lists methods.
+Inheritance, mixins, interfaces, and <code>override</code> are followed. Private and
+protected members are hidden outside their class; <code>self.</code> sees everything.</li>
+<li><b>Chains</b> &mdash; calls resolve through their return types:
+<code>b:with(x):with(y).</code> works, including builder types whose methods return
+the same type, and <code>(value :: T).field</code> casts.</li>
+<li><b>Types</b> &mdash; after <code>:</code>, <code>::</code>, in <code>type X = ...</code> bodies,
+and in return positions. Generic parameters in scope (<code>function f&lt;T&gt;</code>,
+<code>type Box&lt;T&gt;</code>) are offered too.</li>
+<li><b>Literal unions</b> &mdash; a binding typed <code>"on" | "off"</code> (directly,
+through an alias, or through <code>keyof</code>) offers its strings when assigning,
+comparing, in <code>case</code> patterns, and as call arguments
+(<code>go("</code> suggests the parameter's literals).</li>
+<li><b>Require paths</b> &mdash; files and folders, <code>@aliases</code>, and
+<code>@self</code> (only inside <code>init.luar</code>). The requiring file is never
+listed for <code>./</code>.</li>
+<li><b>Bracket keys</b> &mdash; <code>t["</code> offers string keys, including keys
+that need brackets like <code>["easter.Test tes"]</code>; such keys are excluded from
+dot completion.</li>
+</ul>
+
+<h3>Hover and inlay hints</h3>
+<p>Hovering a function shows its full signature
+(<code><span class="fn">clamp</span>(x: <span class="typ">number</span>, lo: <span class="typ">number</span>) -&gt; <span class="typ">number</span></code>).
+A <code>--</code> comment block written directly above a declaration &mdash; including
+class methods &mdash; is shown as documentation. Hovering <code>self</code> or
+<code>super</code> shows the enclosing class.</p>
+
+<h3>Diagnostics</h3>
+<table>
+<tr><th>Diagnostic</th><th>Severity</th></tr>
+<tr><td>Parse errors (the analysis keeps working while you type)</td><td>error</td></tr>
+<tr><td>Reassigning an immutable binding to non-<code>nil</code></td><td>error</td></tr>
+<tr><td>Duplicate enum variants in one declaration</td><td>error</td></tr>
+<tr><td>Generic arity mismatch (<code>Box</code> used without <code>&lt;T&gt;</code>)</td><td>error</td></tr>
+<tr><td>Unknown <code>extends</code>/<code>mixin</code> target (names are case-sensitive)</td><td>warning</td></tr>
+<tr><td>A <code>require</code> that closes a cycle (the runtime errors on these)</td><td>warning</td></tr>
+</table>
+
+<h3>Modules in the editor</h3>
+<p>The resolver mirrors the runtime: <code>./</code> is the file's directory and each
+extra dot climbs one level (<code>../</code>, <code>.../</code>, &hellip;); a folder with
+<code>init.luar</code> resolves to it, a folder without one becomes a table of its
+modules; <code>require</code> takes the type of whatever the module returns.
+<b>Inside <code>init.luar</code>, <code>./</code> resolves to the folder's parent</b> &mdash;
+the file stands for the folder itself, and <code>@self</code> reaches its contents.
+Aliases come from a <code>luari.json</code> at the project root:</p>
+<pre><code>{
+  <span class="str">"aliases"</span>: {
+    <span class="str">"Settings"</span>: <span class="str">"./Scenes/Settings"</span>
+  }
+}</code></pre>
+<p><code>export type Name = T</code> makes a type visible to other files as
+<code>modulevar.Name</code> after <code>local modulevar = require(...)</code>. Plain
+<code>type</code> aliases stay private. Anything declared <code>pub</code> &mdash;
+variables, classes, enums &mdash; is global to the whole project, exactly like the
+runtime's shared global scope.</p>
+
+<h3>Built-in type functions</h3>
+<p>These evaluate inside any type expression. They are tooling-only, like all
+type syntax, and the angle brackets follow the normal generic grammar.</p>
+<table>
+<tr><th>Function</th><th>Result</th></tr>
+<tr><td><code>keyof&lt;T&gt;</code></td><td>Union of <code>T</code>'s field names as string literals. <code>keyof&lt;{ a: number, b: string }&gt;</code> is <code>"a" | "b"</code>. Drives string autocompletion.</td></tr>
+<tr><td><code>ValueOf&lt;T, K&gt;</code></td><td>The type of field <code>K</code> in <code>T</code>. <code>K</code> may be a literal or a union of literals: <code>ValueOf&lt;T, keyof&lt;T&gt;&gt;</code> is the union of all field types.</td></tr>
+<tr><td><code>ToBasic&lt;T&gt;</code></td><td>Widens to the basic kind: literals to <code>string</code>/<code>number</code>/<code>boolean</code>, records to <code>table</code>, classes to <code>class</code>, enums to <code>enum</code>, functions to <code>function</code>. Unions widen member-wise.</td></tr>
+</table>
+<p>Both capitalisations are accepted (<code>keyof</code>/<code>KeyOf</code>,
+<code>valueof</code>/<code>ValueOf</code>, <code>tobasic</code>/<code>ToBasic</code>).</p>
+
+<h3>Generics</h3>
+<pre><code><span class="kw">local</span> <span class="kw">function</span> <span class="fn">identity</span>&lt;T&gt;(x: <span class="typ">T</span>): <span class="typ">T</span>
+  <span class="kw">return</span> x
+<span class="kw">end</span>
+<span class="kw">local</span> n = identity(<span class="num">5</span>)        <span class="com">-- number</span>
+
+<span class="kw">type</span> <span class="typ">veg</span> = { Var: <span class="typ">boolean</span>, Ve: <span class="typ">string</span> }
+<span class="kw">local</span> <span class="kw">function</span> <span class="fn">get</span>&lt;i&gt;(key: keyof&lt;<span class="typ">veg</span>&gt;): ValueOf&lt;<span class="typ">veg</span>, <span class="typ">i</span>&gt;
+<span class="kw">end</span>
+<span class="kw">local</span> v = get(<span class="str">"Var"</span>)         <span class="com">-- boolean: i is bound from the argument</span></code></pre>
+<p>Generic aliases substitute their arguments (<code>type Box&lt;T&gt; = { value: T }</code>),
+and using a generic type with the wrong number of arguments is an error.</p>
+
+<h3>Self-referencing types and metamethods</h3>
+<p>A table type may reference itself, which makes chaining work:</p>
+<pre><code><span class="kw">type</span> <span class="typ">varg</span> = {
+  Input: (self: <span class="typ">varg</span>) -&gt; <span class="typ">varg</span>
+}
+<span class="kw">local</span> t: <span class="typ">varg</span> = make()
+t:Input():Input()            <span class="com">-- every link completes</span></code></pre>
+<p>Fields named after metamethods describe operator results, the same way class
+<code>operator</code> members do:</p>
+<pre><code><span class="kw">type</span> <span class="typ">Vec</span> = {
+  __add: (self: <span class="typ">Vec</span>, other: <span class="typ">Vec</span>) -&gt; <span class="typ">Vec</span>,
+  __sub: (self: <span class="typ">Vec</span>, other: <span class="typ">number</span>) -&gt; <span class="typ">number</span>
+}
+<span class="kw">local</span> sum = a + b            <span class="com">-- Vec</span>
+<span class="kw">local</span> d = a - <span class="num">5</span>              <span class="com">-- number</span></code></pre>
+<p>Recognised: <code>__add __sub __mul __div __mod __pow __concat __eq __lt
+__le __len __unm</code>.</p>
+
+<h3><code>.luard</code> ambient files</h3>
+<p>A file ending in <code>.luard</code> is written as normal LUAR code, but the
+runtime never loads it. Everything it declares &mdash; variables, functions,
+classes, enums, <code>type</code> aliases &mdash; becomes globally visible in every
+file of the project with no <code>require</code>. They exist so people can ship
+language-extension libraries: describe what a host engine injects, and the
+editor knows about it everywhere.</p>
+<pre><code><span class="com">-- engine.luard</span>
+<span class="kw">export type</span> <span class="typ">EntityId</span> = <span class="typ">number</span>
+
+<span class="kw">class</span> <span class="typ">Entity</span> {
+  <span class="kw">public</span> id: <span class="typ">number</span> = <span class="num">0</span>
+  <span class="kw">function</span> <span class="fn">destroy</span>()
+  <span class="kw">end</span>
+}
+
+<span class="com">-- Spawns an entity by prefab name.</span>
+<span class="kw">function</span> <span class="fn">spawn</span>(prefab: <span class="typ">string</span>): <span class="typ">Entity</span>
+<span class="kw">end</span>
+
+TICK_RATE: <span class="typ">number</span> = <span class="num">60</span></code></pre>
+<p>With that file anywhere in the project, every <code>.luar</code> file can call
+<code>spawn("door")</code> and get an <code>Entity</code> back, hover
+<code>TICK_RATE</code>, and use <code>EntityId</code> in annotations. Doc comments
+above the declarations appear on hover.</p>
+
+<h3>Building the extension</h3>
+<pre><code>cd Luar-LSP
+cargo build --release
+cp target/release/luar-lsp.exe editors/code/server/
+cd editors/code &amp;&amp; npm install &amp;&amp; npm run build &amp;&amp; npm run package
+code --install-extension luar-lsp-&lt;version&gt;.vsix</code></pre>
+<p>The repository also has <code>testbed/</code>, a minimal Rust host that embeds the
+interpreter and runs <code>scripts/main.luar</code> with full require support &mdash;
+useful for trying language features end to end with <code>cargo run</code>.</p>

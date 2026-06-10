@@ -1,0 +1,1516 @@
+use crate::infer::{Access, Analysis, Binding, ClassInfo, EnumInfo};
+use crate::project::Project;
+use crate::resolve::{Resolved, TypeEnv};
+use crate::type_syntax::{TypeExpr, BASIC_TYPES};
+use crate::types::Type;
+use std::path::Path;
+
+pub const KIND_METHOD: i64 = 2;
+pub const KIND_FUNCTION: i64 = 3;
+pub const KIND_FIELD: i64 = 5;
+pub const KIND_VARIABLE: i64 = 6;
+pub const KIND_CLASS: i64 = 7;
+pub const KIND_INTERFACE: i64 = 8;
+pub const KIND_MODULE: i64 = 9;
+pub const KIND_PROPERTY: i64 = 10;
+pub const KIND_ENUM: i64 = 13;
+pub const KIND_KEYWORD: i64 = 14;
+pub const KIND_FILE: i64 = 17;
+pub const KIND_FOLDER: i64 = 19;
+pub const KIND_ENUM_MEMBER: i64 = 20;
+pub const KIND_CONSTANT: i64 = 21;
+pub const KIND_TYPE_PARAMETER: i64 = 25;
+
+pub const KEYWORDS: [&str; 38] = [
+    "local", "const", "pub", "export", "function", "class", "interface", "enum", "type", "if",
+    "then", "elseif", "else", "end", "for", "while", "do", "in", "break", "return", "switch",
+    "case", "default", "and", "or", "not", "self", "super", "true", "false", "nil", "extends",
+    "mixin", "implements", "constructor", "buff", "freebuff", "static",
+];
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Item {
+    pub label: String,
+    pub kind: i64,
+    pub detail: String,
+    pub insert_text: Option<String>,
+    pub is_snippet: bool,
+    pub sort_text: Option<String>,
+}
+
+impl Item {
+    fn plain(label: impl Into<String>, kind: i64, detail: impl Into<String>) -> Item {
+        Item {
+            label: label.into(),
+            kind,
+            detail: detail.into(),
+            insert_text: None,
+            is_snippet: false,
+            sort_text: None,
+        }
+    }
+
+    fn snippet(label: impl Into<String>, kind: i64, detail: impl Into<String>) -> Item {
+        let label = label.into();
+        let insert = format!("{label}($1)");
+        Item {
+            label,
+            kind,
+            detail: detail.into(),
+            insert_text: Some(insert),
+            is_snippet: true,
+            sort_text: None,
+        }
+    }
+
+    fn prioritized(mut self) -> Item {
+        self.sort_text = Some(format!("0_{}", self.label));
+        self
+    }
+}
+
+pub struct FileView<'a> {
+    pub project: &'a Project,
+    pub path: &'a Path,
+    pub analysis: &'a Analysis,
+    pub env: &'a TypeEnv,
+    pub annotations: &'a crate::annotations::AnnotationSet,
+}
+
+impl<'a> FileView<'a> {
+    pub fn from_project(project: &'a Project, path: &'a Path) -> Option<FileView<'a>> {
+        let info = project.file(path)?;
+        Some(FileView {
+            project,
+            path,
+            analysis: &info.analysis,
+            env: &info.env,
+            annotations: &info.annotations,
+        })
+    }
+
+    pub fn find_class(&self, name: &str) -> Option<&ClassInfo> {
+        if let Some(c) = self.analysis.classes.get(name) {
+            return Some(c);
+        }
+        if let Some(c) = self.project.luard_classes.get(name) {
+            return Some(c);
+        }
+        if let Some((c, _)) = self.project.pub_classes.get(name) {
+            return Some(c);
+        }
+        self.project
+            .files
+            .values()
+            .find_map(|m| m.analysis.classes.get(name))
+    }
+
+    pub fn find_enum(&self, name: &str) -> Option<&EnumInfo> {
+        if let Some(e) = self.analysis.enums.get(name) {
+            return Some(e);
+        }
+        if let Some(e) = self.project.luard_enums.get(name) {
+            return Some(e);
+        }
+        if let Some((e, _)) = self.project.pub_enums.get(name) {
+            return Some(e);
+        }
+        self.project
+            .files
+            .values()
+            .find_map(|m| m.analysis.enums.get(name))
+    }
+
+    pub fn binding_at(&self, name: &str, line: u32) -> Option<&Binding> {
+        self.analysis
+            .bindings
+            .iter()
+            .filter(|b| b.name == name && b.line.map(|l| l <= line).unwrap_or(true))
+            .next_back()
+            .or_else(|| self.analysis.binding(name))
+    }
+
+    pub fn type_of_name(&self, name: &str, line: u32) -> Option<Type> {
+        if let Some(b) = self.binding_at(name, line) {
+            return Some(b.ty.clone());
+        }
+        if let Some((_, t)) = self
+            .project
+            .luard_globals
+            .iter()
+            .find(|(n, _)| n == name)
+        {
+            return Some(t.clone());
+        }
+        if let Some((_, t, _)) = self
+            .project
+            .pub_globals
+            .iter()
+            .find(|(n, _, p)| n == name && p != self.path)
+        {
+            return Some(t.clone());
+        }
+        crate::builtins::global_env().get(name).cloned()
+    }
+
+    fn class_chain(&self, name: &str) -> Vec<&ClassInfo> {
+        let mut chain = Vec::new();
+        let mut current = Some(name.to_string());
+        let mut guard = 0;
+        while let Some(c) = current {
+            guard += 1;
+            if guard > 64 {
+                break;
+            }
+            let Some(info) = self.find_class(&c) else {
+                break;
+            };
+            chain.push(info);
+            current = info.parent.clone();
+        }
+        chain
+    }
+
+    pub fn expand_named_table(&self, tt: &crate::types::TableType) -> Option<crate::types::TableType> {
+        if !tt.fields.is_empty() || tt.array.is_some() {
+            return None;
+        }
+        let name = tt.name.as_ref()?;
+        if name == "table" {
+            return None;
+        }
+        match self.env.value_type(&TypeExpr::named(name)) {
+            Type::Table(out) if !out.fields.is_empty() || out.array.is_some() => Some(out),
+            _ => None,
+        }
+    }
+
+    pub fn find_interface(&self, name: &str) -> Option<&Vec<String>> {
+        if let Some(m) = self.analysis.interfaces.get(name) {
+            return Some(m);
+        }
+        self.project
+            .files
+            .values()
+            .find_map(|f| f.analysis.interfaces.get(name))
+    }
+
+    pub fn member_type(&self, ty: &Type, member: &str) -> Type {
+        match ty {
+            Type::Instance(c) => {
+                for info in self.class_chain(c) {
+                    if let Some(g) = info.getters.iter().find(|g| g.name == member) {
+                        return g.ty.clone();
+                    }
+                }
+                for info in self.class_chain(c) {
+                    if let Some(f) = info
+                        .fields
+                        .iter()
+                        .find(|f| f.name == member && !f.is_static)
+                    {
+                        return f.ty.clone();
+                    }
+                }
+                for info in self.class_chain(c) {
+                    if let Some(m) = info.methods.iter().find(|m| m.name == member) {
+                        return Type::Function(Some(Box::new(m.sig.clone())));
+                    }
+                    for mixin in info.mixins.iter().rev() {
+                        if let Some(mi) = self.find_class(mixin) {
+                            if let Some(m) = mi.methods.iter().find(|m| m.name == member) {
+                                return Type::Function(Some(Box::new(m.sig.clone())));
+                            }
+                        }
+                    }
+                }
+                Type::Unknown
+            }
+            Type::Class(c) => {
+                for info in self.class_chain(c) {
+                    if let Some(f) = info
+                        .fields
+                        .iter()
+                        .find(|f| f.name == member && f.is_static)
+                    {
+                        return f.ty.clone();
+                    }
+                    if let Some(m) = info.methods.iter().find(|m| m.name == member) {
+                        return Type::Function(Some(Box::new(m.sig.clone())));
+                    }
+                }
+                Type::Unknown
+            }
+            Type::Enum(e) => {
+                let known = self
+                    .find_enum(e)
+                    .map(|info| info.variants.iter().any(|(n, _)| n == member))
+                    .unwrap_or(false);
+                if known {
+                    Type::EnumValue(e.clone())
+                } else {
+                    Type::Unknown
+                }
+            }
+            Type::Table(tt) => {
+                if let Some((_, t)) = tt.fields.iter().find(|(n, _)| n == member) {
+                    return t.clone();
+                }
+                if let Some(expanded) = self.expand_named_table(tt) {
+                    return self.member_type(&Type::Table(expanded), member);
+                }
+                Type::Unknown
+            }
+            Type::Interface(_) => Type::Unknown,
+            Type::Union(parts) => {
+                let collected: Vec<Type> = parts
+                    .iter()
+                    .map(|p| self.member_type(p, member))
+                    .filter(|t| *t != Type::Unknown)
+                    .collect();
+                if collected.is_empty() {
+                    Type::Unknown
+                } else {
+                    Type::union_of(collected)
+                }
+            }
+            _ => Type::Unknown,
+        }
+    }
+
+    pub fn call_result(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Function(Some(ft)) => ft.returns.first().cloned().unwrap_or(Type::Nil),
+            Type::Class(c) => Type::Instance(c.clone()),
+            _ => Type::Unknown,
+        }
+    }
+
+    pub fn resolve_chain(&self, segments: &[ChainSeg], line: u32) -> Option<Type> {
+        self.resolve_chain_in(segments, line, None)
+    }
+
+    pub fn resolve_chain_in(
+        &self,
+        segments: &[ChainSeg],
+        line: u32,
+        self_class: Option<&str>,
+    ) -> Option<Type> {
+        let first = segments.first()?;
+        let mut ty = match (first.name.as_str(), self_class) {
+            ("self", Some(class)) => Type::Instance(class.to_string()),
+            ("super", Some(class)) => {
+                let parent = self.find_class(class)?.parent.clone()?;
+                Type::Instance(parent)
+            }
+            _ => self.type_of_name(&first.name, line)?,
+        };
+        if first.called {
+            ty = self.call_result(&ty);
+        }
+        for seg in &segments[1..] {
+            ty = self.member_type(&ty, &seg.name);
+            if seg.called {
+                ty = self.call_result(&ty);
+            }
+            if ty == Type::Unknown {
+                return Some(Type::Unknown);
+            }
+        }
+        Some(ty)
+    }
+
+    fn member_visible(&self, access: Access, declaring: &str, viewer: Option<&str>) -> bool {
+        match access {
+            Access::Public => true,
+            Access::Protected => viewer
+                .map(|v| self.class_chain(v).iter().any(|c| c.name == declaring))
+                .unwrap_or(false),
+            Access::Private => viewer == Some(declaring),
+        }
+    }
+
+    pub fn members_of(&self, ty: &Type, colon: bool, viewer: Option<&str>) -> Vec<Item> {
+        let mut items = Vec::new();
+        match ty {
+            Type::Instance(c) => {
+                let mut seen = std::collections::HashSet::new();
+                for info in self.class_chain(c) {
+                    if colon {
+                        for m in info.methods.iter().filter(|m| {
+                            !m.is_static && self.member_visible(m.access, &info.name, viewer)
+                        }) {
+                            if seen.insert(m.name.clone()) {
+                                items.push(Item::snippet(
+                                    &m.name,
+                                    KIND_METHOD,
+                                    m.sig.to_string(),
+                                ));
+                            }
+                        }
+                        for mixin in info.mixins.iter().rev() {
+                            if let Some(mi) = self.find_class(mixin) {
+                                for m in mi.methods.iter().filter(|m| {
+                                    !m.is_static
+                                        && self.member_visible(m.access, &mi.name, viewer)
+                                }) {
+                                    if seen.insert(m.name.clone()) {
+                                        items.push(Item::snippet(
+                                            &m.name,
+                                            KIND_METHOD,
+                                            m.sig.to_string(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        for g in info.getters.iter().filter(|g| {
+                            self.member_visible(g.access, &info.name, viewer)
+                        }) {
+                            if seen.insert(g.name.clone()) {
+                                items.push(Item::plain(&g.name, KIND_PROPERTY, g.ty.to_string()));
+                            }
+                        }
+                        for (s, access) in info.setters.iter().filter(|(_, a)| {
+                            self.member_visible(*a, &info.name, viewer)
+                        }) {
+                            let _ = access;
+                            if seen.insert(s.clone()) {
+                                items.push(Item::plain(s, KIND_PROPERTY, "setter"));
+                            }
+                        }
+                        for f in info.fields.iter().filter(|f| {
+                            !f.is_static && self.member_visible(f.access, &info.name, viewer)
+                        }) {
+                            if seen.insert(f.name.clone()) {
+                                items.push(Item::plain(&f.name, KIND_FIELD, f.ty.to_string()));
+                            }
+                        }
+                        for mixin in info.mixins.iter().rev() {
+                            if let Some(mi) = self.find_class(mixin) {
+                                for f in mi.fields.iter().filter(|f| {
+                                    !f.is_static
+                                        && self.member_visible(f.access, &mi.name, viewer)
+                                }) {
+                                    if seen.insert(f.name.clone()) {
+                                        items.push(Item::plain(
+                                            &f.name,
+                                            KIND_FIELD,
+                                            f.ty.to_string(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Type::Class(c) => {
+                let mut seen = std::collections::HashSet::new();
+                for info in self.class_chain(c) {
+                    for f in info.fields.iter().filter(|f| {
+                        f.is_static && self.member_visible(f.access, &info.name, viewer)
+                    }) {
+                        if seen.insert(f.name.clone()) {
+                            items.push(
+                                Item::plain(&f.name, KIND_FIELD, format!("static {}", f.ty))
+                                    .prioritized(),
+                            );
+                        }
+                    }
+                    for m in &info.methods {
+                        if self.member_visible(m.access, &info.name, viewer)
+                            && seen.insert(m.name.clone())
+                        {
+                            items.push(Item::snippet(&m.name, KIND_METHOD, m.sig.to_string()));
+                        }
+                    }
+                    for f in info.fields.iter().filter(|f| {
+                        !f.is_static && self.member_visible(f.access, &info.name, viewer)
+                    }) {
+                        if seen.insert(f.name.clone()) {
+                            items.push(Item::plain(&f.name, KIND_FIELD, f.ty.to_string()));
+                        }
+                    }
+                    for g in info.getters.iter().filter(|g| {
+                        self.member_visible(g.access, &info.name, viewer)
+                    }) {
+                        if seen.insert(g.name.clone()) {
+                            items.push(Item::plain(&g.name, KIND_PROPERTY, g.ty.to_string()));
+                        }
+                    }
+                }
+                let _ = colon;
+            }
+            Type::Interface(n) => {
+                if let Some(members) = self.find_interface(n) {
+                    for m in members {
+                        items.push(Item::plain(m, KIND_PROPERTY, "interface member"));
+                    }
+                }
+            }
+            Type::Enum(e) => {
+                if let Some(info) = self.find_enum(e) {
+                    for (v, t) in &info.variants {
+                        items.push(Item::plain(v, KIND_ENUM_MEMBER, t.to_string()));
+                    }
+                }
+            }
+            Type::Table(tt) => {
+                let expanded = self.expand_named_table(tt);
+                let fields = expanded.as_ref().map(|e| &e.fields).unwrap_or(&tt.fields);
+                for (name, t) in fields {
+                    if !is_plain_ident(name) {
+                        continue;
+                    }
+                    match t {
+                        Type::Function(Some(sig)) => {
+                            items.push(Item::snippet(name, KIND_FUNCTION, sig.to_string()));
+                        }
+                        other => items.push(Item::plain(name, KIND_FIELD, other.to_string())),
+                    }
+                }
+            }
+            Type::Union(parts) => {
+                let mut seen = std::collections::HashSet::new();
+                for p in parts {
+                    for item in self.members_of(p, colon, viewer) {
+                        if seen.insert(item.label.clone()) {
+                            items.push(item);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        items
+    }
+
+    pub fn literal_strings(&self, texpr: &TypeExpr) -> Vec<String> {
+        let mut out = Vec::new();
+        self.collect_literals(texpr, &mut out, 0);
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    fn collect_literals(&self, texpr: &TypeExpr, out: &mut Vec<String>, depth: usize) {
+        if depth > 16 {
+            return;
+        }
+        match texpr {
+            TypeExpr::StringLit(s) => out.push(s.clone()),
+            TypeExpr::Union(parts) | TypeExpr::Intersection(parts) => {
+                for p in parts {
+                    self.collect_literals(p, out, depth + 1);
+                }
+            }
+            TypeExpr::Optional(inner) => self.collect_literals(inner, out, depth + 1),
+            TypeExpr::Named(_) => match self.env.resolve(texpr) {
+                Resolved::StringLiteral(s) => out.push(s),
+                Resolved::Structural(inner) if inner != *texpr => {
+                    self.collect_literals(&inner, out, depth + 1)
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    pub fn annotation_for(&self, name: &str, before_line: u32) -> Option<&TypeExpr> {
+        self.annotations
+            .vars
+            .iter()
+            .filter(|((n, l), _)| n == name && *l <= before_line)
+            .max_by_key(|((_, l), _)| *l)
+            .map(|(_, t)| t)
+    }
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+pub fn word_at(line: &str, col: usize) -> Option<(String, usize, usize)> {
+    let chars: Vec<char> = line.chars().collect();
+    if chars.is_empty() {
+        return None;
+    }
+    let mut start = col.min(chars.len());
+    while start > 0 && is_word_char(chars[start - 1]) {
+        start -= 1;
+    }
+    let mut end = col.min(chars.len());
+    while end < chars.len() && is_word_char(chars[end]) {
+        end += 1;
+    }
+    if start == end {
+        return None;
+    }
+    Some((chars[start..end].iter().collect(), start, end))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChainSeg {
+    pub name: String,
+    pub called: bool,
+}
+
+pub struct ChainAt {
+    pub segments: Vec<ChainSeg>,
+    pub separator: char,
+    pub partial: String,
+    pub cast_base: Option<String>,
+}
+
+pub fn chain_before(line: &str, col: usize) -> Option<ChainAt> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = col.min(chars.len());
+    let mut partial_start = i;
+    while partial_start > 0 && is_word_char(chars[partial_start - 1]) {
+        partial_start -= 1;
+    }
+    let partial: String = chars[partial_start..i].iter().collect();
+    i = partial_start;
+    if i == 0 {
+        return None;
+    }
+    let sep = chars[i - 1];
+    if sep != '.' && sep != ':' {
+        return None;
+    }
+    if i >= 2 && (chars[i - 2] == ':' || chars[i - 2] == '.') {
+        return None;
+    }
+    i -= 1;
+    let mut segments: Vec<ChainSeg> = Vec::new();
+    let mut cast_base: Option<String> = None;
+    loop {
+        let mut called = false;
+        let mut group_start: Option<usize> = None;
+        if i > 0 && chars[i - 1] == ')' {
+            called = true;
+            let close = i - 1;
+            let mut depth = 1;
+            i -= 1;
+            while i > 0 && depth > 0 {
+                i -= 1;
+                match chars[i] {
+                    ')' => depth += 1,
+                    '(' => depth -= 1,
+                    _ => {}
+                }
+            }
+            if depth > 0 {
+                return None;
+            }
+            group_start = Some(i);
+            let _ = close;
+        }
+        let mut start = i;
+        while start > 0 && is_word_char(chars[start - 1]) {
+            start -= 1;
+        }
+        if start == i {
+            if let Some(open) = group_start {
+                if segments.is_empty() || !segments.is_empty() {
+                    let inner: String = chars[open + 1..].iter().collect();
+                    let inner = match inner.rfind(')') {
+                        Some(_) => {
+                            let group_chars: Vec<char> = chars[open + 1..].to_vec();
+                            let mut depth = 0i32;
+                            let mut end = group_chars.len();
+                            for (gi, c) in group_chars.iter().enumerate() {
+                                match c {
+                                    '(' => depth += 1,
+                                    ')' => {
+                                        if depth == 0 {
+                                            end = gi;
+                                            break;
+                                        }
+                                        depth -= 1;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            group_chars[..end].iter().collect::<String>()
+                        }
+                        None => inner,
+                    };
+                    if let Some(pos) = inner.rfind("::") {
+                        cast_base = Some(inner[pos + 2..].trim().to_string());
+                        break;
+                    }
+                }
+            }
+            return None;
+        }
+        segments.push(ChainSeg {
+            name: chars[start..i].iter().collect(),
+            called,
+        });
+        i = start;
+        if i > 0 && (chars[i - 1] == '.' || chars[i - 1] == ':') {
+            if i >= 2 && (chars[i - 2] == ':' || chars[i - 2] == '.') {
+                return None;
+            }
+            i -= 1;
+        } else {
+            break;
+        }
+    }
+    segments.reverse();
+    Some(ChainAt {
+        segments,
+        separator: sep,
+        partial,
+        cast_base,
+    })
+}
+
+pub fn require_partial(line: &str, col: usize) -> Option<String> {
+    let upto: String = line.chars().take(col).collect();
+    let req = upto.rfind("require")?;
+    let after = &upto[req + "require".len()..];
+    let after = after.trim_start();
+    let after = after.strip_prefix('(').unwrap_or(after);
+    let after = after.trim_start();
+    let quote = after.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let body = &after[1..];
+    if body.contains(quote) {
+        return None;
+    }
+    Some(body.to_string())
+}
+
+fn in_open_string(line: &str, col: usize) -> Option<(char, String)> {
+    let chars: Vec<char> = line.chars().take(col).collect();
+    let mut open: Option<(char, usize)> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match open {
+            None => {
+                if c == '"' || c == '\'' {
+                    open = Some((c, i));
+                } else if c == '-' && chars.get(i + 1) == Some(&'-') {
+                    return None;
+                }
+            }
+            Some((q, _)) => {
+                if c == '\\' {
+                    i += 1;
+                } else if c == q {
+                    open = None;
+                }
+            }
+        }
+        i += 1;
+    }
+    open.map(|(q, start)| (q, chars[start + 1..].iter().collect()))
+}
+
+pub fn in_comment(line: &str, col: usize) -> bool {
+    let chars: Vec<char> = line.chars().take(col).collect();
+    let mut quote: Option<char> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match quote {
+            None => {
+                if c == '"' || c == '\'' || c == '`' {
+                    quote = Some(c);
+                } else if c == '-' && chars.get(i + 1) == Some(&'-') {
+                    return true;
+                }
+            }
+            Some(q) => {
+                if c == '\\' {
+                    i += 1;
+                } else if c == q {
+                    quote = None;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+pub fn is_type_position(line: &str, col: usize) -> bool {
+    let upto: String = line.chars().take(col).collect();
+    let trimmed_end =
+        upto.trim_end_matches(|c: char| is_word_char(c) || c == '.' || c.is_whitespace());
+    if trimmed_end.ends_with("::") {
+        return true;
+    }
+    let head = upto.trim_start();
+    if head.starts_with("type ") || head.starts_with("export type ") {
+        if let Some(eq) = upto.find('=') {
+            return col > eq;
+        }
+        return false;
+    }
+    let Some(colon) = find_annotation_colon(&upto) else {
+        return false;
+    };
+    let after_colon = &upto[colon + 1..];
+    if after_colon.contains('=') && !after_colon.contains('{') {
+        return false;
+    }
+    let before = upto[..colon].trim_end();
+    let before_ok = before.ends_with(|c: char| is_word_char(c))
+        || before.ends_with(')')
+        || before.ends_with(']');
+    if before.is_empty() || !before_ok {
+        return false;
+    }
+    if before.contains('=') {
+        return false;
+    }
+    let decl = head.starts_with("local ")
+        || head.starts_with("const ")
+        || head.starts_with("pub ")
+        || head.starts_with("export ")
+        || head.starts_with("public ")
+        || head.starts_with("private ")
+        || head.starts_with("protected ")
+        || head.starts_with("static ");
+    if decl {
+        return true;
+    }
+    if upto.contains("function") && upto.matches('(').count() > upto.matches(')').count() {
+        return true;
+    }
+    let on_function_line = line_has_word(&upto, "function");
+    if on_function_line && (before.ends_with(')') || upto.contains("):")) {
+        return true;
+    }
+    let paren_open = upto.matches('(').count() > upto.matches(')').count();
+    if paren_open && upto.contains("function") {
+        return true;
+    }
+    if on_function_line
+        && before
+            .rfind(')')
+            .map(|p| upto[p..].trim_start_matches(')').trim_start().starts_with(':'))
+            .unwrap_or(false)
+    {
+        return true;
+    }
+    false
+}
+
+fn find_annotation_colon(upto: &str) -> Option<usize> {
+    let bytes = upto.as_bytes();
+    let mut i = bytes.len();
+    while i > 0 {
+        i -= 1;
+        if bytes[i] == b':' {
+            if i > 0 && bytes[i - 1] == b':' {
+                i -= 1;
+                continue;
+            }
+            if i + 1 < bytes.len() && bytes[i + 1] == b':' {
+                continue;
+            }
+            return Some(i);
+        }
+    }
+    None
+}
+
+pub fn complete(view: &FileView, text: &str, line0: usize, col0: usize) -> Vec<Item> {
+    let line = text.lines().nth(line0).unwrap_or("");
+    let cur_line = line0 as u32 + 1;
+
+    if in_comment(line, col0) {
+        return Vec::new();
+    }
+
+    if let Some(partial) = require_partial(line, col0) {
+        let typed_at = partial.starts_with('@');
+        let mut items: Vec<Item> = view
+            .project
+            .complete_require(view.path, &partial)
+            .into_iter()
+            .map(|name| {
+                let mut item = Item::plain(&name, KIND_FILE, "module");
+                if typed_at && name.starts_with('@') {
+                    item.kind = KIND_FOLDER;
+                    item.detail = "alias".to_string();
+                    item.insert_text = Some(name.trim_start_matches('@').to_string());
+                }
+                item
+            })
+            .collect();
+        if partial.is_empty() {
+            for alias in view.project.aliases.keys() {
+                items.push(Item::plain(format!("@{alias}"), KIND_FOLDER, "alias"));
+            }
+            if view
+                .path
+                .file_name()
+                .map(|n| n == "init.luar")
+                .unwrap_or(false)
+            {
+                items.push(Item::plain("@self", KIND_FOLDER, "this file's directory"));
+            }
+            items.push(Item::plain("./", KIND_FOLDER, "this file's directory"));
+        }
+        items.sort_by(|a, b| a.label.cmp(&b.label));
+        return items;
+    }
+
+    if let Some(items) = bracket_key_completion(view, text, line, line0, col0) {
+        return items;
+    }
+
+    if let Some((_, body)) = in_open_string(line, col0) {
+        let before_string: String = {
+            let upto: String = line.chars().take(col0).collect();
+            let cut = upto.len() - body.chars().count() - 1;
+            upto.chars().take(cut).collect()
+        };
+        let trimmed = before_string.trim_end();
+        let trimmed = trimmed
+            .trim_end_matches("==")
+            .trim_end_matches("~=")
+            .trim_end_matches('=')
+            .trim_end();
+        if let Some((name, _, _)) = word_at(trimmed, trimmed.chars().count()) {
+            if let Some(texpr) = view.annotation_for(&name, cur_line) {
+                let texpr = texpr.clone();
+                let lits = view.literal_strings(&texpr);
+                if !lits.is_empty() {
+                    return lits
+                        .into_iter()
+                        .map(|s| Item::plain(s, KIND_CONSTANT, "literal"))
+                        .collect();
+                }
+            }
+        }
+        if let Some(items) = call_argument_literals(view, text, &before_string, line0, col0) {
+            return items;
+        }
+        let head = before_string.trim_start();
+        if head.starts_with("case") {
+            if let Some(subject) = switch_subject(text, line0) {
+                if let Some(texpr) = view.annotation_for(&subject, cur_line) {
+                    let texpr = texpr.clone();
+                    let lits = view.literal_strings(&texpr);
+                    if !lits.is_empty() {
+                        return lits
+                            .into_iter()
+                            .map(|s| Item::plain(s, KIND_CONSTANT, "literal"))
+                            .collect();
+                    }
+                }
+            }
+        }
+        return Vec::new();
+    }
+
+    let type_pos = is_type_position(line, col0) || in_type_alias_body(text, line0, col0);
+
+    if let Some(chain) = chain_before(line, col0) {
+        if type_pos {
+            if chain.separator == '.' {
+                if chain.segments.len() == 1 && !chain.segments[0].called {
+                    if let Some(menv) = view.env.modules.get(&chain.segments[0].name) {
+                        return menv
+                            .exported_type_names()
+                            .into_iter()
+                            .map(|n| Item::plain(n, KIND_CLASS, "exported type"))
+                            .collect();
+                    }
+                }
+                return Vec::new();
+            }
+        } else {
+            let self_class = enclosing_class(text, line0, col0);
+            if let Some(ty) = resolve_chain_full(view, &chain, cur_line, self_class.as_deref()) {
+                return view.members_of(&ty, chain.separator == ':', self_class.as_deref());
+            }
+            return Vec::new();
+        }
+    }
+
+    if type_pos {
+        let mut items: Vec<Item> = BASIC_TYPES
+            .iter()
+            .map(|b| Item::plain(*b, KIND_KEYWORD, "basic type"))
+            .collect();
+        items.push(Item::plain("any", KIND_KEYWORD, "basic type"));
+        items.push(Item::plain("void", KIND_KEYWORD, "basic type"));
+        items.push(Item::plain("integer", KIND_KEYWORD, "number (documentation only)"));
+        items.push(Item::plain("double", KIND_KEYWORD, "number (documentation only)"));
+        items.push(Item::plain("float", KIND_KEYWORD, "number (documentation only)"));
+        for g in generic_params_in_scope(text, line0) {
+            items.push(Item::plain(g, KIND_TYPE_PARAMETER, "generic parameter").prioritized());
+        }
+        items.push(Item {
+            label: "keyof".to_string(),
+            kind: KIND_KEYWORD,
+            detail: "keyof<T> — union of T's field names".to_string(),
+            insert_text: Some("keyof<$1>".to_string()),
+            is_snippet: true,
+            sort_text: None,
+        });
+        items.push(Item {
+            label: "ValueOf".to_string(),
+            kind: KIND_KEYWORD,
+            detail: "ValueOf<T, K> — type of T's field K".to_string(),
+            insert_text: Some("ValueOf<$1, $2>".to_string()),
+            is_snippet: true,
+            sort_text: None,
+        });
+        items.push(Item {
+            label: "ToBasic".to_string(),
+            kind: KIND_KEYWORD,
+            detail: "ToBasic<T> — widen a literal to its basic type".to_string(),
+            insert_text: Some("ToBasic<$1>".to_string()),
+            is_snippet: true,
+            sort_text: None,
+        });
+        for name in view.env.type_names() {
+            let kind = if view.env.classes.contains(&name) {
+                KIND_CLASS
+            } else if view.env.enums.contains(&name) {
+                KIND_ENUM
+            } else if view.env.interfaces.contains(&name) {
+                KIND_INTERFACE
+            } else {
+                KIND_CLASS
+            };
+            items.push(Item::plain(name, kind, "type"));
+        }
+        for module in view.env.modules.keys() {
+            items.push(Item::plain(module.clone(), KIND_MODULE, "module types"));
+        }
+        items.sort_by(|a, b| a.label.cmp(&b.label));
+        items.dedup_by(|a, b| a.label == b.label);
+        return items;
+    }
+
+    let mut items: Vec<Item> = Vec::new();
+    if let Some(member_items) = class_member_completion(text, line0, col0) {
+        items.extend(member_items);
+    }
+    for kw in KEYWORDS {
+        if kw == "switch" {
+            items.push(Item {
+                label: "switch".to_string(),
+                kind: KIND_KEYWORD,
+                detail: "switch(value) case ... end end".to_string(),
+                insert_text: Some("switch($1)".to_string()),
+                is_snippet: true,
+                sort_text: None,
+            });
+        } else {
+            items.push(Item::plain(kw, KIND_KEYWORD, "keyword"));
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    for b in view.analysis.bindings.iter().rev() {
+        if b.line.map(|l| l <= cur_line).unwrap_or(true) && seen.insert(b.name.clone()) {
+            let (kind, detail) = item_kind_for(&b.ty);
+            match &b.ty {
+                Type::Function(Some(_)) => {
+                    items.push(Item::snippet(&b.name, kind, detail));
+                }
+                _ => items.push(Item::plain(&b.name, kind, detail)),
+            }
+        }
+    }
+    for (name, ty) in &view.project.luard_globals {
+        if seen.insert(name.clone()) {
+            let (kind, detail) = item_kind_for(ty);
+            match ty {
+                Type::Function(Some(_)) => items.push(Item::snippet(name, kind, detail)),
+                _ => items.push(Item::plain(name, kind, detail)),
+            }
+        }
+    }
+    for (name, ty, src_path) in &view.project.pub_globals {
+        if src_path != view.path && seen.insert(name.clone()) {
+            let (kind, detail) = item_kind_for(ty);
+            match ty {
+                Type::Function(Some(_)) => items.push(Item::snippet(name, kind, detail)),
+                _ => items.push(Item::plain(name, kind, detail)),
+            }
+        }
+    }
+    for (name, ty) in crate::builtins::global_env() {
+        if seen.insert(name.clone()) {
+            let (kind, detail) = item_kind_for(&ty);
+            match ty {
+                Type::Function(Some(_)) => items.push(Item::snippet(&name, kind, detail)),
+                _ => items.push(Item::plain(&name, kind, detail)),
+            }
+        }
+    }
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    items.dedup_by(|a, b| a.label == b.label);
+    items
+}
+
+pub const CLASS_MEMBER_KEYWORDS: [&str; 13] = [
+    "public",
+    "private",
+    "protected",
+    "static",
+    "abstract",
+    "final",
+    "override",
+    "function",
+    "constructor",
+    "destructor",
+    "operator",
+    "get",
+    "set",
+];
+
+const MEMBER_MODIFIERS: [&str; 7] = [
+    "public",
+    "private",
+    "protected",
+    "static",
+    "abstract",
+    "final",
+    "override",
+];
+
+pub(crate) fn strip_strings_and_comments(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    let mut quote: Option<char> = None;
+    while i < chars.len() {
+        let c = chars[i];
+        match quote {
+            Some(q) => {
+                if c == '\\' {
+                    i += 1;
+                } else if c == q {
+                    quote = None;
+                }
+            }
+            None => {
+                if c == '"' || c == '\'' || c == '`' {
+                    quote = Some(c);
+                } else if c == '-' && chars.get(i + 1) == Some(&'-') {
+                    break;
+                } else {
+                    out.push(c);
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+pub(crate) fn line_has_word(line: &str, word: &str) -> bool {
+    let chars: Vec<char> = line.chars().collect();
+    let target: Vec<char> = word.chars().collect();
+    let n = target.len();
+    let mut i = 0;
+    while i + n <= chars.len() {
+        if chars[i..i + n] == target[..] {
+            let before_ok = i == 0 || !is_word_char(chars[i - 1]);
+            let after_ok = i + n >= chars.len() || !is_word_char(chars[i + n]);
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+fn class_name_on_line(cleaned: &str) -> Option<String> {
+    let chars: Vec<char> = cleaned.chars().collect();
+    let target: Vec<char> = "class".chars().collect();
+    let mut i = 0;
+    while i + 5 <= chars.len() {
+        if chars[i..i + 5] == target[..] {
+            let before_ok = i == 0 || !is_word_char(chars[i - 1]);
+            let after_ok = i + 5 >= chars.len() || !is_word_char(chars[i + 5]);
+            if before_ok && after_ok {
+                let mut j = i + 5;
+                while j < chars.len() && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                let start = j;
+                while j < chars.len() && is_word_char(chars[j]) {
+                    j += 1;
+                }
+                if j > start {
+                    return Some(chars[start..j].iter().collect());
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn type_alias_on_line(cleaned: &str) -> bool {
+    line_has_word(cleaned, "type") && cleaned.contains('=')
+}
+
+fn generics_between_angles(line: &str) -> Vec<String> {
+    let Some(open) = line.find('<') else {
+        return Vec::new();
+    };
+    let Some(close) = line[open..].find('>') else {
+        return Vec::new();
+    };
+    line[open + 1..open + close]
+        .split(',')
+        .map(str::trim)
+        .filter(|s| {
+            !s.is_empty()
+                && s.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false)
+                && s.chars().all(is_word_char)
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+pub fn generic_params_in_scope(text: &str, line0: usize) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    let start = line0.min(lines.len().saturating_sub(1));
+    let lowest = start.saturating_sub(100);
+    let mut i = start;
+    loop {
+        let cleaned = strip_strings_and_comments(lines.get(i).unwrap_or(&""));
+        if line_has_word(&cleaned, "function") && cleaned.contains('<') {
+            out.extend(generics_between_angles(&cleaned));
+            break;
+        }
+        if type_alias_on_line(&cleaned) {
+            if cleaned.contains('<') {
+                out.extend(generics_between_angles(&cleaned));
+            }
+            break;
+        }
+        if line_has_word(&cleaned, "end") && i != start {
+            break;
+        }
+        if i == lowest || i == 0 {
+            break;
+        }
+        i -= 1;
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+pub fn in_type_alias_body(text: &str, line0: usize, col0: usize) -> bool {
+    let mut stack: Vec<bool> = Vec::new();
+    for (i, raw) in text.lines().enumerate().take(line0 + 1) {
+        let upto: String = if i == line0 {
+            raw.chars().take(col0).collect()
+        } else {
+            raw.to_string()
+        };
+        let cleaned = strip_strings_and_comments(&upto);
+        let is_type_line = type_alias_on_line(&cleaned);
+        for c in cleaned.chars() {
+            match c {
+                '{' => {
+                    let parent = stack.last().copied().unwrap_or(false);
+                    stack.push(parent || is_type_line);
+                }
+                '}' => {
+                    stack.pop();
+                }
+                _ => {}
+            }
+        }
+        if i == line0 {
+            break;
+        }
+    }
+    stack.last().copied().unwrap_or(false)
+}
+
+pub fn enclosing_class(text: &str, line0: usize, col0: usize) -> Option<String> {
+    let mut stack: Vec<Option<String>> = Vec::new();
+    for (i, raw) in text.lines().enumerate().take(line0 + 1) {
+        let upto: String = if i == line0 {
+            raw.chars().take(col0).collect()
+        } else {
+            raw.to_string()
+        };
+        let cleaned = strip_strings_and_comments(&upto);
+        let class_name = class_name_on_line(&cleaned);
+        for c in cleaned.chars() {
+            match c {
+                '{' => {
+                    let inside_class = matches!(stack.last(), Some(Some(_)));
+                    if !inside_class {
+                        stack.push(class_name.clone());
+                    } else {
+                        stack.push(None);
+                    }
+                }
+                '}' => {
+                    stack.pop();
+                }
+                _ => {}
+            }
+        }
+        if i == line0 {
+            break;
+        }
+    }
+    stack.last().cloned().flatten()
+}
+
+fn class_member_completion(text: &str, line0: usize, col0: usize) -> Option<Vec<Item>> {
+    let line = text.lines().nth(line0).unwrap_or("");
+    let head: String = line.chars().take(col0).collect();
+    let ends_mid_word = head.chars().last().map(is_word_char).unwrap_or(false);
+    let mut tokens: Vec<&str> = head.split_whitespace().collect();
+    if ends_mid_word {
+        tokens.pop();
+    }
+    if !tokens.iter().all(|t| MEMBER_MODIFIERS.contains(t)) {
+        return None;
+    }
+    enclosing_class(text, line0, col0)?;
+    let items = CLASS_MEMBER_KEYWORDS
+        .iter()
+        .filter(|kw| !tokens.contains(kw))
+        .map(|kw| Item::plain(*kw, KIND_KEYWORD, "class member").prioritized())
+        .collect();
+    Some(items)
+}
+
+fn literal_strings_of_type(ty: &Type) -> Vec<String> {
+    match ty {
+        Type::StringLit(s) => vec![s.clone()],
+        Type::Union(parts) => parts.iter().flat_map(literal_strings_of_type).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn call_context(before: &str) -> Option<(String, usize)> {
+    let chars: Vec<char> = before.chars().collect();
+    let mut opens: Vec<usize> = Vec::new();
+    for (i, c) in chars.iter().enumerate() {
+        match c {
+            '(' => opens.push(i),
+            ')' => {
+                opens.pop();
+            }
+            _ => {}
+        }
+    }
+    let open = *opens.last()?;
+    let mut depth = 0i32;
+    let mut arg_idx = 0usize;
+    for c in chars.iter().skip(open + 1) {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => arg_idx += 1,
+            _ => {}
+        }
+    }
+    let callee: String = chars[..open].iter().collect();
+    Some((callee.trim_end().to_string(), arg_idx))
+}
+
+fn call_argument_literals(
+    view: &FileView,
+    text: &str,
+    before_string: &str,
+    line0: usize,
+    col0: usize,
+) -> Option<Vec<Item>> {
+    let (callee_text, arg_idx) = call_context(before_string)?;
+    if callee_text.is_empty() {
+        return None;
+    }
+    let probe = format!("{callee_text}.");
+    let chain = chain_before(&probe, probe.chars().count())?;
+    let self_class = enclosing_class(text, line0, col0);
+    let ty = view.resolve_chain_in(&chain.segments, line0 as u32 + 1, self_class.as_deref())?;
+    let param_ty = match &ty {
+        Type::Function(Some(ft)) => ft.params.get(arg_idx).map(|p| p.ty.clone()),
+        Type::Class(c) => view
+            .find_class(c)
+            .and_then(|info| info.constructor.as_ref())
+            .and_then(|sig| sig.params.get(arg_idx).map(|p| p.ty.clone())),
+        _ => None,
+    }?;
+    let lits = literal_strings_of_type(&param_ty);
+    if lits.is_empty() {
+        return None;
+    }
+    let mut lits = lits;
+    lits.sort();
+    lits.dedup();
+    Some(
+        lits.into_iter()
+            .map(|s| Item::plain(s, KIND_CONSTANT, "literal"))
+            .collect(),
+    )
+}
+
+fn is_plain_ident(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    name.chars().all(is_word_char)
+}
+
+fn string_keys_of(view: &FileView, ty: &Type) -> Vec<(String, String)> {
+    match ty {
+        Type::Table(tt) => tt
+            .fields
+            .iter()
+            .map(|(n, t)| (n.clone(), t.to_string()))
+            .collect(),
+        Type::Instance(c) => view
+            .find_class(c)
+            .map(|info| {
+                info.fields
+                    .iter()
+                    .filter(|f| !f.is_static)
+                    .map(|f| (f.name.clone(), f.ty.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Type::Union(parts) => {
+            let mut out = Vec::new();
+            for p in parts {
+                out.extend(string_keys_of(view, p));
+            }
+            out
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn bracket_key_completion(
+    view: &FileView,
+    text: &str,
+    line: &str,
+    line0: usize,
+    col0: usize,
+) -> Option<Vec<Item>> {
+    let upto: String = line.chars().take(col0).collect();
+    let (recv_text, quoted) = match in_open_string(line, col0) {
+        Some((_, body)) => {
+            let cut = upto.chars().count() - body.chars().count() - 1;
+            let before: String = upto.chars().take(cut).collect();
+            let trimmed = before.trim_end().to_string();
+            (trimmed.strip_suffix('[')?.to_string(), true)
+        }
+        None => {
+            let trimmed = upto.trim_end().to_string();
+            (trimmed.strip_suffix('[')?.to_string(), false)
+        }
+    };
+    let probe = format!("{recv_text}.");
+    let chain = chain_before(&probe, probe.chars().count())?;
+    let self_class = enclosing_class(text, line0, col0);
+    let ty = view.resolve_chain_in(&chain.segments, line0 as u32 + 1, self_class.as_deref())?;
+    let keys = string_keys_of(view, &ty);
+    if keys.is_empty() {
+        return None;
+    }
+    Some(
+        keys.into_iter()
+            .map(|(name, detail)| {
+                let insert = if quoted {
+                    None
+                } else {
+                    Some(format!("\"{name}\"]"))
+                };
+                Item {
+                    label: name,
+                    kind: KIND_FIELD,
+                    detail,
+                    insert_text: insert,
+                    is_snippet: false,
+                    sort_text: None,
+                }
+            })
+            .collect(),
+    )
+}
+
+pub fn resolve_chain_full(
+    view: &FileView,
+    chain: &ChainAt,
+    line: u32,
+    self_class: Option<&str>,
+) -> Option<Type> {
+    if let Some(cast) = &chain.cast_base {
+        let texpr = crate::type_syntax::parse_type(cast).ok()?;
+        let mut ty = view.env.value_type(&texpr);
+        for seg in &chain.segments {
+            ty = view.member_type(&ty, &seg.name);
+            if seg.called {
+                ty = view.call_result(&ty);
+            }
+            if ty == Type::Unknown {
+                return Some(Type::Unknown);
+            }
+        }
+        return Some(ty);
+    }
+    view.resolve_chain_in(&chain.segments, line, self_class)
+}
+
+fn item_kind_for(ty: &Type) -> (i64, String) {
+    let detail = ty.to_string();
+    let kind = match ty {
+        Type::Function(_) => KIND_FUNCTION,
+        Type::Class(_) => KIND_CLASS,
+        Type::Enum(_) => KIND_ENUM,
+        Type::Interface(_) => KIND_INTERFACE,
+        Type::Table(_) => KIND_MODULE,
+        _ => KIND_VARIABLE,
+    };
+    (kind, detail)
+}
+
+fn switch_subject(text: &str, line0: usize) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut i = line0.min(lines.len().saturating_sub(1));
+    loop {
+        let l = lines[i];
+        if let Some(pos) = l.find("switch") {
+            let after = &l[pos + 6..];
+            let after = after.trim_start();
+            if let Some(stripped) = after.strip_prefix('(') {
+                let inner: String = stripped
+                    .chars()
+                    .take_while(|c| is_word_char(*c))
+                    .collect();
+                if !inner.is_empty() {
+                    return Some(inner);
+                }
+            }
+        }
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
+    }
+}

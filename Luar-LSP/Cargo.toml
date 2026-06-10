@@ -1,0 +1,15 @@
+[package]
+name = "luar-lsp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+luar = { path = "../Luar" }
+
+[[bin]]
+name = "luar-types"
+path = "src/bin/luar_types.rs"
+
+[[bin]]
+name = "luar-lsp"
+path = "src/bin/luar_lsp.rs"
