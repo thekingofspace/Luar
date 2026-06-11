@@ -17,6 +17,7 @@ pub use runtime::{
     blocking, pump_ready, run_pending, Context, Environment, EvalError, Interpreter, Mutability,
     NativeClassBuilder, Table, Value, VarError, Variable, Visibility,
 };
+pub use runtime::gc::script_source;
 pub use vm::{RuntimeError, Vm};
 
 pub use bytecode::{Chunk, CodecError, Instruction, OpCode, Program};
@@ -191,5 +192,20 @@ impl Interpreter {
     pub fn call_value(&mut self, callee: &Value, args: Vec<Value>) -> Result<Vec<Value>, EvalError> {
         let _fam = runtime::gil::FamilyScope::enter(&self.family);
         self.call(callee, args)
+    }
+
+    pub fn launch(&mut self, callee: &Value, args: Vec<Value>) -> Result<Value, EvalError> {
+        let _fam = runtime::gil::FamilyScope::enter(&self.family);
+        runtime::launch_callable(self, callee.clone(), args).map_err(EvalError)
+    }
+
+    pub fn launch_method(
+        &mut self,
+        receiver: &Value,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, EvalError> {
+        let _fam = runtime::gil::FamilyScope::enter(&self.family);
+        runtime::launch_method_value(self, receiver.clone(), method, args).map_err(EvalError)
     }
 }

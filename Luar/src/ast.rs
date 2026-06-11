@@ -52,12 +52,16 @@ pub enum Stmt {
         stop: Expr,
         step: Option<Expr>,
         body: Vec<Stmt>,
+
+        line: u32,
     },
 
     ForIn {
         names: Vec<String>,
         iters: Vec<Expr>,
         body: Vec<Stmt>,
+
+        line: u32,
     },
 
     Break { line: u32 },

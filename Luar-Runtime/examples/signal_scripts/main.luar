@@ -1,0 +1,3 @@
+require("./mods/alerts")
+require("./mods/stats")
+print("modules loaded, handlers registered")

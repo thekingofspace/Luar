@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 pub struct Settings {
     pub inlay_hints: bool,
     pub show_mutability: bool,
+    pub auto_import: bool,
 }
 
 impl Default for Settings {
@@ -19,6 +20,7 @@ impl Default for Settings {
         Settings {
             inlay_hints: true,
             show_mutability: true,
+            auto_import: true,
         }
     }
 }
@@ -192,6 +194,12 @@ impl Server {
                         write_message(&mut writer, &response(id, result));
                     }
                 }
+                "textDocument/semanticTokens/full" => {
+                    let result = self.on_semantic_tokens(&params).unwrap_or(Json::Null);
+                    if let Some(id) = &id {
+                        write_message(&mut writer, &response(id, result));
+                    }
+                }
                 "textDocument/inlayHint" => {
                     let result = self.on_inlay_hints(&params).unwrap_or(Json::Array(vec![]));
                     if let Some(id) = &id {
@@ -237,6 +245,9 @@ impl Server {
         }
         if let Some(v) = opts.get("showMutability").and_then(|v| v.as_bool()) {
             self.settings.show_mutability = v;
+        }
+        if let Some(v) = opts.get("autoImport").and_then(|v| v.as_bool()) {
+            self.settings.auto_import = v;
         }
     }
 
@@ -330,7 +341,10 @@ impl Server {
         let project = self.project.as_ref()?;
         let view = FileView::from_project(project, &path)?;
         let text = project.file(&path)?.source.clone();
-        let items = completion::complete(&view, &text, line, character);
+        let mut items = completion::complete(&view, &text, line, character);
+        if !self.settings.auto_import {
+            items.retain(|i| i.auto_import.is_none());
+        }
         let json_items: Vec<Json> = items
             .into_iter()
             .map(|item| {
@@ -347,6 +361,27 @@ impl Server {
                 }
                 if let Some(sort) = item.sort_text {
                     map.push(("sortText", Json::str(sort)));
+                }
+                if let Some(ai) = item.auto_import {
+                    let pos = |l: u32| {
+                        Json::obj(vec![
+                            ("line", Json::int(l as i64)),
+                            ("character", Json::int(0)),
+                        ])
+                    };
+                    map.push((
+                        "additionalTextEdits",
+                        Json::Array(vec![Json::obj(vec![
+                            (
+                                "range",
+                                Json::obj(vec![
+                                    ("start", pos(ai.line0)),
+                                    ("end", pos(ai.line0)),
+                                ]),
+                            ),
+                            ("newText", Json::str(ai.new_text)),
+                        ])]),
+                    ));
                 }
                 Json::obj(map)
             })
@@ -445,6 +480,50 @@ impl Server {
             current = view.find_class(&c).and_then(|i| i.parent.clone());
         }
         None
+    }
+
+    fn on_semantic_tokens(&self, params: &Json) -> Option<Json> {
+        let uri = params
+            .path(&["textDocument", "uri"])
+            .and_then(|u| u.as_str())?;
+        let path = uri_to_path(uri)?;
+        let project = self.project.as_ref()?;
+        let info = project.file(&path)?;
+        let Ok(tokens) = luar::lexer::tokenize(&info.source) else {
+            return None;
+        };
+        let mut data: Vec<Json> = Vec::new();
+        let mut prev_line = 0i64;
+        let mut prev_col = 0i64;
+        let mut after_access = false;
+        for t in &tokens {
+            if t.kind == luar::lexer::TokenKind::Identifier && !after_access {
+                if let Some((_, ty)) = project
+                    .luard_globals
+                    .iter()
+                    .find(|(n, _)| *n == t.text)
+                {
+                    let token_type = match ty {
+                        Type::Function(_) => 0i64,
+                        _ => 1i64,
+                    };
+                    let line0 = t.span.line as i64 - 1;
+                    let col0 = t.span.col as i64 - 1;
+                    let d_line = line0 - prev_line;
+                    let d_col = if d_line == 0 { col0 - prev_col } else { col0 };
+                    data.push(Json::int(d_line));
+                    data.push(Json::int(d_col));
+                    data.push(Json::int(t.text.chars().count() as i64));
+                    data.push(Json::int(token_type));
+                    data.push(Json::int(1));
+                    prev_line = line0;
+                    prev_col = col0;
+                }
+            }
+            after_access = t.kind == luar::lexer::TokenKind::Operator
+                && (t.text == "." || t.text == ":");
+        }
+        Some(Json::obj(vec![("data", Json::Array(data))]))
     }
 
     fn luard_docs(&self, name: &str) -> Option<String> {
@@ -559,6 +638,28 @@ fn capabilities() -> Json {
             ),
             ("hoverProvider", Json::Bool(true)),
             ("inlayHintProvider", Json::Bool(true)),
+            (
+                "semanticTokensProvider",
+                Json::obj(vec![
+                    (
+                        "legend",
+                        Json::obj(vec![
+                            (
+                                "tokenTypes",
+                                Json::Array(vec![
+                                    Json::str("function"),
+                                    Json::str("variable"),
+                                ]),
+                            ),
+                            (
+                                "tokenModifiers",
+                                Json::Array(vec![Json::str("defaultLibrary")]),
+                            ),
+                        ]),
+                    ),
+                    ("full", Json::Bool(true)),
+                ]),
+            ),
         ]),
     )])
 }
@@ -761,5 +862,6 @@ pub fn settings_to_json(s: &Settings) -> Json {
     let mut map = BTreeMap::new();
     map.insert("inlayHints".to_string(), Json::Bool(s.inlay_hints));
     map.insert("showMutability".to_string(), Json::Bool(s.show_mutability));
+    map.insert("autoImport".to_string(), Json::Bool(s.auto_import));
     Json::Object(map)
 }

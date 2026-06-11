@@ -306,8 +306,57 @@ impl TypeEnv {
             ("keyof" | "KeyOf", 1) => self.keys_union(&args[0], guard),
             ("valueof" | "ValueOf", 2) => self.value_of_key(&args[0], &args[1], guard),
             ("tobasic" | "ToBasic", 1) => self.to_basic(&args[0], guard),
+            ("notnil" | "NotNil", 1) => Some(self.strip_nil_resolved(&args[0], guard)),
             _ => None,
         }
+    }
+
+    fn strip_nil_resolved(&self, arg: &TypeExpr, guard: &mut Guard) -> TypeExpr {
+        guard.depth += 1;
+        if guard.too_deep() {
+            guard.depth -= 1;
+            return arg.clone();
+        }
+        let result = match arg {
+            TypeExpr::Optional(inner) => self.strip_nil_resolved(inner, guard),
+            TypeExpr::Union(parts) => {
+                let kept: Vec<TypeExpr> = parts
+                    .iter()
+                    .filter(|p| p.simple_name() != Some("nil"))
+                    .map(|p| self.strip_nil_resolved(p, guard))
+                    .collect();
+                match kept.len() {
+                    0 => TypeExpr::named("nil"),
+                    1 => kept.into_iter().next().unwrap(),
+                    _ => TypeExpr::Union(kept),
+                }
+            }
+            TypeExpr::Named(segs) if segs.len() == 1 => {
+                let seg = &segs[0];
+                let name = seg.name.as_str();
+                if let Some(alias) = self.aliases.get(name) {
+                    if guard.seen.insert(name.to_string()) {
+                        let body = instantiate(alias, seg.args.as_deref());
+                        let stripped = self.strip_nil_resolved(&body, guard);
+                        guard.seen.remove(name);
+                        if stripped == body {
+                            arg.clone()
+                        } else {
+                            stripped
+                        }
+                    } else {
+                        arg.clone()
+                    }
+                } else if let Some(expanded) = self.type_function(seg, guard) {
+                    self.strip_nil_resolved(&expanded, guard)
+                } else {
+                    arg.clone()
+                }
+            }
+            other => other.clone(),
+        };
+        guard.depth -= 1;
+        result
     }
 
     fn resolve_dispatch(&self, ty: &TypeExpr, guard: &mut Guard) -> Resolved {
@@ -716,6 +765,25 @@ impl TypeEnv {
             }
             _ => {}
         }
+    }
+}
+
+pub fn strip_nil_expr(arg: &TypeExpr) -> TypeExpr {
+    match arg {
+        TypeExpr::Optional(inner) => strip_nil_expr(inner),
+        TypeExpr::Union(parts) => {
+            let kept: Vec<TypeExpr> = parts
+                .iter()
+                .filter(|p| p.simple_name() != Some("nil"))
+                .map(strip_nil_expr)
+                .collect();
+            match kept.len() {
+                0 => TypeExpr::named("nil"),
+                1 => kept.into_iter().next().unwrap(),
+                _ => TypeExpr::Union(kept),
+            }
+        }
+        other => other.clone(),
     }
 }
 

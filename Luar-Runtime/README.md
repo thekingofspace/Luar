@@ -77,3 +77,43 @@ interp.set_global_fn("wait", wait);
 - `luar::pump_ready()` resumes only the coroutines whose blocking call already finished,
   without waiting (it is also called automatically when `blocking` is used on the main
   thread, so a main-thread `wait` lets waiting coroutines continue).
+
+## Launching coroutines from Rust
+
+The host can launch any Luar function — or an object method with `self` bound — as a
+coroutine. The call resumes immediately: if the body finishes (or yields) within the
+grace window you get classic behavior, otherwise it keeps running in the background and
+`run_pending()` drains it.
+
+```rust
+let func = interp.get_global("tick").unwrap();
+let co = interp.launch(&func, vec![luar::Value::Int(1)])?;
+
+let player = interp.get_global("player").unwrap();
+interp.launch_method(&player, "respawn", vec![])?;
+
+luar::run_pending();
+```
+
+Both return the coroutine `Value` (or an error if the callee is not callable or fails
+immediately). Launch from the host thread only — not from inside another coroutine.
+
+## Tracking which script a value came from
+
+Hosts can find the source behind any call or value — useful for per-module permissions,
+path-scoped registries, or debugging:
+
+- `interp.set_source_path(path)` — tag the main script (require'd modules are tagged
+  automatically with their file path).
+- `interp.current_source()` — inside a native function, the path of the script that is
+  currently running (i.e. who called you).
+- `interp.source_of_value(&value)` / `interp.script_of_value(&value)` — the script that
+  *created* a function, table, or class, wherever it travels.
+- `luar::script_source(script_id)` — resolve a script id to its path.
+
+## Example: a host-side Signal
+
+`cargo run --example signal` runs a full demo: Rust owns a Signal, scripts connect
+handler functions to it through a native `on_score(fn)`, the host fires every handler
+as a coroutine with `interp.launch`, disconnects one by id, and prints which script
+file registered each handler via `source_of_value`.

@@ -292,26 +292,28 @@ impl Ferrite {
                 self.scoped_block(body, "while");
                 self.loop_depth -= 1;
             }
-            Stmt::ForNumeric { var, start, stop, step, body } => {
+            Stmt::ForNumeric { var, start, stop, step, body, line } => {
+                self.current_line = *line;
                 self.walk_expr(start);
                 self.walk_expr(stop);
                 if let Some(s) = step {
                     self.walk_expr(s);
                 }
                 self.push_scope();
-                self.declare(var, true, false, self.current_line, Kind::Loop);
+                self.declare(var, true, false, *line, Kind::Loop);
                 self.loop_depth += 1;
                 self.walk_block(body);
                 self.loop_depth -= 1;
                 self.pop_scope();
             }
-            Stmt::ForIn { names, iters, body } => {
+            Stmt::ForIn { names, iters, body, line } => {
+                self.current_line = *line;
                 for e in iters {
                     self.walk_expr(e);
                 }
                 self.push_scope();
                 for name in names {
-                    self.declare(name, true, false, self.current_line, Kind::Loop);
+                    self.declare(name, true, false, *line, Kind::Loop);
                 }
                 self.loop_depth += 1;
                 self.walk_block(body);
@@ -503,6 +505,8 @@ fn stmt_line(s: &Stmt) -> Option<u32> {
         | Stmt::Break { line }
         | Stmt::If { line, .. }
         | Stmt::While { line, .. }
+        | Stmt::ForNumeric { line, .. }
+        | Stmt::ForIn { line, .. }
         | Stmt::Buff { line, .. }
         | Stmt::FreeBuff { line, .. } => Some(*line),
         Stmt::Expr(_, line) => Some(*line),
@@ -579,6 +583,27 @@ mod tests {
         assert!(has("class C { abstract function f() return 1 end }", "AbstractMethodWithBody"));
         assert!(!has("class C { abstract function f() end\nfunction g() return 1 end }", "AbstractMethodWithBody"));
         assert!(has("class C {}", "EmptyClass"));
+    }
+
+    #[test]
+    fn unused_loop_variable_points_at_the_for_line() {
+        let d = check("local aray = {1, 2, 3}\n\nfor _, item in ipairs(aray) do\nend");
+        let lint = d
+            .iter()
+            .find(|d| d.code == "UnusedLoopVariable")
+            .expect("loop lint");
+        assert_eq!(lint.line, 3, "should point at the for line: {d:?}");
+        assert!(lint.message.contains("item"));
+    }
+
+    #[test]
+    fn numeric_for_lint_points_at_the_for_line() {
+        let d = check("local limit = 3\n\nfor i = 1, limit do\n    print(1)\nend");
+        let lint = d
+            .iter()
+            .find(|d| d.code == "UnusedLoopVariable")
+            .expect("loop lint");
+        assert_eq!(lint.line, 3, "{d:?}");
     }
 
     #[test]

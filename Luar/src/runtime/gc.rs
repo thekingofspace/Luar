@@ -14,10 +14,21 @@ thread_local! {
     static NEXT_SCRIPT_ID: Cell<u64> = const { Cell::new(1) };
 
     static SCRIPT_ROOTS: StdRefCell<HashMap<u64, ScopeRef>> = StdRefCell::new(HashMap::new());
+
+    static SCRIPT_SOURCES: StdRefCell<HashMap<u64, std::path::PathBuf>> =
+        StdRefCell::new(HashMap::new());
 }
 
 pub fn current_script() -> u64 {
     CURRENT_SCRIPT.with(|c| c.get())
+}
+
+pub fn register_script_source(id: u64, path: std::path::PathBuf) {
+    SCRIPT_SOURCES.with(|s| s.borrow_mut().insert(id, path));
+}
+
+pub fn script_source(id: u64) -> Option<std::path::PathBuf> {
+    SCRIPT_SOURCES.with(|s| s.borrow().get(&id).cloned())
 }
 
 pub fn new_script_id() -> u64 {

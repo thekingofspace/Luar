@@ -496,7 +496,7 @@
           "match": "(?<![.:\\w])(print|warn|type|tostring|tonumber|assert|error|select|pcall|ipairs|pairs|next|setmetatable|getmetatable|rawget|rawset|rawequal|rawlen|require|instanceof|classname|classof|superclass|methodsof|isabstract|collectgarbage)\\b(?!\\s*[=:]\\s*[^=])"
         },
         {
-          "name": "support.class.luar",
+          "name": "support.function.builtin.luar",
           "match": "(?<![.:\\w])(math|string|table|bit32|os|coroutine)\\b"
         }
       ]

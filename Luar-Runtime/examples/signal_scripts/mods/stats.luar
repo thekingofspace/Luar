@@ -1,0 +1,5 @@
+pub local stats_conn = on_score(function(player, points)
+    print(`[stats] {player} = {points}`)
+end)
+
+return true

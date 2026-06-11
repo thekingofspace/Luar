@@ -38,6 +38,7 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
         initializationOptions: {
             inlayHints: config.get<boolean>("inlayHints", true),
             showMutability: config.get<boolean>("showMutability", true),
+            autoImport: config.get<boolean>("autoImport", true),
         },
     };
     client = new LanguageClient("luar-lsp", "Luar Language Server", serverOptions, clientOptions);

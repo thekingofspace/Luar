@@ -62,6 +62,66 @@ i.run_source(<span class="str">"function double(x) return x * 2 end"</span>)?;
 <span class="kw">let</span> f = i.get_global(<span class="str">"double"</span>).unwrap();
 <span class="kw">let</span> out = i.call_value(&amp;f, <span class="kw">vec!</span>[Value::int(<span class="num">21</span>)])?;   <span class="com">// [Value::Int(42)]</span></code></pre>
 
+<h3>Launching coroutines from Rust</h3>
+<p>The host can launch any LUAR function &mdash; or an object method with
+<code>self</code> bound &mdash; as a coroutine. The launch resumes the coroutine
+immediately: if the body finishes (or yields) within the grace window you get
+the result right away; otherwise it keeps running in the background and the host
+drains it with <code>luar::run_pending()</code>.</p>
+<table>
+<tr><th>Method</th><th>What it does</th></tr>
+<tr><td><code>i.launch(&amp;callable, args)</code></td><td>Create a coroutine from a function, class, or callable table and resume it with <code>args</code>. Returns the coroutine <code>Value</code>.</td></tr>
+<tr><td><code>i.launch_method(&amp;instance, "name", args)</code></td><td>Launch <code>instance:name(args)</code> as a coroutine with <code>self</code> bound. Also works with a class value for static methods.</td></tr>
+<tr><td><code>luar::run_pending()</code></td><td>Block until every backgrounded coroutine has finished.</td></tr>
+</table>
+<pre><code>i.run_source(<span class="str">r#"
+    class Player {
+        public name: string = ""
+        constructor(n) self.name = n end
+        function respawn(delay)
+            wait(delay)
+            print(self.name .. " respawned")
+        end
+    }
+    pub local hero = Player("ana")
+    pub local tick = function(n) print("tick", n) end
+"#</span>)?;
+
+<span class="kw">let</span> tick = i.get_global(<span class="str">"tick"</span>).unwrap();
+<span class="kw">let</span> co = i.launch(&amp;tick, <span class="kw">vec!</span>[Value::int(<span class="num">1</span>)])?;          <span class="com">// plain function</span>
+
+<span class="kw">let</span> hero = i.get_global(<span class="str">"hero"</span>).unwrap();
+i.launch_method(&amp;hero, <span class="str">"respawn"</span>, <span class="kw">vec!</span>[Value::int(<span class="num">2</span>)])?; <span class="com">// method, self bound</span>
+
+luar::run_pending();                                       <span class="com">// drain background work</span></code></pre>
+<p>Errors that happen immediately (a non-callable value, a missing method, or a
+body that fails inside the grace window) come back as the <code>Err</code> of the
+launch call. Launch only from the host thread &mdash; calling it while a coroutine
+is running is an error. The full pattern, including connecting and disconnecting
+script handlers signal-style, is runnable as
+<code>cargo run --example signal</code> in <code>Luar-Runtime</code>.</p>
+
+<h3>Tracking which script a value came from</h3>
+<p>Every require'd module is tagged with its file path automatically, and the
+host can tag the entry script too. Native functions can then ask who called
+them, and any function, table, or class remembers which script created it &mdash;
+useful for per-module registries, permissions, or debugging.</p>
+<table>
+<tr><th>Method</th><th>What it does</th></tr>
+<tr><td><code>i.set_source_path(path)</code></td><td>Tag the entry script with its path (modules are tagged automatically).</td></tr>
+<tr><td><code>i.current_source()</code></td><td>Inside a native function: the path of the script currently running.</td></tr>
+<tr><td><code>i.source_of_value(&amp;v)</code></td><td>The path of the script that created a function, table, or class.</td></tr>
+<tr><td><code>i.script_of_value(&amp;v)</code></td><td>The creating script's id (pairs with <code>free_script</code>).</td></tr>
+<tr><td><code>luar::script_source(id)</code></td><td>Resolve a script id back to its path.</td></tr>
+</table>
+<pre><code>i.set_global_fn(<span class="str">"register"</span>, |i, args| {
+    <span class="kw">let</span> handler = args.into_iter().next().unwrap_or(Value::Nil);
+    <span class="kw">let</span> who = i.source_of_value(&amp;handler)
+        .or_else(|| i.current_source());
+    println!(<span class="str">"handler registered by {:?}"</span>, who);   <span class="com">// e.g. mods/alerts.luar</span>
+    Ok(<span class="kw">vec!</span>[])
+});</code></pre>
+
 <h3>Creating globals</h3>
 <p>Globals are visible to all code you run. Use <code>set_global</code> for a
 reassignable binding and <code>set_global_const</code> for an immutable one.</p>

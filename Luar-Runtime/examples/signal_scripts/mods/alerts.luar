@@ -1,0 +1,6 @@
+on_score(function(player, points)
+    wait(0.15)
+    print(`[alerts] {player} scored {points} (after waiting, asynchronously)`)
+end)
+
+return true

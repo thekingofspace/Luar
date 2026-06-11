@@ -60,6 +60,8 @@ pub struct Interpreter {
     pub(crate) family: std::sync::Arc<super::gil::Family>,
 
     steps: std::cell::Cell<u32>,
+
+    source_path: Option<std::path::PathBuf>,
 }
 
 impl Default for Interpreter {
@@ -88,11 +90,35 @@ impl Interpreter {
             script_id,
             family: std::sync::Arc::new(super::gil::Family::new()),
             steps: std::cell::Cell::new(0),
+            source_path: None,
         }
     }
 
     pub fn set_module_dir(&mut self, dir: impl Into<std::path::PathBuf>) {
         self.module_dir = dir.into();
+    }
+
+    pub fn set_source_path(&mut self, path: impl Into<std::path::PathBuf>) {
+        let p = path.into();
+        gc::register_script_source(self.script_id, p.clone());
+        self.source_path = Some(p);
+    }
+
+    pub fn current_source(&self) -> Option<std::path::PathBuf> {
+        self.source_path.clone()
+    }
+
+    pub fn script_of_value(&self, value: &Value) -> Option<u64> {
+        match value {
+            Value::Function(f) => Some(f.script),
+            Value::Table(t) => Some(t.borrow().created_by),
+            Value::Class(c) => Some(c.script),
+            _ => None,
+        }
+    }
+
+    pub fn source_of_value(&self, value: &Value) -> Option<std::path::PathBuf> {
+        gc::script_source(self.script_of_value(value)?)
     }
 
     pub fn on_subclass_of(
@@ -196,6 +222,7 @@ impl Interpreter {
             script_id: gc::new_script_id(),
             family,
             steps: std::cell::Cell::new(0),
+            source_path: None,
         }
     }
 
@@ -359,10 +386,10 @@ impl Interpreter {
                     }
                 }
             }
-            Stmt::ForNumeric { var, start, stop, step, body } => {
+            Stmt::ForNumeric { var, start, stop, step, body, .. } => {
                 return self.exec_for_numeric(var, start, stop, step.as_ref(), body);
             }
-            Stmt::ForIn { names, iters, body } => {
+            Stmt::ForIn { names, iters, body, .. } => {
                 return self.exec_for_in(names, iters, body);
             }
             Stmt::Break { .. } => return Ok(Flow::Break),
@@ -672,10 +699,7 @@ impl Interpreter {
                 match e {
                     Expr::Call { callee, args } => {
                         let callee_val = self.eval(callee)?;
-                        let mut argv = Vec::with_capacity(args.len());
-                        for a in args {
-                            argv.push(self.eval(a)?);
-                        }
+                        let argv = self.eval_values(args)?;
                         out.extend(self.call(&callee_val, argv)?);
                     }
                     Expr::MethodCall { .. } => out.extend(self.eval_method_call(e)?),
@@ -727,10 +751,7 @@ impl Interpreter {
             }
             Expr::Call { callee, args } => {
                 let callee_val = self.eval(callee)?;
-                let mut arg_vals = Vec::with_capacity(args.len());
-                for a in args {
-                    arg_vals.push(self.eval(a)?);
-                }
+                let arg_vals = self.eval_values(args)?;
                 self.call_one(&callee_val, arg_vals)
             }
             Expr::MethodCall { .. } => {
@@ -1334,6 +1355,7 @@ impl Interpreter {
             interfaces,
             instance_meta: meta_rc.clone(),
             gc_mark: std::cell::Cell::new(false),
+            script: gc::current_script(),
         });
         gc::register_class(&class);
 
@@ -1425,10 +1447,7 @@ impl Interpreter {
     fn eval_method_call(&mut self, expr: &Expr) -> Result<Vec<Value>> {
         let Expr::MethodCall { receiver, method, args } = expr else { unreachable!() };
         let recv = self.eval(receiver)?;
-        let mut argv = Vec::with_capacity(args.len());
-        for a in args {
-            argv.push(self.eval(a)?);
-        }
+        let argv = self.eval_values(args)?;
 
         if let Value::Class(c) = &recv {
             let c = c.clone();
@@ -2422,6 +2441,73 @@ fn coro_running(_interp: &mut Interpreter, _args: Vec<Value>) -> NativeResult {
     Ok(vec![co, Value::Bool(is_main)])
 }
 
+fn launch_method_trampoline(interp: &mut Interpreter, mut args: Vec<Value>) -> NativeResult {
+    if args.len() < 2 {
+        return Err("launch: method launch needs (object, methodName)".into());
+    }
+    let receiver = args.remove(0);
+    let method = match args.remove(0) {
+        Value::Str(s) => s.to_string(),
+        other => {
+            return Err(format!(
+                "launch: expected a method name string, got {}",
+                other.type_name()
+            ))
+        }
+    };
+    interp.call_method(&receiver, &method, args).map_err(|e| e.0)
+}
+
+pub(crate) fn launch_callable(
+    interp: &mut Interpreter,
+    func: Value,
+    call_args: Vec<Value>,
+) -> std::result::Result<Value, String> {
+    use std::cell::RefCell;
+    let (_, is_main) = super::coroutine::running();
+    if !is_main {
+        return Err(
+            "launch: must be called from the main thread, not inside a coroutine".into(),
+        );
+    }
+    match &func {
+        Value::Function(_) | Value::Native(_) | Value::Class(_) => {}
+        Value::Table(t) => {
+            if t.borrow().metamethod("__call").is_none() {
+                return Err(
+                    "launch: table is not callable (use launch_method for object methods)".into(),
+                );
+            }
+        }
+        other => return Err(format!("launch: cannot launch a {}", other.type_name())),
+    }
+    let global = interp.env.global_scope();
+    let state = super::coroutine::create(func, global, interp.family.clone());
+    let rc = Rc::new(RefCell::new(state));
+    let result = super::coroutine::resume(&rc, call_args);
+    if let (Some(Value::Bool(false)), Some(msg)) = (result.first(), result.get(1)) {
+        return Err(format!("launch: {msg}"));
+    }
+    Ok(Value::Coroutine(rc))
+}
+
+pub(crate) fn launch_method_value(
+    interp: &mut Interpreter,
+    receiver: Value,
+    method: &str,
+    args: Vec<Value>,
+) -> std::result::Result<Value, String> {
+    let mut full = Vec::with_capacity(args.len() + 2);
+    full.push(receiver);
+    full.push(Value::str(method));
+    full.extend(args);
+    launch_callable(
+        interp,
+        Value::Native(Native { name: "launch_method", func: launch_method_trampoline }),
+        full,
+    )
+}
+
 type NativeResult = std::result::Result<Vec<Value>, String>;
 
 fn builtin_setmetatable(_i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
@@ -2737,6 +2823,7 @@ impl NativeClassBuilder {
             interfaces: Vec::new(),
             instance_meta: meta_rc.clone(),
             gc_mark: std::cell::Cell::new(false),
+            script: gc::current_script(),
         });
         gc::register_class(&class);
         meta_rc.borrow_mut().set(Value::str("__class"), Value::Class(class.clone())).ok();
@@ -2905,6 +2992,7 @@ fn builtin_require(interp: &mut Interpreter, args: Vec<Value>) -> NativeResult {
     let mut module = Interpreter::with_shared_global(global, interp.family.clone());
     module.module_dir = file.parent().map(PathBuf::from).unwrap_or(dir);
     module.module_is_init = file.file_stem().map(|n| n == "init").unwrap_or(false);
+    module.set_source_path(file.clone());
     module.env.push_scope();
     module.env.mark_module_root();
     REQUIRE_STACK.with(|s| s.borrow_mut().push(key.clone()));
@@ -3135,6 +3223,7 @@ fn require_file(interp: &mut Interpreter, path: &std::path::Path) -> std::result
     let mut module = Interpreter::with_shared_global(global, interp.family.clone());
     module.module_dir = file.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
     module.module_is_init = file.file_stem().map(|n| n == "init").unwrap_or(false);
+    module.set_source_path(file.clone());
     module.env.push_scope();
     module.env.mark_module_root();
     REQUIRE_STACK.with(|s| s.borrow_mut().push(key.clone()));
@@ -4853,6 +4942,119 @@ order = order .. "|""#,
             main_elapsed.as_millis() < 200,
             "resume blocked on busy coroutine: {main_elapsed:?}"
         );
+    }
+
+    #[test]
+    fn rust_launch_runs_functions_and_methods() {
+        let mut interp = Interpreter::new();
+        interp.set_global_fn("wait", native_test_wait);
+        let program = parse(
+            tokenize(
+                r#"pub local log = ""
+class Greeter {
+    public name: string = ""
+    constructor(n) self.name = n end
+    function greet(suffix)
+        wait(0.05)
+        log = log .. self.name .. suffix
+    end
+}
+pub local g = Greeter("ana")
+pub local tagger = function(x)
+    log = log .. x
+end"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        interp.run(&program).unwrap();
+        let g = interp.get_global("g").unwrap();
+        let tagger = interp.get_global("tagger").unwrap();
+        let co = interp
+            .launch_method(&g, "greet", vec![Value::str("!")])
+            .unwrap();
+        assert!(matches!(co, Value::Coroutine(_)));
+        interp.launch(&tagger, vec![Value::str("go")]).unwrap();
+        interp.run_source("log = log .. \"|\"").unwrap();
+        crate::runtime::run_pending();
+        assert_eq!(interp.env.get("log"), Some(Value::str("go|ana!")));
+    }
+
+    fn native_report_source(i: &mut Interpreter, _args: Vec<Value>) -> std::result::Result<Vec<Value>, String> {
+        let s = i
+            .current_source()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        Ok(vec![Value::str(s)])
+    }
+
+    #[test]
+    fn natives_can_see_the_calling_source() {
+        let dir = std::env::temp_dir().join(format!("luar_src_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("mod.luar"), "return whereami()").unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.module_dir = dir.clone();
+        interp.set_source_path(dir.join("main.luar"));
+        interp.set_global_fn("whereami", native_report_source);
+        let program = parse(
+            tokenize("pub local from_mod = require(\"./mod\")\npub local from_main = whereami()")
+                .unwrap(),
+        )
+        .unwrap();
+        interp.run(&program).unwrap();
+        match interp.env.get("from_mod") {
+            Some(Value::Str(s)) => assert!(s.ends_with("mod.luar"), "{s}"),
+            other => panic!("expected path, got {other:?}"),
+        }
+        match interp.env.get("from_main") {
+            Some(Value::Str(s)) => assert!(s.ends_with("main.luar"), "{s}"),
+            other => panic!("expected path, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn values_remember_their_creating_script() {
+        let dir = std::env::temp_dir().join(format!("luar_srcval_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("mod.luar"),
+            "class Made {\n}\nreturn { box = {}, kind = Made }",
+        )
+        .unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.module_dir = dir.clone();
+        let program = parse(
+            tokenize("pub local m = require(\"./mod\")\npub local box = m.box\npub local kind = m.kind")
+                .unwrap(),
+        )
+        .unwrap();
+        interp.run(&program).unwrap();
+        let boxed = interp.env.get("box").unwrap();
+        let kind = interp.env.get("kind").unwrap();
+        let box_src = interp.source_of_value(&boxed).expect("table source");
+        assert!(box_src.ends_with("mod.luar"), "{}", box_src.display());
+        let kind_src = interp.source_of_value(&kind).expect("class source");
+        assert!(kind_src.ends_with("mod.luar"), "{}", kind_src.display());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rust_launch_rejects_non_callables() {
+        let mut interp = Interpreter::new();
+        let err = interp.launch(&Value::Int(5), Vec::new()).unwrap_err();
+        assert!(err.0.contains("cannot launch"), "{}", err.0);
+    }
+
+    #[test]
+    fn coroutine_table_has_no_launch_builtin() {
+        let interp = run("pub local gone = coroutine.launch == nil");
+        assert_eq!(interp.env.get("gone"), Some(Value::Bool(true)));
     }
 
     #[test]

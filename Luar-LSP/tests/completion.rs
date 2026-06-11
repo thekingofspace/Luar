@@ -252,7 +252,8 @@ fn class_body_offers_member_keywords() {
         assert!(names.contains(&kw.to_string()), "missing {kw}: {names:?}");
     }
     let items = complete_at(&p, &main, 1, 2);
-    assert!(labels(&items).contains(&"local".to_string()));
+    assert!(!labels(&items).contains(&"local".to_string()));
+    assert!(!labels(&items).contains(&"pub".to_string()));
 }
 
 #[test]

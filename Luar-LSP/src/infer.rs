@@ -551,6 +551,7 @@ impl<'a> Inferencer<'a> {
                 stop,
                 step,
                 body,
+                line,
             } => {
                 self.eval(start);
                 self.eval(stop);
@@ -562,7 +563,7 @@ impl<'a> Inferencer<'a> {
                 self.bind(var, Type::Number, false);
                 self.out.bindings.push(Binding {
                     name: var.clone(),
-                    line: None,
+                    line: Some(*line),
                     ty: Type::Number,
                     kind: BindingKind::LoopVar,
                 });
@@ -571,7 +572,7 @@ impl<'a> Inferencer<'a> {
                 let run = std::mem::replace(&mut self.scopes, saved.clone());
                 self.merge_scope_variants(vec![saved, run]);
             }
-            Stmt::ForIn { names, iters, body } => {
+            Stmt::ForIn { names, iters, body, line } => {
                 let var_types = self.for_in_types(names, iters);
                 let saved = self.scopes.clone();
                 self.scopes.push(HashMap::new());
@@ -579,7 +580,7 @@ impl<'a> Inferencer<'a> {
                     self.bind(name, ty.clone(), false);
                     self.out.bindings.push(Binding {
                         name: name.clone(),
-                        line: None,
+                        line: Some(*line),
                         ty,
                         kind: BindingKind::LoopVar,
                     });

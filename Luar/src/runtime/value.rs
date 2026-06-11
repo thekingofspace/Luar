@@ -95,6 +95,8 @@ pub struct Class {
     pub instance_meta: Rc<RefCell<Table>>,
 
     pub(crate) gc_mark: Cell<bool>,
+
+    pub(crate) script: u64,
 }
 
 pub struct Interface {
@@ -227,7 +229,6 @@ pub enum Key {
     Bool(bool),
 }
 
-#[derive(Default)]
 pub struct Table {
     pub array: Vec<Value>,
     pub map: HashMap<Key, Value>,
@@ -239,6 +240,22 @@ pub struct Table {
     pub(crate) cap: Cell<Option<u64>>,
 
     pub(crate) is_enum: bool,
+
+    pub(crate) created_by: u64,
+}
+
+impl Default for Table {
+    fn default() -> Table {
+        Table {
+            array: Vec::new(),
+            map: HashMap::default(),
+            meta: None,
+            gc_mark: Cell::new(false),
+            cap: Cell::new(None),
+            is_enum: false,
+            created_by: gc::current_script(),
+        }
+    }
 }
 
 impl Table {

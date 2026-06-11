@@ -29,6 +29,12 @@ pub const KEYWORDS: [&str; 38] = [
 ];
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct AutoImport {
+    pub line0: u32,
+    pub new_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     pub label: String,
     pub kind: i64,
@@ -36,6 +42,7 @@ pub struct Item {
     pub insert_text: Option<String>,
     pub is_snippet: bool,
     pub sort_text: Option<String>,
+    pub auto_import: Option<AutoImport>,
 }
 
 impl Item {
@@ -47,6 +54,7 @@ impl Item {
             insert_text: None,
             is_snippet: false,
             sort_text: None,
+            auto_import: None,
         }
     }
 
@@ -60,6 +68,7 @@ impl Item {
             insert_text: Some(insert),
             is_snippet: true,
             sort_text: None,
+            auto_import: None,
         }
     }
 
@@ -716,11 +725,12 @@ fn in_open_string(line: &str, col: usize) -> Option<(char, String)> {
 
 const DIRECTIVE_KEYWORDS: [&str; 3] = ["disable", "disable-line", "disable-next-line"];
 
-const EDITOR_CHECKS: [&str; 5] = [
+const EDITOR_CHECKS: [&str; 6] = [
     "DuplicateEnumVariant",
     "GenericArity",
     "UnknownClass",
     "RequireCycle",
+    "NotNil",
     "all",
 ];
 
@@ -1021,6 +1031,7 @@ pub fn complete(view: &FileView, text: &str, line0: usize, col0: usize) -> Vec<I
             insert_text: Some("keyof<$1>".to_string()),
             is_snippet: true,
             sort_text: None,
+            auto_import: None,
         });
         items.push(Item {
             label: "ValueOf".to_string(),
@@ -1029,6 +1040,7 @@ pub fn complete(view: &FileView, text: &str, line0: usize, col0: usize) -> Vec<I
             insert_text: Some("ValueOf<$1, $2>".to_string()),
             is_snippet: true,
             sort_text: None,
+            auto_import: None,
         });
         items.push(Item {
             label: "ToBasic".to_string(),
@@ -1037,6 +1049,16 @@ pub fn complete(view: &FileView, text: &str, line0: usize, col0: usize) -> Vec<I
             insert_text: Some("ToBasic<$1>".to_string()),
             is_snippet: true,
             sort_text: None,
+            auto_import: None,
+        });
+        items.push(Item {
+            label: "NotNil".to_string(),
+            kind: KIND_KEYWORD,
+            detail: "NotNil<T> — like T but assigning nil is an error".to_string(),
+            insert_text: Some("NotNil<$1>".to_string()),
+            is_snippet: true,
+            sort_text: None,
+            auto_import: None,
         });
         for name in view.env.type_names() {
             let kind = if view.env.classes.contains(&name) {
@@ -1058,10 +1080,10 @@ pub fn complete(view: &FileView, text: &str, line0: usize, col0: usize) -> Vec<I
         return items;
     }
 
-    let mut items: Vec<Item> = Vec::new();
     if let Some(member_items) = class_member_completion(text, line0, col0) {
-        items.extend(member_items);
+        return member_items;
     }
+    let mut items: Vec<Item> = Vec::new();
     for kw in KEYWORDS {
         if kw == "switch" {
             items.push(Item {
@@ -1071,12 +1093,18 @@ pub fn complete(view: &FileView, text: &str, line0: usize, col0: usize) -> Vec<I
                 insert_text: Some("switch($1)".to_string()),
                 is_snippet: true,
                 sort_text: None,
+                auto_import: None,
             });
         } else {
             items.push(Item::plain(kw, KIND_KEYWORD, "keyword"));
         }
     }
     let mut seen = std::collections::HashSet::new();
+    for (name, detail) in params_in_scope(text, line0, col0) {
+        if seen.insert(name.clone()) {
+            items.push(Item::plain(name, KIND_VARIABLE, detail));
+        }
+    }
     for b in view.analysis.bindings.iter().rev() {
         if b.line.map(|l| l <= cur_line).unwrap_or(true) && seen.insert(b.name.clone()) {
             let (kind, detail) = item_kind_for(&b.ty);
@@ -1115,9 +1143,161 @@ pub fn complete(view: &FileView, text: &str, line0: usize, col0: usize) -> Vec<I
             }
         }
     }
+    items.extend(auto_import_items(view, text, &mut seen));
     items.sort_by(|a, b| a.label.cmp(&b.label));
     items.dedup_by(|a, b| a.label == b.label);
     items
+}
+
+fn auto_import_items(
+    view: &FileView,
+    text: &str,
+    seen: &mut std::collections::HashSet<String>,
+) -> Vec<Item> {
+    let project = view.project;
+    let already: &[std::path::PathBuf] = project
+        .file(view.path)
+        .map(|info| info.requires.as_slice())
+        .unwrap_or(&[]);
+    let insert_line = require_insert_line(text);
+    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let needs_leading_eol =
+        insert_line >= text.lines().count() && !text.is_empty() && !text.ends_with('\n');
+    let mut items = Vec::new();
+    for path in project.files.keys() {
+        if path == view.path || already.contains(path) {
+            continue;
+        }
+        let Some(name) = module_display_name(path) else {
+            continue;
+        };
+        if seen.contains(&name) {
+            continue;
+        }
+        let Some(req) = best_require_path(project, view.path, path) else {
+            continue;
+        };
+        seen.insert(name.clone());
+        let prefix = if needs_leading_eol { eol } else { "" };
+        let new_text = format!("{prefix}local {name} = require(\"{req}\"){eol}");
+        items.push(Item {
+            label: name.clone(),
+            kind: KIND_MODULE,
+            detail: format!("auto-import — require(\"{req}\")"),
+            insert_text: None,
+            is_snippet: false,
+            sort_text: Some(format!("z_{name}")),
+            auto_import: Some(AutoImport {
+                line0: insert_line as u32,
+                new_text,
+            }),
+        });
+    }
+    items
+}
+
+fn module_display_name(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_string_lossy();
+    let name = if stem == "init" {
+        path.parent()?.file_name()?.to_string_lossy().into_owned()
+    } else {
+        stem.into_owned()
+    };
+    let mut chars = name.chars();
+    let first = chars.next()?;
+    if !(first.is_alphabetic() || first == '_') {
+        return None;
+    }
+    if !chars.all(|c| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(name)
+}
+
+fn is_require_call(e: &luar::ast::Expr) -> bool {
+    match e {
+        luar::ast::Expr::Call { callee, args } => {
+            matches!(callee.as_ref(), luar::ast::Expr::Name(f) if f == "require")
+                && matches!(args.first(), Some(luar::ast::Expr::Str(_)))
+        }
+        _ => false,
+    }
+}
+
+fn require_insert_line(text: &str) -> usize {
+    let (program, _, _) = crate::parse_source_repaired_with_errors(text);
+    let mut last = None;
+    for s in &program {
+        match s {
+            luar::ast::Stmt::Declare { inits, line, .. } if inits.iter().any(is_require_call) => {
+                last = Some(*line as usize);
+            }
+            luar::ast::Stmt::Expr(e, line) if is_require_call(e) => {
+                last = Some(*line as usize);
+            }
+            _ => {}
+        }
+    }
+    last.unwrap_or(0)
+}
+
+fn best_require_path(project: &Project, from: &Path, target: &Path) -> Option<String> {
+    let target_mod = if target.file_stem().map(|s| s == "init").unwrap_or(false) {
+        target.parent()?.to_path_buf()
+    } else {
+        target.with_extension("")
+    };
+    let mut alias_best: Option<String> = None;
+    for (alias, t) in &project.aliases {
+        let cleaned = t.trim_start_matches("./").trim_end_matches('/');
+        let base = if cleaned.is_empty() {
+            project.root.clone()
+        } else {
+            project.root.join(cleaned)
+        };
+        let candidate = if base == target_mod {
+            Some(format!("@{alias}"))
+        } else if let Ok(rel) = target_mod.strip_prefix(&base) {
+            Some(format!("@{alias}/{}", slashed(rel)))
+        } else {
+            None
+        };
+        if let Some(c) = candidate {
+            if alias_best.as_ref().map(|b| c.len() < b.len()).unwrap_or(true) {
+                alias_best = Some(c);
+            }
+        }
+    }
+    if alias_best.is_some() {
+        return alias_best;
+    }
+    let from_dir = from.parent()?;
+    let effective = if from.file_name().map(|n| n == "init.luar").unwrap_or(false) {
+        from_dir.parent()?
+    } else {
+        from_dir
+    };
+    let mut base = effective.to_path_buf();
+    let mut ups = 0usize;
+    loop {
+        if let Ok(rel) = target_mod.strip_prefix(&base) {
+            let rel_s = slashed(rel);
+            if rel_s.is_empty() {
+                return None;
+            }
+            let dots = ".".repeat(ups + 1);
+            return Some(format!("{dots}/{rel_s}"));
+        }
+        base = base.parent()?.to_path_buf();
+        ups += 1;
+    }
+}
+
+fn slashed(p: &Path) -> String {
+    p.components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 pub const CLASS_MEMBER_KEYWORDS: [&str; 13] = [
@@ -1145,6 +1325,357 @@ const MEMBER_MODIFIERS: [&str; 7] = [
     "final",
     "override",
 ];
+
+struct BlockFrame {
+    is_function: bool,
+    vars: Vec<(String, &'static str)>,
+}
+
+fn strip_to_code(text: &str) -> String {
+    enum Mode {
+        Code,
+        Line,
+        Block(usize),
+        Quote(char),
+        Long(usize),
+        Interp,
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let mut out = String::with_capacity(n);
+    let mut mode = Mode::Code;
+    let mut i = 0;
+    let long_open_at = |pos: usize| -> Option<usize> {
+        if chars.get(pos) != Some(&'[') {
+            return None;
+        }
+        let mut j = pos + 1;
+        while chars.get(j) == Some(&'=') {
+            j += 1;
+        }
+        if chars.get(j) == Some(&'[') {
+            Some(j - pos - 1)
+        } else {
+            None
+        }
+    };
+    while i < n {
+        let c = chars[i];
+        if c == '\n' {
+            out.push('\n');
+            if matches!(mode, Mode::Line) {
+                mode = Mode::Code;
+            }
+            i += 1;
+            continue;
+        }
+        match mode {
+            Mode::Code => {
+                if c == '-' && chars.get(i + 1) == Some(&'-') {
+                    if let Some(lvl) = long_open_at(i + 2) {
+                        mode = Mode::Block(lvl);
+                        for _ in 0..(4 + lvl) {
+                            out.push(' ');
+                        }
+                        i += 4 + lvl;
+                    } else {
+                        mode = Mode::Line;
+                        out.push(' ');
+                        i += 1;
+                    }
+                    continue;
+                }
+                if c == '"' || c == '\'' {
+                    mode = Mode::Quote(c);
+                    out.push(' ');
+                    i += 1;
+                    continue;
+                }
+                if c == '`' {
+                    mode = Mode::Interp;
+                    out.push(' ');
+                    i += 1;
+                    continue;
+                }
+                if let Some(lvl) = long_open_at(i) {
+                    mode = Mode::Long(lvl);
+                    for _ in 0..(2 + lvl) {
+                        out.push(' ');
+                    }
+                    i += 2 + lvl;
+                    continue;
+                }
+                out.push(c);
+                i += 1;
+            }
+            Mode::Line => {
+                out.push(' ');
+                i += 1;
+            }
+            Mode::Quote(q) => {
+                out.push(' ');
+                if c == '\\' {
+                    if i + 1 < n && chars[i + 1] != '\n' {
+                        out.push(' ');
+                        i += 2;
+                        continue;
+                    }
+                } else if c == q {
+                    mode = Mode::Code;
+                }
+                i += 1;
+            }
+            Mode::Interp => {
+                out.push(' ');
+                if c == '\\' {
+                    if i + 1 < n && chars[i + 1] != '\n' {
+                        out.push(' ');
+                        i += 2;
+                        continue;
+                    }
+                } else if c == '`' {
+                    mode = Mode::Code;
+                }
+                i += 1;
+            }
+            Mode::Block(lvl) | Mode::Long(lvl) => {
+                if c == ']' {
+                    let mut j = i + 1;
+                    let mut eq = 0;
+                    while chars.get(j) == Some(&'=') {
+                        eq += 1;
+                        j += 1;
+                    }
+                    if eq == lvl && chars.get(j) == Some(&']') {
+                        for _ in 0..(j + 1 - i) {
+                            out.push(' ');
+                        }
+                        i = j + 1;
+                        mode = Mode::Code;
+                        continue;
+                    }
+                }
+                out.push(' ');
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+#[derive(Default)]
+struct ScanCarry {
+    pending_loop: bool,
+}
+
+fn block_stack_at(text: &str, line0: usize, col0: usize) -> Vec<BlockFrame> {
+    let cleaned_all = strip_to_code(text);
+    let mut stack: Vec<BlockFrame> = Vec::new();
+    let mut carry = ScanCarry::default();
+    for (i, raw) in cleaned_all.lines().enumerate().take(line0 + 1) {
+        let upto: String = if i == line0 {
+            raw.chars().take(col0).collect()
+        } else {
+            raw.to_string()
+        };
+        scan_line_blocks(&upto, &mut stack, &mut carry);
+    }
+    stack
+}
+
+pub fn params_in_scope(text: &str, line0: usize, col0: usize) -> Vec<(String, &'static str)> {
+    let stack = block_stack_at(text, line0, col0);
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for frame in stack.iter().rev() {
+        for (name, kind) in &frame.vars {
+            if seen.insert(name.clone()) {
+                out.push((name.clone(), *kind));
+            }
+        }
+    }
+    out
+}
+
+pub(crate) fn inside_function_block(text: &str, line0: usize, col0: usize) -> bool {
+    block_stack_at(text, line0, col0)
+        .iter()
+        .any(|f| f.is_function)
+}
+
+fn scan_line_blocks(line: &str, stack: &mut Vec<BlockFrame>, carry: &mut ScanCarry) {
+    let mut prev = String::new();
+    let mut saw_loop_word = false;
+    let mut loop_awaiting_do = carry.pending_loop;
+    let mut chars = line.char_indices().peekable();
+    while let Some((idx, c)) = chars.next() {
+        if !(c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        let start = idx;
+        let mut end = idx + c.len_utf8();
+        while let Some((j, cc)) = chars.peek().copied() {
+            if cc.is_alphanumeric() || cc == '_' {
+                end = j + cc.len_utf8();
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        let word = &line[start..end];
+        match word {
+            "if" | "while" | "switch" | "case" | "default" => {
+                stack.push(BlockFrame { is_function: false, vars: Vec::new() })
+            }
+            "for" => stack.push(BlockFrame {
+                is_function: false,
+                vars: loop_vars_after(&line[end..]),
+            }),
+            "function" if prev != "abstract" => {
+                stack.push(BlockFrame {
+                    is_function: true,
+                    vars: params_after(&line[end..], "parameter"),
+                });
+            }
+            "constructor" | "operator" => stack.push(BlockFrame {
+                is_function: true,
+                vars: params_after(&line[end..], "parameter"),
+            }),
+            "destructor" => stack.push(BlockFrame { is_function: true, vars: Vec::new() }),
+            "get" | "set" => {
+                if prev.is_empty() || MEMBER_MODIFIERS.contains(&prev.as_str()) {
+                    let after = &line[end..];
+                    let trimmed = after.trim_start();
+                    let name_len = trimmed
+                        .find(|cc: char| !(cc.is_alphanumeric() || cc == '_'))
+                        .unwrap_or(trimmed.len());
+                    if name_len > 0 && trimmed[name_len..].trim_start().starts_with('(') {
+                        stack.push(BlockFrame {
+                            is_function: true,
+                            vars: params_after(after, "parameter"),
+                        });
+                    }
+                }
+            }
+            "do" => {
+                if prev != "for" && prev != "while" && !saw_loop_word && !loop_awaiting_do {
+                    stack.push(BlockFrame { is_function: false, vars: Vec::new() });
+                }
+                loop_awaiting_do = false;
+            }
+            "end" => {
+                stack.pop();
+            }
+            _ => {}
+        }
+        if word == "for" || word == "while" {
+            saw_loop_word = true;
+            loop_awaiting_do = true;
+        }
+        prev = word.to_string();
+    }
+    carry.pending_loop = loop_awaiting_do;
+}
+
+fn params_after(after: &str, kind: &'static str) -> Vec<(String, &'static str)> {
+    let Some(open) = after.find('(') else {
+        return Vec::new();
+    };
+    let inner = &after[open + 1..];
+    let mut depth = 0i32;
+    let mut close = inner.len();
+    let mut last_char = ' ';
+    for (i, c) in inner.char_indices() {
+        match c {
+            '(' | '{' | '[' | '<' => depth += 1,
+            ')' if depth == 0 => {
+                close = i;
+                break;
+            }
+            '>' if last_char == '-' => {}
+            ')' | '}' | ']' | '>' => depth -= 1,
+            _ => {}
+        }
+        last_char = c;
+    }
+    let list = &inner[..close];
+    let mut out = Vec::new();
+    let mut piece_start = 0;
+    let mut piece_depth = 0i32;
+    let bytes: Vec<(usize, char)> = list.char_indices().collect();
+    let mut cuts: Vec<usize> = Vec::new();
+    let mut prev_c = ' ';
+    for (i, c) in &bytes {
+        match c {
+            '(' | '{' | '[' | '<' => piece_depth += 1,
+            '>' if prev_c == '-' => {}
+            ')' | '}' | ']' | '>' => piece_depth -= 1,
+            ',' if piece_depth == 0 => cuts.push(*i),
+            _ => {}
+        }
+        prev_c = *c;
+    }
+    cuts.push(list.len());
+    for cut in cuts {
+        let piece = list[piece_start..cut].trim();
+        piece_start = cut + 1;
+        let name_len = piece
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(piece.len());
+        let name = &piece[..name_len];
+        if !name.is_empty() && name != "_" {
+            out.push((name.to_string(), kind));
+        }
+    }
+    out
+}
+
+fn loop_vars_after(after: &str) -> Vec<(String, &'static str)> {
+    let mut end = after.len();
+    if let Some(eq) = after.find('=') {
+        end = end.min(eq);
+    }
+    if let Some(pos) = find_word(after, "in") {
+        end = end.min(pos);
+    }
+    if let Some(pos) = find_word(after, "do") {
+        end = end.min(pos);
+    }
+    after[..end]
+        .split(',')
+        .map(str::trim)
+        .filter(|n| {
+            !n.is_empty()
+                && *n != "_"
+                && n.chars().all(|c| c.is_alphanumeric() || c == '_')
+        })
+        .map(|n| (n.to_string(), "loop variable"))
+        .collect()
+}
+
+fn find_word(text: &str, word: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(pos) = text[from..].find(word) {
+        let start = from + pos;
+        let end = start + word.len();
+        let before_ok = start == 0
+            || text[..start]
+                .chars()
+                .last()
+                .map(|c| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(true);
+        let after_ok = text[end..]
+            .chars()
+            .next()
+            .map(|c| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(true);
+        if before_ok && after_ok {
+            return Some(start);
+        }
+        from = end;
+    }
+    None
+}
 
 pub(crate) fn strip_strings_and_comments(line: &str) -> String {
     let chars: Vec<char> = line.chars().collect();
@@ -1349,6 +1880,9 @@ fn class_member_completion(text: &str, line0: usize, col0: usize) -> Option<Vec<
         return None;
     }
     enclosing_class(text, line0, col0)?;
+    if inside_function_block(text, line0, col0) {
+        return None;
+    }
     let items = CLASS_MEMBER_KEYWORDS
         .iter()
         .filter(|kw| !tokens.contains(kw))
@@ -1509,6 +2043,7 @@ fn bracket_key_completion(
                     insert_text: insert,
                     is_snippet: false,
                     sort_text: None,
+                    auto_import: None,
                 }
             })
             .collect(),

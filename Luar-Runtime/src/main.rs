@@ -14,6 +14,7 @@ fn main() {
 
     let mut interp = luar::Interpreter::new();
     interp.set_module_dir(&dir);
+    interp.set_source_path(script.clone());
 
     let result = if script.extension().map(|e| e == "luarb").unwrap_or(false) {
         match std::fs::read(&script) {

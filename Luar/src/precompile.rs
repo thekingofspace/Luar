@@ -1,7 +1,7 @@
 
 use crate::ast::*;
 
-const HEADER: &[u8; 7] = b"LUARC\x00\x01";
+const HEADER: &[u8; 7] = b"LUARC\x00\x02";
 
 pub fn pack(stmts: &[Stmt]) -> Vec<u8> {
     let mut w = Writer { buf: HEADER.to_vec() };
@@ -117,19 +117,21 @@ impl Writer {
                 self.vec(body, Writer::stmt);
                 self.u32(*line);
             }
-            Stmt::ForNumeric { var, start, stop, step, body } => {
+            Stmt::ForNumeric { var, start, stop, step, body, line } => {
                 self.u8(5);
                 self.str(var);
                 self.expr(start);
                 self.expr(stop);
                 self.opt(step, Writer::expr);
                 self.vec(body, Writer::stmt);
+                self.u32(*line);
             }
-            Stmt::ForIn { names, iters, body } => {
+            Stmt::ForIn { names, iters, body, line } => {
                 self.u8(6);
                 self.vec(names, |w, n| w.str(n));
                 self.vec(iters, Writer::expr);
                 self.vec(body, Writer::stmt);
+                self.u32(*line);
             }
             Stmt::Break { line } => {
                 self.u8(7);
@@ -543,11 +545,13 @@ impl<'a> Reader<'a> {
                 stop: self.expr()?,
                 step: self.opt(Reader::expr)?,
                 body: self.vec(Reader::stmt)?,
+                line: self.u32()?,
             },
             6 => Stmt::ForIn {
                 names: self.vec(Reader::str)?,
                 iters: self.vec(Reader::expr)?,
                 body: self.vec(Reader::stmt)?,
+                line: self.u32()?,
             },
             7 => Stmt::Break { line: self.u32()? },
             8 => Stmt::Return {

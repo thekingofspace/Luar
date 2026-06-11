@@ -818,6 +818,7 @@ impl Project {
                 });
             }
         }
+        check_notnil(&program, &ann, &analysis, &directives, &mut diagnostics);
         for class in analysis.classes.values() {
             let mut unknown: Vec<&String> = Vec::new();
             if let Some(parent) = &class.parent {
@@ -1186,6 +1187,278 @@ fn find_word_line(source: &str, word: &str) -> Option<u32> {
         }
     }
     None
+}
+
+fn is_notnil_expr(t: &TypeExpr) -> bool {
+    matches!(t, TypeExpr::Named(segs) if segs.len() == 1
+        && (segs[0].name == "NotNil" || segs[0].name == "notnil")
+        && segs[0].args.is_some())
+}
+
+struct NotNilCheck<'a> {
+    vars: std::collections::HashSet<String>,
+    fn_params: HashMap<String, std::collections::HashSet<String>>,
+    ann: &'a AnnotationSet,
+    analysis: &'a crate::infer::Analysis,
+    directives: &'a luar::ferrite::Directives,
+    out: Vec<crate::Diagnostic>,
+    current_line: u32,
+}
+
+impl<'a> NotNilCheck<'a> {
+    fn error(&mut self, line: u32, message: String) {
+        if self.directives.silences("NotNil", line) {
+            return;
+        }
+        self.out.push(crate::Diagnostic {
+            line,
+            col: 1,
+            message: format!("{message} [NotNil]"),
+            severity: 1,
+        });
+    }
+
+    fn notnil_param_positions(&self, fname: &str) -> Vec<(usize, String)> {
+        let Some(param_set) = self.fn_params.get(fname) else {
+            return Vec::new();
+        };
+        let Some(binding) = self.analysis.binding(fname) else {
+            return Vec::new();
+        };
+        let Type::Function(Some(sig)) = &binding.ty else {
+            return Vec::new();
+        };
+        sig.params
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| param_set.contains(&p.name))
+            .map(|(i, p)| (i, p.name.clone()))
+            .collect()
+    }
+
+    fn walk_block(&mut self, stmts: &[Stmt]) {
+        for s in stmts {
+            self.walk_stmt(s);
+        }
+    }
+
+    fn walk_stmt(&mut self, stmt: &Stmt) {
+        use luar::ast::{AssignOp, LValue};
+        match stmt {
+            Stmt::Declare { names, inits, line, .. } => {
+                self.current_line = *line;
+                for (i, name) in names.iter().enumerate() {
+                    let here = self
+                        .ann
+                        .vars
+                        .get(&(name.clone(), *line))
+                        .map(is_notnil_expr)
+                        .unwrap_or(false);
+                    let multi = i >= inits.len()
+                        && matches!(
+                            inits.last(),
+                            Some(luar::ast::Expr::Call { .. })
+                                | Some(luar::ast::Expr::MethodCall { .. })
+                                | Some(luar::ast::Expr::Vararg)
+                        );
+                    if here && !multi && matches!(inits.get(i), None | Some(luar::ast::Expr::Nil))
+                    {
+                        self.error(
+                            *line,
+                            format!(
+                                "'{name}' is typed NotNil and must be initialized with a non-nil value"
+                            ),
+                        );
+                    }
+                }
+                for e in inits {
+                    self.walk_expr(e);
+                }
+            }
+            Stmt::Assign { targets, op, values, line } => {
+                self.current_line = *line;
+                if *op == AssignOp::Assign {
+                    for (i, t) in targets.iter().enumerate() {
+                        if let LValue::Name(n) = t {
+                            if self.vars.contains(n)
+                                && matches!(values.get(i), Some(luar::ast::Expr::Nil))
+                            {
+                                self.error(
+                                    *line,
+                                    format!("cannot set '{n}' to nil ('{n}' is typed NotNil)"),
+                                );
+                            }
+                        }
+                    }
+                }
+                for v in values {
+                    self.walk_expr(v);
+                }
+            }
+            Stmt::Do(body) => self.walk_block(body),
+            Stmt::If { branches, else_block, line } => {
+                self.current_line = *line;
+                for (c, b) in branches {
+                    self.walk_expr(c);
+                    self.walk_block(b);
+                }
+                if let Some(b) = else_block {
+                    self.walk_block(b);
+                }
+            }
+            Stmt::While { cond, body, line } => {
+                self.current_line = *line;
+                self.walk_expr(cond);
+                self.walk_block(body);
+            }
+            Stmt::ForNumeric { start, stop, step, body, line, .. } => {
+                self.current_line = *line;
+                self.walk_expr(start);
+                self.walk_expr(stop);
+                if let Some(s) = step {
+                    self.walk_expr(s);
+                }
+                self.walk_block(body);
+            }
+            Stmt::ForIn { iters, body, line, .. } => {
+                self.current_line = *line;
+                for e in iters {
+                    self.walk_expr(e);
+                }
+                self.walk_block(body);
+            }
+            Stmt::Return { values, line } => {
+                self.current_line = *line;
+                for e in values {
+                    self.walk_expr(e);
+                }
+            }
+            Stmt::Expr(e, line) => {
+                self.current_line = *line;
+                self.walk_expr(e);
+            }
+            Stmt::Class { members, .. } => {
+                for m in members {
+                    match m {
+                        luar::ast::ClassMember::Field { default: Some(e), .. } => self.walk_expr(e),
+                        luar::ast::ClassMember::Method { func, .. }
+                        | luar::ast::ClassMember::Constructor { func }
+                        | luar::ast::ClassMember::Destructor { func }
+                        | luar::ast::ClassMember::Operator { func, .. }
+                        | luar::ast::ClassMember::Getter { func, .. }
+                        | luar::ast::ClassMember::Setter { func, .. } => self.walk_block(&func.body),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn walk_expr(&mut self, e: &luar::ast::Expr) {
+        use luar::ast::Expr;
+        match e {
+            Expr::Call { callee, args } => {
+                if let Expr::Name(f) = callee.as_ref() {
+                    for (pos, pname) in self.notnil_param_positions(f) {
+                        if matches!(args.get(pos), Some(Expr::Nil)) {
+                            let line = self.current_line;
+                            self.error(
+                                line,
+                                format!(
+                                    "argument {} to '{f}' cannot be nil (parameter '{pname}' is typed NotNil)",
+                                    pos + 1
+                                ),
+                            );
+                        }
+                    }
+                }
+                self.walk_expr(callee);
+                for a in args {
+                    self.walk_expr(a);
+                }
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                self.walk_expr(receiver);
+                for a in args {
+                    self.walk_expr(a);
+                }
+            }
+            Expr::Index { base, key } => {
+                self.walk_expr(base);
+                self.walk_expr(key);
+            }
+            Expr::Function { body, .. } => self.walk_block(body),
+            Expr::Table(entries) => {
+                for entry in entries {
+                    match entry {
+                        luar::ast::TableEntry::Positional(v) => self.walk_expr(v),
+                        luar::ast::TableEntry::Keyed { key, value } => {
+                            self.walk_expr(key);
+                            self.walk_expr(value);
+                        }
+                    }
+                }
+            }
+            Expr::Switch { subject, cases, default } => {
+                self.walk_expr(subject);
+                for c in cases {
+                    self.walk_expr(&c.pattern);
+                    self.walk_block(&c.body);
+                }
+                if let Some(d) = default {
+                    self.walk_block(d);
+                }
+            }
+            Expr::Unary { expr, .. } => self.walk_expr(expr),
+            Expr::Binary { lhs, rhs, .. } => {
+                self.walk_expr(lhs);
+                self.walk_expr(rhs);
+            }
+            Expr::Logical { lhs, rhs, .. } => {
+                self.walk_expr(lhs);
+                self.walk_expr(rhs);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn check_notnil(
+    program: &[Stmt],
+    ann: &AnnotationSet,
+    analysis: &crate::infer::Analysis,
+    directives: &luar::ferrite::Directives,
+    diagnostics: &mut Vec<crate::Diagnostic>,
+) {
+    let vars: std::collections::HashSet<String> = ann
+        .vars
+        .iter()
+        .filter(|(_, t)| is_notnil_expr(t))
+        .map(|((n, _), _)| n.clone())
+        .collect();
+    let mut fn_params: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+    for ((f, _), params) in &ann.fn_params {
+        for (p, t) in params {
+            if is_notnil_expr(t) {
+                fn_params.entry(f.clone()).or_default().insert(p.clone());
+            }
+        }
+    }
+    if vars.is_empty() && fn_params.is_empty() {
+        return;
+    }
+    let mut check = NotNilCheck {
+        vars,
+        fn_params,
+        ann,
+        analysis,
+        directives,
+        out: Vec::new(),
+        current_line: 1,
+    };
+    check.walk_block(program);
+    diagnostics.append(&mut check.out);
 }
 
 fn load_aliases(root: &Path) -> HashMap<String, String> {

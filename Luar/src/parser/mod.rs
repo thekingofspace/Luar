@@ -523,6 +523,7 @@ impl Parser {
     }
 
     fn parse_for(&mut self) -> PResult<Stmt> {
+        let line = self.peek().span.line;
         self.expect_kw("for")?;
         let first = self.expect_ident()?;
         if self.eat_op(":") {
@@ -538,7 +539,7 @@ impl Parser {
             self.expect_kw("do")?;
             let body = self.parse_block(&["end"])?;
             self.expect_kw("end")?;
-            Ok(Stmt::ForNumeric { var: first, start, stop, step, body })
+            Ok(Stmt::ForNumeric { var: first, start, stop, step, body, line })
         } else {
 
             let mut names = vec![first];
@@ -550,7 +551,7 @@ impl Parser {
             self.expect_kw("do")?;
             let body = self.parse_block(&["end"])?;
             self.expect_kw("end")?;
-            Ok(Stmt::ForIn { names, iters, body })
+            Ok(Stmt::ForIn { names, iters, body, line })
         }
     }
 
