@@ -134,6 +134,10 @@ pub(crate) fn free_script_functions(script: u64, global: &ScopeRef) {
                     *v = Value::Nil;
                 }
             }
+            t.map.retain(|k, _| match k {
+                super::value::Key::Ref(r) => !r.value.is_dead_function(),
+                _ => true,
+            });
         }
     }
 }
@@ -240,9 +244,8 @@ pub fn collect(roots: &[Value]) {
         }
     }
 
-    for value in roots {
-        mark_value(value);
-    }
+    let mut stack: Vec<Value> = roots.to_vec();
+    mark_stack(&mut stack);
 
     for w in &tables {
         if let Some(rc) = w.upgrade() {
@@ -265,61 +268,56 @@ pub fn collect(roots: &[Value]) {
     });
 }
 
-fn mark_value(value: &Value) {
-    match value {
-        Value::Table(rc) => {
-            if rc.borrow().gc_mark.replace(true) {
-                return;
-            }
-
-            let children: Vec<Value> = {
-                let t = rc.borrow();
-                let mut c: Vec<Value> = t.array.clone();
-                c.extend(t.map.values().cloned());
-                if let Some(meta) = &t.meta {
-                    c.push(Value::Table(meta.clone()));
+fn mark_stack(stack: &mut Vec<Value>) {
+    while let Some(v) = stack.pop() {
+        match &v {
+            Value::Table(rc) => {
+                if rc.borrow().gc_mark.replace(true) {
+                    continue;
                 }
-                c
-            };
-            for child in &children {
-                mark_value(child);
+                let t = rc.borrow();
+                stack.extend(t.array.iter().cloned());
+                stack.extend(t.map.values().cloned());
+                stack.extend(t.map.keys().filter_map(|k| match k {
+                    super::value::Key::Ref(r) => Some(r.value.clone()),
+                    _ => None,
+                }));
+                if let Some(meta) = &t.meta {
+                    stack.push(Value::Table(meta.clone()));
+                }
             }
+            Value::Function(rc) => {
+                if rc.gc_mark.replace(true) {
+                    continue;
+                }
+                let mut chain = Some(rc.captured.clone());
+                while let Some(scope) = chain {
+                    stack.extend(scope_values(&scope));
+                    chain = scope_parent(&scope);
+                }
+            }
+            Value::Class(rc) => {
+                if rc.gc_mark.replace(true) {
+                    continue;
+                }
+                stack.extend(rc.methods.values().cloned());
+                stack.extend(rc.operators.values().cloned());
+                stack.extend(rc.getters.values().cloned());
+                stack.extend(rc.setters.values().cloned());
+                if let Some(c) = &rc.constructor {
+                    stack.push(c.clone());
+                }
+                if let Some(d) = &rc.destructor {
+                    stack.push(d.clone());
+                }
+                stack.push(Value::Table(rc.statics.clone()));
+                stack.push(Value::Table(rc.instance_meta.clone()));
+                if let Some(p) = &rc.parent {
+                    stack.push(Value::Class(p.clone()));
+                }
+            }
+            _ => {}
         }
-        Value::Function(rc) => {
-            if rc.gc_mark.replace(true) {
-                return;
-            }
-
-            for child in &scope_values(&rc.captured) {
-                mark_value(child);
-            }
-        }
-        Value::Class(rc) => {
-            if rc.gc_mark.replace(true) {
-                return;
-            }
-            for m in rc.methods.values() {
-                mark_value(m);
-            }
-            for m in rc.operators.values() {
-                mark_value(m);
-            }
-            for m in rc.getters.values() {
-                mark_value(m);
-            }
-            for m in rc.setters.values() {
-                mark_value(m);
-            }
-            if let Some(c) = &rc.constructor {
-                mark_value(c);
-            }
-            mark_value(&Value::Table(rc.statics.clone()));
-            mark_value(&Value::Table(rc.instance_meta.clone()));
-            if let Some(p) = &rc.parent {
-                mark_value(&Value::Class(p.clone()));
-            }
-        }
-        _ => {}
     }
 }
 

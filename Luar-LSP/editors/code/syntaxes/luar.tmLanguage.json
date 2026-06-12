@@ -420,6 +420,14 @@
     "keywords": {
       "patterns": [
         {
+          "match": "(?<=[{,])(\\s*)\\b(local|const|pub|export|function|class|interface|enum|type|if|then|elseif|else|end|for|while|do|in|break|return|switch|case|default|and|or|not|self|super|true|false|nil|extends|mixin|implements|constructor|destructor|operator|buff|freebuff|static|public|private|protected|abstract|final|override|get|set)\\b(?=\\s*=[^=])",
+          "captures": {
+            "2": {
+              "name": "variable.other.property.luar"
+            }
+          }
+        },
+        {
           "name": "storage.modifier.control.conditional.luar",
           "match": "\\b(if|then|elseif|else)\\b"
         },

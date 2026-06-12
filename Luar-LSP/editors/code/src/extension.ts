@@ -55,6 +55,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 client = undefined;
             }
             await startClient(context);
+            void vscode.window.showInformationMessage("Luar language server restarted.");
         })
     );
 

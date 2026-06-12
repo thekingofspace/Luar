@@ -15,7 +15,11 @@ use super::value::Value;
 const GRACE: Duration = Duration::from_millis(10);
 
 struct Xfer<T>(T);
-unsafe impl<T> Send for Xfer<T> {}
+
+unsafe impl Send for Xfer<Resume> {}
+unsafe impl Send for Xfer<Yielded> {}
+unsafe impl Send for Xfer<StartPayload> {}
+unsafe impl Send for Xfer<(Weak<RefCell<CoroState>>, Arc<Family>)> {}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Status {

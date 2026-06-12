@@ -39,6 +39,7 @@ pub fn global_env() -> HashMap<String, Type> {
     set("print", func(&[], true, vec![]));
     set("warn", func(&[], true, vec![]));
     set("type", func(&["v"], false, vec![Type::String]));
+    set("TypeOf", func(&["v"], false, vec![Type::String]));
     set("tostring", func(&["v"], false, vec![Type::String]));
     set(
         "tonumber",

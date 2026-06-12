@@ -35,6 +35,14 @@ pub struct AutoImport {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ExtraEdit {
+    pub line0: u32,
+    pub start_col: u32,
+    pub end_col: u32,
+    pub new_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     pub label: String,
     pub kind: i64,
@@ -43,6 +51,7 @@ pub struct Item {
     pub is_snippet: bool,
     pub sort_text: Option<String>,
     pub auto_import: Option<AutoImport>,
+    pub extra_edit: Option<ExtraEdit>,
 }
 
 impl Item {
@@ -55,6 +64,7 @@ impl Item {
             is_snippet: false,
             sort_text: None,
             auto_import: None,
+            extra_edit: None,
         }
     }
 
@@ -69,6 +79,7 @@ impl Item {
             is_snippet: true,
             sort_text: None,
             auto_import: None,
+            extra_edit: None,
         }
     }
 
@@ -291,6 +302,18 @@ impl<'a> FileView<'a> {
         match ty {
             Type::Function(Some(ft)) => ft.returns.first().cloned().unwrap_or(Type::Nil),
             Type::Class(c) => Type::Instance(c.clone()),
+            Type::Table(tt) => {
+                let fields = self
+                    .expand_named_table(tt)
+                    .map(|e| e.fields)
+                    .unwrap_or_else(|| tt.fields.clone());
+                match fields.iter().find(|(n, _)| n == "__call") {
+                    Some((_, Type::Function(Some(ft)))) => {
+                        ft.returns.first().cloned().unwrap_or(Type::Nil)
+                    }
+                    _ => Type::Unknown,
+                }
+            }
             _ => Type::Unknown,
         }
     }
@@ -471,6 +494,11 @@ impl<'a> FileView<'a> {
                 let fields = expanded.as_ref().map(|e| &e.fields).unwrap_or(&tt.fields);
                 for (name, t) in fields {
                     if !is_plain_ident(name) {
+                        let form = format!("[\"{name}\"]");
+                        let mut item = Item::plain(&form, KIND_FIELD, t.to_string());
+                        item.insert_text = Some(form);
+                        item.sort_text = Some(format!("z_{name}"));
+                        items.push(item);
                         continue;
                     }
                     match t {
@@ -598,6 +626,40 @@ pub fn chain_before(line: &str, col: usize) -> Option<ChainAt> {
     loop {
         let mut called = false;
         let mut group_start: Option<usize> = None;
+        if i > 0 && chars[i - 1] == ']' {
+            let close = i - 1;
+            if close == 0 {
+                return None;
+            }
+            let q = chars[close - 1];
+            if q != '"' && q != '\'' {
+                return None;
+            }
+            let str_end = close - 1;
+            let mut k = str_end;
+            loop {
+                if k == 0 {
+                    return None;
+                }
+                k -= 1;
+                if chars[k] == q {
+                    break;
+                }
+            }
+            if k == 0 || chars[k - 1] != '[' {
+                return None;
+            }
+            let key: String = chars[k + 1..str_end].iter().collect();
+            segments.push(ChainSeg { name: key, called: false });
+            i = k - 1;
+            if i > 0 && (chars[i - 1] == '.' || chars[i - 1] == ':') {
+                return None;
+            }
+            if i == 0 {
+                break;
+            }
+            continue;
+        }
         if i > 0 && chars[i - 1] == ')' {
             called = true;
             let close = i - 1;
@@ -1005,7 +1067,24 @@ pub fn complete(view: &FileView, text: &str, line0: usize, col0: usize) -> Vec<I
         } else {
             let self_class = enclosing_class(text, line0, col0);
             if let Some(ty) = resolve_chain_full(view, &chain, cur_line, self_class.as_deref()) {
-                return view.members_of(&ty, chain.separator == ':', self_class.as_deref());
+                let mut items =
+                    view.members_of(&ty, chain.separator == ':', self_class.as_deref());
+                if chain.separator == '.' {
+                    let dot_col = col0.saturating_sub(chain.partial.chars().count() + 1) as u32;
+                    for item in items.iter_mut() {
+                        if item.label.starts_with("[\"") {
+                            item.extra_edit = Some(ExtraEdit {
+                                line0: line0 as u32,
+                                start_col: dot_col,
+                                end_col: dot_col + 1,
+                                new_text: String::new(),
+                            });
+                        }
+                    }
+                } else {
+                    items.retain(|i| !i.label.starts_with("[\""));
+                }
+                return items;
             }
             return Vec::new();
         }
@@ -1032,6 +1111,7 @@ pub fn complete(view: &FileView, text: &str, line0: usize, col0: usize) -> Vec<I
             is_snippet: true,
             sort_text: None,
             auto_import: None,
+            extra_edit: None,
         });
         items.push(Item {
             label: "ValueOf".to_string(),
@@ -1041,6 +1121,7 @@ pub fn complete(view: &FileView, text: &str, line0: usize, col0: usize) -> Vec<I
             is_snippet: true,
             sort_text: None,
             auto_import: None,
+            extra_edit: None,
         });
         items.push(Item {
             label: "ToBasic".to_string(),
@@ -1050,6 +1131,7 @@ pub fn complete(view: &FileView, text: &str, line0: usize, col0: usize) -> Vec<I
             is_snippet: true,
             sort_text: None,
             auto_import: None,
+            extra_edit: None,
         });
         items.push(Item {
             label: "NotNil".to_string(),
@@ -1059,6 +1141,7 @@ pub fn complete(view: &FileView, text: &str, line0: usize, col0: usize) -> Vec<I
             is_snippet: true,
             sort_text: None,
             auto_import: None,
+            extra_edit: None,
         });
         for name in view.env.type_names() {
             let kind = if view.env.classes.contains(&name) {
@@ -1094,6 +1177,7 @@ pub fn complete(view: &FileView, text: &str, line0: usize, col0: usize) -> Vec<I
                 is_snippet: true,
                 sort_text: None,
                 auto_import: None,
+                extra_edit: None,
             });
         } else {
             items.push(Item::plain(kw, KIND_KEYWORD, "keyword"));
@@ -1191,6 +1275,7 @@ fn auto_import_items(
                 line0: insert_line as u32,
                 new_text,
             }),
+            extra_edit: None,
         });
     }
     items
@@ -2044,6 +2129,7 @@ fn bracket_key_completion(
                     is_snippet: false,
                     sort_text: None,
                     auto_import: None,
+                    extra_edit: None,
                 }
             })
             .collect(),

@@ -34,7 +34,9 @@ pub struct Project {
     pub aliases: HashMap<String, String>,
     pub files: HashMap<PathBuf, ModuleInfo>,
     pub luard_files: Vec<PathBuf>,
+    pub config_luard: Vec<PathBuf>,
     pub luard_globals: Vec<(String, Type)>,
+    pub luard_mutability: HashMap<String, Mutability>,
     pub luard_env: TypeEnv,
     pub luard_classes: HashMap<String, ClassInfo>,
     pub luard_enums: HashMap<String, EnumInfo>,
@@ -440,8 +442,15 @@ impl Project {
         };
         project.aliases = load_aliases(&root);
         project.luard_files = luard_paths.clone();
+        project.config_luard = load_luard_imports(&root);
+        for p in &project.config_luard {
+            if !project.luard_files.contains(p) {
+                project.luard_files.push(p.clone());
+            }
+        }
 
-        for path in &luard_paths {
+        let all_luard = project.luard_files.clone();
+        for path in &all_luard {
             if let Ok(src) = std::fs::read_to_string(path) {
                 project.add_luard_source(&src);
             }
@@ -480,6 +489,11 @@ impl Project {
             } else {
                 self.luard_globals.push((b.name.clone(), b.ty.clone()));
             }
+            let mu = match b.kind {
+                crate::infer::BindingKind::Declare { mutability, .. } => mutability,
+                _ => Mutability::Mutable,
+            };
+            self.luard_mutability.insert(b.name.clone(), mu);
         }
         self.luard_classes.extend(analysis.classes.clone());
         self.luard_enums.extend(analysis.enums.clone());
@@ -488,6 +502,7 @@ impl Project {
 
     pub fn rebuild_luard(&mut self, overlay: &HashMap<PathBuf, String>) {
         self.luard_globals.clear();
+        self.luard_mutability.clear();
         self.luard_classes.clear();
         self.luard_enums.clear();
         self.luard_env = TypeEnv::default();
@@ -772,7 +787,31 @@ impl Project {
                 }
             }
         }
+        let luard_muts: Vec<(String, Mutability)> = self
+            .luard_mutability
+            .iter()
+            .map(|(n, m)| (n.clone(), *m))
+            .collect();
+        let mut shadowed: HashSet<&str> = HashSet::new();
+        for b in &analysis.bindings {
+            if matches!(
+                b.kind,
+                BindingKind::Declare { .. } | BindingKind::LoopVar
+            ) {
+                shadowed.insert(&b.name);
+            }
+            if let Type::Function(Some(sig)) = &b.ty {
+                for p in &sig.params {
+                    shadowed.insert(p.name.as_str());
+                }
+            }
+        }
         let mut mutability: HashMap<&str, Mutability> = HashMap::new();
+        for (n, m) in &luard_muts {
+            if !shadowed.contains(n.as_str()) {
+                mutability.insert(n.as_str(), *m);
+            }
+        }
         for b in &analysis.bindings {
             match b.kind {
                 BindingKind::Declare {
@@ -946,6 +985,17 @@ impl Project {
 
     pub fn reload_aliases(&mut self) {
         self.aliases = load_aliases(&self.root);
+        let new_imports = load_luard_imports(&self.root);
+        if new_imports != self.config_luard {
+            let old = std::mem::replace(&mut self.config_luard, new_imports);
+            self.luard_files.retain(|p| !old.contains(p));
+            for p in &self.config_luard {
+                if !self.luard_files.contains(p) {
+                    self.luard_files.push(p.clone());
+                }
+            }
+            self.rebuild_luard(&HashMap::new());
+        }
         self.link_and_repass();
     }
 
@@ -1459,6 +1509,42 @@ fn check_notnil(
     };
     check.walk_block(program);
     diagnostics.append(&mut check.out);
+}
+
+fn load_luard_imports(root: &Path) -> Vec<PathBuf> {
+    for candidate in ["luari.json", "luari", ".luari"] {
+        let path = root.join(candidate);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(json) = Json::parse(&text) else {
+            continue;
+        };
+        let Some(entry) = json.get("luard") else {
+            continue;
+        };
+        let raw: Vec<String> = match entry.as_array() {
+            Some(items) => items
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+            None => entry.as_str().map(str::to_string).into_iter().collect(),
+        };
+        let mut out = Vec::new();
+        for r in raw {
+            let p = Path::new(&r);
+            let resolved = if p.is_absolute() {
+                normalize(p)
+            } else {
+                normalize(&root.join(p))
+            };
+            if !out.contains(&resolved) {
+                out.push(resolved);
+            }
+        }
+        return out;
+    }
+    Vec::new()
 }
 
 fn load_aliases(root: &Path) -> HashMap<String, String> {

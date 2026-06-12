@@ -92,9 +92,117 @@ impl Variable {
     }
 }
 
+const SMALL_SCOPE_MAX: usize = 8;
+
+#[derive(Debug)]
+pub(crate) enum VarMap {
+    Small(Vec<(Rc<str>, Variable)>),
+    Big(HashMap<Rc<str>, Variable>),
+}
+
+impl Default for VarMap {
+    fn default() -> VarMap {
+        VarMap::Small(Vec::new())
+    }
+}
+
+impl VarMap {
+    #[inline]
+    fn get(&self, name: &str) -> Option<&Variable> {
+        match self {
+            VarMap::Small(v) => v.iter().find(|(k, _)| &**k == name).map(|(_, var)| var),
+            VarMap::Big(m) => m.get(name),
+        }
+    }
+
+    #[inline]
+    fn get_mut(&mut self, name: &str) -> Option<&mut Variable> {
+        match self {
+            VarMap::Small(v) => v
+                .iter_mut()
+                .find(|(k, _)| &**k == name)
+                .map(|(_, var)| var),
+            VarMap::Big(m) => m.get_mut(name),
+        }
+    }
+
+    #[inline]
+    fn contains_key(&self, name: &str) -> bool {
+        self.get(name).is_some()
+    }
+
+    fn insert(&mut self, name: Rc<str>, var: Variable) {
+        match self {
+            VarMap::Small(v) => {
+                if let Some(slot) = v.iter_mut().find(|(k, _)| **k == *name) {
+                    slot.1 = var;
+                    return;
+                }
+                if v.len() >= SMALL_SCOPE_MAX {
+                    let mut m: HashMap<Rc<str>, Variable> = v.drain(..).collect();
+                    m.insert(name, var);
+                    *self = VarMap::Big(m);
+                } else {
+                    v.push((name, var));
+                }
+            }
+            VarMap::Big(m) => {
+                m.insert(name, var);
+            }
+        }
+    }
+
+    fn remove(&mut self, name: &str) -> Option<Variable> {
+        match self {
+            VarMap::Small(v) => {
+                let idx = v.iter().position(|(k, _)| &**k == name)?;
+                Some(v.swap_remove(idx).1)
+            }
+            VarMap::Big(m) => m.remove(name),
+        }
+    }
+
+    fn clear(&mut self) {
+        match self {
+            VarMap::Small(v) => v.clear(),
+            VarMap::Big(m) => m.clear(),
+        }
+    }
+
+    fn each(&self, mut f: impl FnMut(&Variable)) {
+        match self {
+            VarMap::Small(v) => {
+                for (_, var) in v {
+                    f(var);
+                }
+            }
+            VarMap::Big(m) => {
+                for var in m.values() {
+                    f(var);
+                }
+            }
+        }
+    }
+
+    fn each_mut(&mut self, mut f: impl FnMut(&mut Variable)) {
+        match self {
+            VarMap::Small(v) => {
+                for (_, var) in v {
+                    f(var);
+                }
+            }
+            VarMap::Big(m) => {
+                for var in m.values_mut() {
+                    f(var);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Scope {
-    vars: HashMap<String, Variable>,
+    vars: VarMap,
     parent: Option<ScopeRef>,
 }
 
@@ -108,6 +216,8 @@ pub struct Environment {
     module_root: ScopeRef,
 
     buffs: HashMap<String, Variable>,
+
+    pool: Vec<ScopeRef>,
 }
 
 impl Default for Environment {
@@ -120,11 +230,11 @@ impl Environment {
 
     pub fn new() -> Self {
         let global: ScopeRef = Rc::new(RefCell::new(Scope::default()));
-        Environment { current: global.clone(), module_root: global.clone(), global, buffs: HashMap::new() }
+        Environment { current: global.clone(), module_root: global.clone(), global, buffs: HashMap::new(), pool: Vec::new() }
     }
 
     pub fn with_global(global: ScopeRef) -> Self {
-        Environment { current: global.clone(), module_root: global.clone(), global, buffs: HashMap::new() }
+        Environment { current: global.clone(), module_root: global.clone(), global, buffs: HashMap::new(), pool: Vec::new() }
     }
 
     pub fn mark_module_root(&mut self) {
@@ -135,7 +245,7 @@ impl Environment {
         self.module_root.clone()
     }
 
-    pub fn declare_module_global(&mut self, name: impl Into<String>, value: Value, mutability: Mutability) {
+    pub fn declare_module_global(&mut self, name: impl Into<Rc<str>>, value: Value, mutability: Mutability) {
         let var = Variable::new(value, mutability, Visibility::Local);
         self.module_root.borrow_mut().vars.insert(name.into(), var);
     }
@@ -161,15 +271,15 @@ impl Environment {
     }
 
     pub fn current_scope_sole_tables(&self) -> Vec<Value> {
-        self.current
-            .borrow()
-            .vars
-            .values()
-            .filter_map(|var| match var.value() {
-                Value::Table(rc) if Rc::strong_count(rc) == 1 => Some(var.value().clone()),
-                _ => None,
-            })
-            .collect()
+        let mut out = Vec::new();
+        self.current.borrow().vars.each(|var| {
+            if let Value::Table(rc) = var.value() {
+                if Rc::strong_count(rc) == 1 {
+                    out.push(var.value().clone());
+                }
+            }
+        });
+        out
     }
 
     pub fn clear_current(&mut self) {
@@ -183,14 +293,34 @@ impl Environment {
     }
 
     pub fn push_scope(&mut self) {
-        let child = Scope { vars: HashMap::new(), parent: Some(self.current.clone()) };
-        self.current = Rc::new(RefCell::new(child));
+        match self.pool.pop() {
+            Some(rc) => {
+                {
+                    let mut s = rc.borrow_mut();
+                    s.vars.clear();
+                    s.parent = Some(self.current.clone());
+                }
+                self.current = rc;
+            }
+            None => {
+                let child = Scope { vars: VarMap::default(), parent: Some(self.current.clone()) };
+                self.current = Rc::new(RefCell::new(child));
+            }
+        }
     }
 
     pub fn pop_scope(&mut self) {
         let parent = self.current.borrow().parent.clone();
         if let Some(parent) = parent {
-            self.current = parent;
+            let old = std::mem::replace(&mut self.current, parent);
+            if Rc::strong_count(&old) == 1 && self.pool.len() < 64 {
+                {
+                    let mut s = old.borrow_mut();
+                    s.vars.clear();
+                    s.parent = None;
+                }
+                self.pool.push(old);
+            }
         }
     }
 
@@ -204,7 +334,7 @@ impl Environment {
 
     pub fn declare(
         &mut self,
-        name: impl Into<String>,
+        name: impl Into<Rc<str>>,
         value: Value,
         mutability: Mutability,
         visibility: Visibility,
@@ -316,9 +446,9 @@ impl Environment {
         let mut roots = Vec::new();
         let mut scope = self.current.clone();
         loop {
-            for var in scope.borrow().vars.values() {
+            scope.borrow().vars.each(|var| {
                 roots.push(var.value().clone());
-            }
+            });
             let parent = scope.borrow().parent.clone();
             match parent {
                 Some(p) => scope = p,
@@ -326,9 +456,9 @@ impl Environment {
             }
         }
 
-        for var in self.module_root.borrow().vars.values() {
+        self.module_root.borrow().vars.each(|var| {
             roots.push(var.value().clone());
-        }
+        });
 
         for var in self.buffs.values() {
             roots.push(var.value().clone());
@@ -338,7 +468,9 @@ impl Environment {
 }
 
 pub(crate) fn scope_values(scope: &ScopeRef) -> Vec<Value> {
-    scope.borrow().vars.values().map(|v| v.value().clone()).collect()
+    let mut out = Vec::new();
+    scope.borrow().vars.each(|v| out.push(v.value().clone()));
+    out
 }
 
 pub(crate) fn scope_parent(scope: &ScopeRef) -> Option<ScopeRef> {
@@ -346,17 +478,15 @@ pub(crate) fn scope_parent(scope: &ScopeRef) -> Option<ScopeRef> {
 }
 
 pub(crate) fn nil_scope_vars(scope: &ScopeRef) {
-    for var in scope.borrow_mut().vars.values_mut() {
-        var.force_set(Value::Nil);
-    }
+    scope.borrow_mut().vars.each_mut(|var| var.force_set(Value::Nil));
 }
 
 pub(crate) fn nil_dead_functions_in_scope(scope: &ScopeRef) {
-    for var in scope.borrow_mut().vars.values_mut() {
+    scope.borrow_mut().vars.each_mut(|var| {
         if var.value().is_dead_function() {
             var.force_set(Value::Nil);
         }
-    }
+    });
 }
 
 #[cfg(test)]

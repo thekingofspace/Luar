@@ -43,7 +43,7 @@ pub struct Native {
 #[derive(Debug)]
 pub struct Function {
     pub name: String,
-    pub params: Vec<String>,
+    pub params: Vec<Rc<str>>,
 
     pub is_vararg: bool,
     pub body: Rc<Vec<Stmt>>,
@@ -225,8 +225,53 @@ impl Class {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Key {
     Int(i64),
-    Str(String),
+    Str(Rc<str>),
     Bool(bool),
+    Ref(RefKey),
+}
+
+#[derive(Clone)]
+pub struct RefKey {
+    pub(crate) ptr: usize,
+    pub value: Value,
+}
+
+impl PartialEq for RefKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.ptr == other.ptr
+    }
+}
+
+impl Eq for RefKey {}
+
+impl std::hash::Hash for RefKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.ptr.hash(state);
+    }
+}
+
+impl Key {
+    #[inline]
+    pub fn to_value(&self) -> Value {
+        match self {
+            Key::Int(i) => Value::Int(*i),
+            Key::Str(s) => Value::Str(s.clone()),
+            Key::Bool(b) => Value::Bool(*b),
+            Key::Ref(r) => r.value.clone(),
+        }
+    }
+}
+
+pub(crate) fn value_ref_ptr(v: &Value) -> Option<usize> {
+    match v {
+        Value::Table(rc) => Some(Rc::as_ptr(rc) as *const () as usize),
+        Value::Function(rc) => Some(Rc::as_ptr(rc) as *const () as usize),
+        Value::Class(rc) => Some(Rc::as_ptr(rc) as *const () as usize),
+        Value::Interface(rc) => Some(Rc::as_ptr(rc) as *const () as usize),
+        Value::Coroutine(rc) => Some(Rc::as_ptr(rc) as *const () as usize),
+        Value::Native(n) => Some(n.func as usize),
+        _ => None,
+    }
 }
 
 pub struct Table {
@@ -347,14 +392,21 @@ fn value_to_key(v: &Value) -> Option<Key> {
     match v {
         Value::Int(i) => Some(Key::Int(*i)),
         Value::Bool(b) => Some(Key::Bool(*b)),
-        Value::Str(s) => Some(Key::Str(s.to_string())),
+        Value::Str(s) => Some(Key::Str(s.clone())),
         Value::Float(f) if f.fract() == 0.0 && f.is_finite() => Some(Key::Int(*f as i64)),
-        _ => None,
+        Value::Nil | Value::Float(_) => None,
+        other => value_ref_ptr(other).map(|ptr| {
+            Key::Ref(RefKey {
+                ptr,
+                value: other.clone(),
+            })
+        }),
     }
 }
 
 impl Value {
 
+    #[inline]
     pub fn str(s: impl Into<Rc<str>>) -> Value {
         Value::Str(s.into())
     }
@@ -409,6 +461,7 @@ impl Value {
         }
     }
 
+    #[inline]
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Value::Str(s) => Some(s),
@@ -416,6 +469,7 @@ impl Value {
         }
     }
 
+    #[inline]
     pub fn as_int(&self) -> Option<i64> {
         match self {
             Value::Int(i) => Some(*i),
@@ -438,7 +492,7 @@ impl Value {
     ) -> Value {
         let rc = Rc::new(Function {
             name,
-            params,
+            params: params.into_iter().map(Rc::from).collect(),
             is_vararg,
             body,
             captured,
@@ -458,6 +512,7 @@ impl Value {
         !matches!(self, Value::Nil | Value::Bool(false))
     }
 
+    #[inline]
     pub fn type_name(&self) -> &'static str {
         match self {
             Value::Nil => "nil",
@@ -480,6 +535,7 @@ impl Value {
     }
 }
 
+#[inline]
 pub fn values_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Nil, Value::Nil) => true,
@@ -526,6 +582,7 @@ impl fmt::Display for Value {
                         Key::Int(i) => write!(f, "[{i}] = {v}")?,
                         Key::Bool(b) => write!(f, "[{b}] = {v}")?,
                         Key::Str(s) => write!(f, "{s} = {v}")?,
+                        Key::Ref(r) => write!(f, "[<{}>] = {v}", r.value.type_name())?,
                     }
                     first = false;
                 }

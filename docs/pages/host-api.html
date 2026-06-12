@@ -101,6 +101,35 @@ is running is an error. The full pattern, including connecting and disconnecting
 script handlers signal-style, is runnable as
 <code>cargo run --example signal</code> in <code>Luar-Runtime</code>.</p>
 
+<h3>Yielding and resuming from Rust</h3>
+<p>A native function runs on the thread of whichever coroutine called it, so it
+can suspend just that coroutine without touching anything else:</p>
+<table>
+<tr><th>Method</th><th>What it does</th></tr>
+<tr><td><code>luar::yield_values(vals)</code></td><td>Inside a native called from a coroutine: yield it with <code>vals</code> (they become the resume results). Returns the values passed to the next <code>resume</code>. Errors on the main thread.</td></tr>
+<tr><td><code>luar::blocking(f)</code></td><td>Inside a native called from a coroutine: run the closure while only THIS coroutine waits — every other coroutine and the main script keep running. Returns the closure's value to the native, which can hand it back to the script.</td></tr>
+<tr><td><code>i.resume_coroutine(&amp;co, args)</code></td><td>Resume a <code>Value::Coroutine</code> from Rust (same results as <code>coroutine.resume</code>).</td></tr>
+<tr><td><code>luar::current_coroutine()</code></td><td><code>(thread, is_main)</code> — the running coroutine, e.g. to validate a thread argument a script passed you.</td></tr>
+</table>
+<pre><code><span class="com">// a wait-style native: parks ONLY the calling coroutine</span>
+fn my_wait(_i: &amp;mut Interpreter, args: Vec&lt;Value&gt;) -&gt; Result&lt;Vec&lt;Value&gt;, String&gt; {
+    <span class="kw">let</span> secs = args.first().and_then(|v| v.as_float()).unwrap_or(<span class="num">0.0</span>);
+    luar::blocking(<span class="kw">move</span> || std::thread::sleep(std::time::Duration::from_secs_f64(secs)))?;
+    Ok(<span class="kw">vec!</span>[])
+}
+
+<span class="com">// a checkpoint native: yields the calling coroutine until the host resumes it</span>
+fn checkpoint(_i: &amp;mut Interpreter, args: Vec&lt;Value&gt;) -&gt; Result&lt;Vec&lt;Value&gt;, String&gt; {
+    <span class="kw">let</span> sent_back = luar::yield_values(args)?;   <span class="com">// returns once the host resumes</span>
+    Ok(sent_back)
+}</code></pre>
+<p><code>blocking</code> is for "wait for something outside the script" (timers, IO,
+channels) &mdash; the host drains finished waiters with <code>run_pending()</code> /
+<code>pump_ready()</code>. <code>yield_values</code> is classic cooperative yielding:
+the coroutine stays suspended until someone resumes it (from the script or via
+<code>resume_coroutine</code>). The closure passed to <code>blocking</code> must not
+touch Luar values.</p>
+
 <h3>Tracking which script a value came from</h3>
 <p>Every require'd module is tagged with its file path automatically, and the
 host can tag the entry script too. Native functions can then ask who called

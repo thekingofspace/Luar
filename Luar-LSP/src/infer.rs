@@ -1317,6 +1317,16 @@ impl<'a> Inferencer<'a> {
                 }
                 (ft.returns.clone(), false)
             }
+            Type::Table(tt) => {
+                let call_field = self
+                    .table_field(&tt, "__call")
+                    .filter(|t| !matches!(t, Type::Unknown));
+                match call_field {
+                    Some(Type::Function(Some(ft))) => (ft.returns.clone(), false),
+                    Some(_) => (vec![Type::Unknown], false),
+                    None => (vec![], true),
+                }
+            }
             _ => (vec![], true),
         }
     }

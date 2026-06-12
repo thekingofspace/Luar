@@ -53,9 +53,11 @@ async function main() {
     ["if not true then", "if", "storage.modifier.control"],
     ["if not true then", "not", "storage.modifier.logical"],
     ["local x = grag.test", "test", "variable.other.property"],
+    ["local t = { local = 1, type = 2 }", "type", "variable.other.property"],
   ];
   const negatives = [
     ["obj:method()", "method", "entity.name.type"],
+    ["local t = { local = 1, type = 2 }", "type", "storage.type"],
     ["p:length()", "length", "entity.name.type"],
     ["obj:method \"sugar\"", "method", "entity.name.type"],
   ];

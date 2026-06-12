@@ -15,6 +15,7 @@ word for it.</div>
 <tr><td><code>luar.inlayHints</code></td><td><code>true</code></td><td>Show <code>: type</code> inlay hints on declarations. Hints appear only on the initial declaration (not on reassignments), and not on <code>local function name()</code> sugar. Casts such as <code>local x = nil :: T</code> do show their resolved type.</td></tr>
 <tr><td><code>luar.showMutability</code></td><td><code>true</code></td><td>Prefix hints with <code>imut</code> / <code>mut</code>.</td></tr>
 <tr><td><code>luar.autoIndent</code></td><td><code>true</code></td><td>Pressing Enter after a block opener inserts the matching <code>end</code> (checking the block is not already closed), and completes a missing <code>then</code> / <code>do</code> after <code>if x == "y"</code> or <code>for _, v in ipairs(t)</code>.</td></tr>
+<tr><td><code>luar.autoImport</code></td><td><code>true</code></td><td>Every project module's name appears in completion; accepting one inserts <code>local name = require("...")</code> after your existing requires (or at the top of the file), preferring <code>@aliases</code> and otherwise the shortest <code>./</code> / <code>../</code> path. Modules already required (and names already in scope) are not offered.</td></tr>
 <tr><td><code>luar.serverPath</code></td><td><code>""</code></td><td>Override the bundled server binary.</td></tr>
 <tr><td><code>luar.trace.server</code></td><td><code>off</code></td><td>LSP message tracing.</td></tr>
 </table>
@@ -157,6 +158,17 @@ TICK_RATE: <span class="typ">number</span> = <span class="num">60</span></code><
 <code>spawn("door")</code> and get an <code>Entity</code> back, hover
 <code>TICK_RATE</code>, and use <code>EntityId</code> in annotations. Doc comments
 above the declarations appear on hover.</p>
+<p>Ambient files do not have to live in the project. The <code>luard</code> key in
+<code>luari.json</code> imports external <code>.luard</code> files by path &mdash;
+absolute (an engine's types kept in AppData) or relative to the config file. It
+accepts one path or a list, and editing <code>luari.json</code> reloads them live:</p>
+<pre><code>{
+    <span class="str">"aliases"</span>: { <span class="str">"Settings"</span>: <span class="str">"./Scenes/Settings"</span> },
+    <span class="str">"luard"</span>: [
+        <span class="str">"C:/Users/you/AppData/Roaming/myengine/engine.luard"</span>,
+        <span class="str">"./vendor/extra.luard"</span>
+    ]
+}</code></pre>
 
 <h3>Ferrite lints in the editor</h3>
 <p>Every <code>.luar</code> file is checked live by

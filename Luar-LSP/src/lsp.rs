@@ -362,6 +362,7 @@ impl Server {
                 if let Some(sort) = item.sort_text {
                     map.push(("sortText", Json::str(sort)));
                 }
+                let mut edits: Vec<Json> = Vec::new();
                 if let Some(ai) = item.auto_import {
                     let pos = |l: u32| {
                         Json::obj(vec![
@@ -369,19 +370,37 @@ impl Server {
                             ("character", Json::int(0)),
                         ])
                     };
-                    map.push((
-                        "additionalTextEdits",
-                        Json::Array(vec![Json::obj(vec![
-                            (
-                                "range",
-                                Json::obj(vec![
-                                    ("start", pos(ai.line0)),
-                                    ("end", pos(ai.line0)),
-                                ]),
-                            ),
-                            ("newText", Json::str(ai.new_text)),
-                        ])]),
-                    ));
+                    edits.push(Json::obj(vec![
+                        (
+                            "range",
+                            Json::obj(vec![
+                                ("start", pos(ai.line0)),
+                                ("end", pos(ai.line0)),
+                            ]),
+                        ),
+                        ("newText", Json::str(ai.new_text)),
+                    ]));
+                }
+                if let Some(ee) = item.extra_edit {
+                    let pos = |c: u32| {
+                        Json::obj(vec![
+                            ("line", Json::int(ee.line0 as i64)),
+                            ("character", Json::int(c as i64)),
+                        ])
+                    };
+                    edits.push(Json::obj(vec![
+                        (
+                            "range",
+                            Json::obj(vec![
+                                ("start", pos(ee.start_col)),
+                                ("end", pos(ee.end_col)),
+                            ]),
+                        ),
+                        ("newText", Json::str(ee.new_text)),
+                    ]));
+                }
+                if !edits.is_empty() {
+                    map.push(("additionalTextEdits", Json::Array(edits)));
                 }
                 Json::obj(map)
             })

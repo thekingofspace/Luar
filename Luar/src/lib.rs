@@ -17,6 +17,8 @@ pub use runtime::{
     blocking, pump_ready, run_pending, Context, Environment, EvalError, Interpreter, Mutability,
     NativeClassBuilder, Table, Value, VarError, Variable, Visibility,
 };
+pub use runtime::do_yield as yield_values;
+pub use runtime::running as current_coroutine;
 pub use runtime::gc::script_source;
 pub use vm::{RuntimeError, Vm};
 
@@ -207,5 +209,16 @@ impl Interpreter {
     ) -> Result<Value, EvalError> {
         let _fam = runtime::gil::FamilyScope::enter(&self.family);
         runtime::launch_method_value(self, receiver.clone(), method, args).map_err(EvalError)
+    }
+
+    pub fn resume_coroutine(&mut self, co: &Value, args: Vec<Value>) -> Result<Vec<Value>, EvalError> {
+        let _fam = runtime::gil::FamilyScope::enter(&self.family);
+        match co {
+            Value::Coroutine(rc) => Ok(runtime::coroutine_resume(rc, args)),
+            other => Err(EvalError(format!(
+                "resume_coroutine: expected a thread, got {}",
+                other.type_name()
+            ))),
+        }
     }
 }

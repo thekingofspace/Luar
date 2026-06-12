@@ -769,6 +769,15 @@ impl Interpreter {
             )),
             Expr::Switch { subject, cases, default } => {
                 let subj = self.eval(subject)?;
+                if let Some(jump) = switch_jump(cases, &subj) {
+                    return match jump {
+                        Some(i) => self.run_switch_body(&cases[i].body),
+                        None => match default {
+                            Some(body) => self.run_switch_body(body),
+                            None => Ok(Value::Nil),
+                        },
+                    };
+                }
                 for case in cases {
                     let pat = self.eval(&case.pattern)?;
                     if values_equal(&subj, &pat) {
@@ -999,8 +1008,10 @@ impl Interpreter {
 
         let is_method = method.is_some();
         if let Some((self_v, super_v, class)) = method {
-            self.env.declare("self".to_string(), self_v, Mutability::Const, Visibility::Local);
-            self.env.declare("super".to_string(), super_v, Mutability::Const, Visibility::Local);
+            let (self_key, super_key) =
+                METHOD_KEYS.with(|(s, sp)| (s.clone(), sp.clone()));
+            self.env.declare(self_key, self_v, Mutability::Const, Visibility::Local);
+            self.env.declare(super_key, super_v, Mutability::Const, Visibility::Local);
             self.class_ctx.push(class);
         }
 
@@ -1650,7 +1661,88 @@ fn operator_to_metamethod(sym: &str, user_params: usize) -> Option<&'static str>
         "<=" => "__le",
         "#" => "__len",
         "tostring" => "__tostring",
+        "type" => "__type",
         _ => return None,
+    })
+}
+
+thread_local! {
+    static METHOD_KEYS: (Rc<str>, Rc<str>) = (Rc::from("self"), Rc::from("super"));
+}
+
+struct SwitchPlan {
+    len: usize,
+    first: Option<Key>,
+    last: Option<Key>,
+    map: Option<super::fxhash::FxHashMap<Key, usize>>,
+}
+
+thread_local! {
+    static SWITCH_PLANS: RefCell<std::collections::HashMap<usize, SwitchPlan>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+fn literal_pattern_key(e: &Expr) -> Option<Key> {
+    match e {
+        Expr::Int(i) => Some(Key::Int(*i)),
+        Expr::Str(s) => Some(Key::Str(Rc::from(s.as_str()))),
+        Expr::Bool(b) => Some(Key::Bool(*b)),
+        Expr::Float(f) if f.fract() == 0.0 && f.is_finite() => Some(Key::Int(*f as i64)),
+        _ => None,
+    }
+}
+
+fn subject_key(v: &Value) -> Option<Key> {
+    match v {
+        Value::Int(i) => Some(Key::Int(*i)),
+        Value::Str(s) => Some(Key::Str(s.clone())),
+        Value::Bool(b) => Some(Key::Bool(*b)),
+        Value::Float(f) if f.fract() == 0.0 && f.is_finite() => Some(Key::Int(*f as i64)),
+        _ => None,
+    }
+}
+
+fn build_switch_plan(cases: &[SwitchCase]) -> SwitchPlan {
+    let first = cases.first().and_then(|c| literal_pattern_key(&c.pattern));
+    let last = cases.last().and_then(|c| literal_pattern_key(&c.pattern));
+    let mut map = super::fxhash::FxHashMap::default();
+    for (i, case) in cases.iter().enumerate() {
+        match literal_pattern_key(&case.pattern) {
+            Some(k) => {
+                map.entry(k).or_insert(i);
+            }
+            None => {
+                return SwitchPlan { len: cases.len(), first, last, map: None };
+            }
+        }
+    }
+    SwitchPlan { len: cases.len(), first, last, map: Some(map) }
+}
+
+fn switch_jump(cases: &[SwitchCase], subj: &Value) -> Option<Option<usize>> {
+    if cases.is_empty() {
+        return Some(None);
+    }
+    let id = cases.as_ptr() as usize;
+    SWITCH_PLANS.with(|plans| {
+        let mut plans = plans.borrow_mut();
+        let valid = plans.get(&id).is_some_and(|p| {
+            p.len == cases.len()
+                && p.first == cases.first().and_then(|c| literal_pattern_key(&c.pattern))
+                && p.last == cases.last().and_then(|c| literal_pattern_key(&c.pattern))
+        });
+        if !valid {
+            if plans.len() > 1024 {
+                plans.clear();
+            }
+            plans.insert(id, build_switch_plan(cases));
+        }
+        let plan = plans.get(&id).unwrap();
+        let map = plan.map.as_ref()?;
+        match subject_key(subj) {
+            Some(k) => Some(map.get(&k).copied()),
+            None => Some(None),
+        }
     })
 }
 
@@ -1767,6 +1859,7 @@ fn register_builtins(env: &mut Environment) {
         ("setmetatable", builtin_setmetatable),
         ("getmetatable", builtin_getmetatable),
         ("type", builtin_type),
+        ("TypeOf", builtin_typeof_deep),
         ("print", builtin_print),
         ("warn", builtin_warn),
         ("assert", builtin_assert),
@@ -2299,11 +2392,7 @@ fn tbl_keys(_i: &mut Interpreter, a: Vec<Value>) -> NativeResult {
             arr.array.push(Value::Int(idx as i64));
         }
         for k in tb.map.keys() {
-            arr.array.push(match k {
-                Key::Int(i) => Value::Int(*i),
-                Key::Str(s) => Value::str(s.as_str()),
-                Key::Bool(b) => Value::Bool(*b),
-            });
+            arr.array.push(k.to_value());
         }
     }
     Ok(vec![out])
@@ -2539,6 +2628,61 @@ fn builtin_getmetatable(_i: &mut Interpreter, args: Vec<Value>) -> NativeResult 
 
 fn builtin_type(_i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
     Ok(vec![Value::str(args.first().map(|v| v.type_name()).unwrap_or("nil"))])
+}
+
+fn builtin_typeof_deep(i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
+    let v = args.into_iter().next().unwrap_or(Value::Nil);
+    if let Some(class) = instance_class(&v) {
+        if let Some((op, defining)) = class.find_operator("__type") {
+            let out = i
+                .invoke_method(op, v.clone(), defining, Vec::new())
+                .map_err(|e| e.0)?;
+            return match out.into_iter().next().unwrap_or(Value::Nil) {
+                Value::Str(s) => Ok(vec![Value::Str(s)]),
+                other => Err(format!(
+                    "TypeOf: the type operator must return a string, got {}",
+                    other.type_name()
+                )),
+            };
+        }
+    }
+    if let Value::Class(c) = &v {
+        if let Some((op, defining)) = c.find_operator("__type") {
+            let out = i
+                .invoke_method(op, v.clone(), defining, Vec::new())
+                .map_err(|e| e.0)?;
+            return match out.into_iter().next().unwrap_or(Value::Nil) {
+                Value::Str(s) => Ok(vec![Value::Str(s)]),
+                other => Err(format!(
+                    "TypeOf: the type operator must return a string, got {}",
+                    other.type_name()
+                )),
+            };
+        }
+    }
+    if let Value::Table(t) = &v {
+        let handler = t.borrow().metamethod("__type");
+        if let Some(handler) = handler {
+            return match handler {
+                Value::Str(s) => Ok(vec![Value::Str(s)]),
+                f @ (Value::Function(_) | Value::Native(_)) => {
+                    let out = i.call(&f, vec![v.clone()]).map_err(|e| e.0)?;
+                    match out.into_iter().next().unwrap_or(Value::Nil) {
+                        Value::Str(s) => Ok(vec![Value::Str(s)]),
+                        other => Err(format!(
+                            "TypeOf: __type must return a string, got {}",
+                            other.type_name()
+                        )),
+                    }
+                }
+                other => Err(format!(
+                    "TypeOf: __type must be a string or a function, got {}",
+                    other.type_name()
+                )),
+            };
+        }
+    }
+    Ok(vec![Value::str(v.type_name())])
 }
 
 fn builtin_tostring(i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
@@ -3325,12 +3469,7 @@ fn builtin_next(_i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
         entries.push((Value::Int(idx as i64 + 1), v.clone()));
     }
     for (k, v) in tb.map.iter() {
-        let key_val = match k {
-            Key::Int(i) => Value::Int(*i),
-            Key::Str(s) => Value::str(s.as_str()),
-            Key::Bool(b) => Value::Bool(*b),
-        };
-        entries.push((key_val, v.clone()));
+        entries.push((k.to_value(), v.clone()));
     }
 
     let start = if matches!(key, Value::Nil) {
@@ -4978,6 +5117,227 @@ end"#,
         interp.run_source("log = log .. \"|\"").unwrap();
         crate::runtime::run_pending();
         assert_eq!(interp.env.get("log"), Some(Value::str("go|ana!")));
+    }
+
+    #[test]
+    fn any_value_table_keys_work() {
+        let interp = run(
+            r#"class Tag {
+}
+local t1 = Tag()
+local t2 = Tag()
+local f = function() return 1 end
+local m = {}
+m[t1] = "first"
+m[t2] = "second"
+m[f] = "fn"
+m[Tag] = "class"
+pub local a = m[t1]
+pub local b = m[t2]
+pub local c = m[f]
+pub local d = m[Tag]
+local lit = { [t1] = "inline" }
+pub local e = lit[t1]
+pub local n = 0
+for k, v in pairs(m) do
+    n += 1
+end"#,
+        );
+        assert_eq!(interp.env.get("a"), Some(Value::str("first")));
+        assert_eq!(interp.env.get("b"), Some(Value::str("second")));
+        assert_eq!(interp.env.get("c"), Some(Value::str("fn")));
+        assert_eq!(interp.env.get("d"), Some(Value::str("class")));
+        assert_eq!(interp.env.get("e"), Some(Value::str("inline")));
+        assert_eq!(interp.env.get("n"), Some(Value::Int(4)));
+    }
+
+    #[test]
+    fn string_keys_match_by_content_not_identity() {
+        let interp = run(
+            r#"local a = "ke" .. "y"
+local t = {}
+t[a] = 1
+pub local direct = t["key"]
+t["other key"] = 2
+local b = "other" .. " " .. "key"
+pub local built = t[b]"#,
+        );
+        assert_eq!(interp.env.get("direct"), Some(Value::Int(1)));
+        assert_eq!(interp.env.get("built"), Some(Value::Int(2)));
+    }
+
+    #[test]
+    fn table_can_be_its_own_key() {
+        let interp = run(
+            r#"local t = {}
+t[t] = "self"
+collectgarbage()
+pub local v = t[t]
+pub local n = 0
+for k, v2 in pairs(t) do
+    n += 1
+end"#,
+        );
+        assert_eq!(interp.env.get("v"), Some(Value::str("self")));
+        assert_eq!(interp.env.get("n"), Some(Value::Int(1)));
+    }
+
+    #[test]
+    fn table_keys_survive_garbage_collection() {
+        let interp = run(
+            r#"local holder = {}
+holder[{ tag = "k" }] = "kept"
+collectgarbage()
+pub local found = ""
+for k, v in pairs(holder) do
+    found = k.tag .. v
+end"#,
+        );
+        assert_eq!(interp.env.get("found"), Some(Value::str("kkept")));
+    }
+
+    #[test]
+    fn switch_jump_table_matches_linear_semantics() {
+        let interp = run(
+            r#"local function pick(v)
+    return switch(v)
+        case 1
+            return "one"
+        end
+        case 2
+            return "two"
+        end
+        case "red"
+            return "color"
+        end
+        case true
+            return "yes"
+        end
+        case 2
+            return "dup"
+        end
+        default
+            return "other"
+        end
+    end
+end
+pub local a = pick(1)
+pub local b = pick(2)
+pub local b2 = pick(2)
+pub local c = pick("red")
+pub local d = pick(true)
+pub local e = pick(99)
+pub local f = pick(2.0)
+pub local g = pick(nil)"#,
+        );
+        assert_eq!(interp.env.get("a"), Some(Value::str("one")));
+        assert_eq!(interp.env.get("b"), Some(Value::str("two")));
+        assert_eq!(interp.env.get("b2"), Some(Value::str("two")));
+        assert_eq!(interp.env.get("c"), Some(Value::str("color")));
+        assert_eq!(interp.env.get("d"), Some(Value::str("yes")));
+        assert_eq!(interp.env.get("e"), Some(Value::str("other")));
+        assert_eq!(interp.env.get("f"), Some(Value::str("two")));
+        assert_eq!(interp.env.get("g"), Some(Value::str("other")));
+    }
+
+    #[test]
+    fn switch_with_non_literal_patterns_still_works() {
+        let interp = run(
+            r#"local x = 5
+local function pick(v)
+    return switch(v)
+        case x
+            return "var"
+        end
+        case 2
+            return "two"
+        end
+    end
+end
+pub local a = pick(5)
+pub local b = pick(2)
+pub local c = pick(9)"#,
+        );
+        assert_eq!(interp.env.get("a"), Some(Value::str("var")));
+        assert_eq!(interp.env.get("b"), Some(Value::str("two")));
+        assert_eq!(interp.env.get("c"), Some(Value::Nil));
+    }
+
+    #[test]
+    fn typeof_reads_type_metadata() {
+        let interp = run(
+            r#"class Vec {
+    operator type()
+        return "Vector"
+    end
+}
+local v = Vec()
+pub local a = TypeOf(v)
+local plain = setmetatable({}, { __type = "Bag" })
+pub local b = TypeOf(plain)
+local lazy = setmetatable({}, { __type = function(self)
+    return "Lazy"
+end })
+pub local c = TypeOf(lazy)
+pub local d = TypeOf(5)
+pub local e = TypeOf("hi")
+pub local f = TypeOf({})"#,
+        );
+        assert_eq!(interp.env.get("a"), Some(Value::str("Vector")));
+        assert_eq!(interp.env.get("b"), Some(Value::str("Bag")));
+        assert_eq!(interp.env.get("c"), Some(Value::str("Lazy")));
+        assert_eq!(interp.env.get("d"), Some(Value::str("number")));
+        assert_eq!(interp.env.get("e"), Some(Value::str("string")));
+        assert_eq!(interp.env.get("f"), Some(Value::str("table")));
+    }
+
+    fn native_pause(_i: &mut Interpreter, args: Vec<Value>) -> std::result::Result<Vec<Value>, String> {
+        crate::runtime::do_yield(args)
+    }
+
+    #[test]
+    fn natives_can_yield_the_current_coroutine() {
+        let mut interp = Interpreter::new();
+        interp.set_global_fn("pause", native_pause);
+        let program = parse(
+            tokenize(
+                r#"pub local log = ""
+local co = coroutine.create(function()
+    local back = pause("ping")
+    log = log .. back
+end)
+local ok, sent = coroutine.resume(co)
+pub local first = sent
+coroutine.resume(co, "pong")"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        interp.run(&program).unwrap();
+        assert_eq!(interp.env.get("first"), Some(Value::str("ping")));
+        assert_eq!(interp.env.get("log"), Some(Value::str("pong")));
+    }
+
+    #[test]
+    fn host_can_resume_a_script_coroutine() {
+        let mut interp = Interpreter::new();
+        let program = parse(
+            tokenize(
+                r#"pub local log = ""
+pub local co = coroutine.create(function(x)
+    local more = coroutine.yield(x + 1)
+    log = "got " .. more
+end)"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        interp.run(&program).unwrap();
+        let co = interp.get_global("co").unwrap();
+        let first = interp.resume_coroutine(&co, vec![Value::Int(41)]).unwrap();
+        assert_eq!(first.get(1), Some(&Value::Int(42)));
+        interp.resume_coroutine(&co, vec![Value::str("it")]).unwrap();
+        assert_eq!(interp.env.get("log"), Some(Value::str("got it")));
     }
 
     fn native_report_source(i: &mut Interpreter, _args: Vec<Value>) -> std::result::Result<Vec<Value>, String> {
