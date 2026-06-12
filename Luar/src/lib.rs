@@ -16,8 +16,9 @@ pub use lexer::{LexError, Lexer, Span, Token, TokenKind};
 pub use optimize::optimize_program;
 pub use parser::{parse, ParseError};
 pub use runtime::{
-    blocking, pump_ready, run_pending, Context, Environment, EvalError, Interpreter, Mutability,
-    NativeClassBuilder, Table, Value, VarError, Variable, Visibility,
+    blocking, capture_output, pump_ready, run_pending, set_time_source, take_captured_output,
+    Context, Environment, EvalError, Interpreter, Mutability, NativeClassBuilder, Table, Value,
+    VarError, Variable, Visibility,
 };
 pub use runtime::do_yield as yield_values;
 pub use runtime::running as current_coroutine;

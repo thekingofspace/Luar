@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LUAR Playground</title>
+<meta name="description" content="Run LUAR in your browser.">
+<link rel="icon" href="laur_logo.png">
+<meta name="theme-color" content="#4ec9b0">
+<link rel="stylesheet" href="style.css">
+<style>
+.pg-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 18px 24px;
+}
+.pg-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+.pg-header h1 {
+  font-size: 20px;
+  margin: 0;
+  color: var(--accent);
+}
+.pg-header .links {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 14px;
+}
+.pg-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.pg-toolbar button {
+  background: var(--accent);
+  color: #0f1117;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pg-toolbar button:hover { filter: brightness(1.1); }
+.pg-toolbar select {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+.pg-status { color: var(--muted); font-size: 13px; }
+.pg-panes {
+  display: flex;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+}
+.pg-panes > div {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.pg-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.editor-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+#editor, #highlight {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 12px;
+  font-family: "Cascadia Code", Consolas, "Courier New", monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 4;
+  overflow: auto;
+  border: none;
+}
+#highlight {
+  pointer-events: none;
+  color: var(--text);
+  background: transparent;
+  overflow: hidden;
+}
+#highlight code {
+  font: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  white-space: inherit;
+  display: block;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+}
+#editor {
+  resize: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+  outline: none;
+  z-index: 1;
+}
+#editor::selection { background: rgba(79, 193, 255, 0.25); }
+#output {
+  flex: 1;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  font-family: "Cascadia Code", Consolas, "Courier New", monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow: auto;
+  white-space: pre-wrap;
+  margin: 0;
+}
+#output.err { color: #f48771; }
+@media (max-width: 820px) {
+  .pg-panes { flex-direction: column; }
+}
+</style>
+</head>
+<body>
+<div class="pg-layout">
+  <div class="pg-header">
+    <img src="laur_logo.png" alt="" width="28" height="28">
+    <h1>LUAR Playground</h1>
+    <div class="links"><a href="index.html">← Back to the docs</a></div>
+  </div>
+  <div class="pg-toolbar">
+    <button id="run">Run ▸</button>
+    <select id="examples">
+      <option value="">Examples…</option>
+      <option value="hello">Hello world</option>
+      <option value="classes">Classes</option>
+      <option value="switch">Switch</option>
+      <option value="tables">Tables</option>
+      <option value="tailcall">Tail calls</option>
+    </select>
+    <span class="pg-status" id="status">loading interpreter…</span>
+  </div>
+  <div class="pg-panes">
+    <div>
+      <div class="pg-label">Code (Ctrl+Enter to run)</div>
+      <div class="editor-wrap">
+        <pre id="highlight"><code id="highlight-code"></code></pre>
+        <textarea id="editor" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off"></textarea>
+      </div>
+    </div>
+    <div>
+      <div class="pg-label">Output</div>
+      <pre id="output"></pre>
+    </div>
+  </div>
+</div>
+<script>
+const EXAMPLES = {
+  hello: 'print("hello from LUAR!")\n\nlocal total = 0\nfor i = 1, 10 do\n    total += i\nend\nprint(`1 to 10 sums to {total}`)\n',
+  classes: 'class Animal {\n    public Name:string = "?"\n\n    constructor(name:string)\n        self.Name = name\n    end\n\n    public function Speak()\n        return `{self.Name} makes a sound`\n    end\n}\n\nfinal class Dog extends Animal {\n    override public function Speak()\n        return `{self.Name} says woof!`\n    end\n}\n\nprint(Dog("Rex"):Speak())\n',
+  switch: 'local function describe(code)\n    return switch(code)\n        case 200 return "ok" end\n        case 404 return "not found" end\n        case 500 return "server error" end\n        default return "unknown" end\n    end\nend\n\nfor _, c in ipairs({ 200, 404, 999 }) do\n    print(c, describe(c))\nend\n',
+  tables: 'local scores = { alice = 12, bob = 9 }\nscores.cara = 17\n\nfor name, score in pairs(scores) do\n    print(name, score)\nend\n\nlocal list = { 5, 3, 8, 1 }\ntable.sort(list)\nprint(table.concat(list, " < "))\n',
+  tailcall: 'local function countdown(n, steps)\n    if n == 0 then\n        return steps\n    end\n    return countdown(n - 1, steps + 1)\nend\n\nprint(`recursed {countdown(1000000, 0)} times in constant stack`)\n',
+};
+
+const editor = document.getElementById("editor");
+const highlight = document.getElementById("highlight");
+const highlightCode = document.getElementById("highlight-code");
+const output = document.getElementById("output");
+const status = document.getElementById("status");
+const runBtn = document.getElementById("run");
+const examples = document.getElementById("examples");
+
+const KEYWORDS = new Set([
+  "local", "const", "pub", "export", "function", "class", "interface", "enum",
+  "type", "if", "then", "elseif", "else", "end", "for", "while", "do", "in",
+  "break", "return", "switch", "case", "default", "and", "or", "not", "self",
+  "super", "true", "false", "nil", "extends", "mixin", "implements",
+  "constructor", "destructor", "operator", "static", "final", "abstract",
+  "override", "get", "set", "buff", "freebuff",
+]);
+const TYPES = new Set([
+  "string", "number", "boolean", "table", "thread", "any", "void",
+]);
+
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+const TOKEN_RE = /(--\[\[[\s\S]*?(?:\]\]|$)|--[^\n]*)|(`(?:\\.|[^`\\])*`?|"(?:\\.|[^"\\])*"?|'(?:\\.|[^'\\])*'?)|(\b\d(?:[\w.])*)|([A-Za-z_]\w*)/g;
+
+function highlightBacktick(raw) {
+  let out = "";
+  let segStart = 0;
+  let i = 0;
+  while (i < raw.length) {
+    if (raw[i] === "\\") {
+      i += 2;
+      continue;
+    }
+    if (raw[i] === "{") {
+      let depth = 1;
+      let j = i + 1;
+      while (j < raw.length && depth > 0) {
+        if (raw[j] === "{") depth++;
+        else if (raw[j] === "}") depth--;
+        j++;
+      }
+      out += `<span class="str">${escapeHtml(raw.slice(segStart, i + 1))}</span>`;
+      out += highlightSource(raw.slice(i + 1, j - 1));
+      out += `<span class="str">${escapeHtml(raw.slice(Math.max(j - 1, i + 1), j))}</span>`;
+      segStart = j;
+      i = j;
+      continue;
+    }
+    i++;
+  }
+  if (segStart < raw.length) {
+    out += `<span class="str">${escapeHtml(raw.slice(segStart))}</span>`;
+  }
+  return out;
+}
+
+function highlightSource(src) {
+  let out = "";
+  let last = 0;
+  for (const m of src.matchAll(TOKEN_RE)) {
+    out += escapeHtml(src.slice(last, m.index));
+    last = m.index + m[0].length;
+    const text = escapeHtml(m[0]);
+    if (m[1] !== undefined) {
+      out += `<span class="com">${text}</span>`;
+    } else if (m[2] !== undefined) {
+      if (m[0][0] === "`") {
+        out += highlightBacktick(m[0]);
+      } else {
+        out += `<span class="str">${text}</span>`;
+      }
+    } else if (m[3] !== undefined) {
+      out += `<span class="num">${text}</span>`;
+    } else if (KEYWORDS.has(m[0])) {
+      out += `<span class="kw">${text}</span>`;
+    } else if (TYPES.has(m[0])) {
+      out += `<span class="typ">${text}</span>`;
+    } else {
+      const rest = src.slice(last);
+      if (/^\s*\(/.test(rest) || /^\s*[`"{]/.test(rest)) {
+        out += `<span class="fn">${text}</span>`;
+      } else {
+        out += text;
+      }
+    }
+  }
+  out += escapeHtml(src.slice(last));
+  return out;
+}
+
+function refreshHighlight() {
+  highlightCode.innerHTML = highlightSource(editor.value) + "\n";
+  syncScroll();
+}
+
+function syncScroll() {
+  highlight.scrollTop = editor.scrollTop;
+  highlight.scrollLeft = editor.scrollLeft;
+}
+
+editor.addEventListener("input", refreshHighlight);
+editor.addEventListener("scroll", syncScroll);
+
+editor.value = EXAMPLES.hello;
+refreshHighlight();
+
+let worker = null;
+let busyTimer = null;
+let ready = false;
+
+function spawnWorker() {
+  ready = false;
+  worker = new Worker("playground-worker.js");
+  worker.onmessage = (e) => {
+    const msg = e.data;
+    if (msg.kind === "ready") {
+      ready = true;
+      status.textContent = "ready";
+      return;
+    }
+    if (msg.kind === "result") {
+      clearTimeout(busyTimer);
+      status.textContent = `done in ${msg.ms.toFixed(0)}ms`;
+      output.textContent = msg.body.length ? msg.body : "(no output)";
+      output.className = msg.status === 0 ? "" : "err";
+      runBtn.disabled = false;
+    }
+  };
+  worker.onerror = (e) => {
+    clearTimeout(busyTimer);
+    status.textContent = "worker error";
+    output.textContent = "playground error: " + e.message;
+    output.className = "err";
+    runBtn.disabled = false;
+  };
+}
+
+function run() {
+  if (!worker || !ready) return;
+  runBtn.disabled = true;
+  status.textContent = "running…";
+  output.className = "";
+  output.textContent = "";
+  busyTimer = setTimeout(() => {
+    worker.terminate();
+    status.textContent = "stopped (took longer than 5s)";
+    output.textContent = "error: the script ran for more than 5 seconds and was stopped — check for infinite loops";
+    output.className = "err";
+    runBtn.disabled = false;
+    spawnWorker();
+  }, 5000);
+  worker.postMessage({ kind: "run", source: editor.value });
+}
+
+runBtn.addEventListener("click", run);
+editor.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    e.preventDefault();
+    run();
+  }
+  if (e.key === "Tab") {
+    e.preventDefault();
+    const s = editor.selectionStart;
+    editor.setRangeText("    ", s, editor.selectionEnd, "end");
+    refreshHighlight();
+  }
+});
+examples.addEventListener("change", () => {
+  if (EXAMPLES[examples.value]) {
+    editor.value = EXAMPLES[examples.value];
+    output.textContent = "";
+    output.className = "";
+    refreshHighlight();
+  }
+  examples.value = "";
+});
+
+spawnWorker();
+</script>
+</body>
+</html>

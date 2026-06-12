@@ -2536,7 +2536,18 @@ fn bit_arshift(_i: &mut Interpreter, a: Vec<Value>) -> NativeResult {
     Ok(vec![Value::Int((r as u32) as i64)])
 }
 
+thread_local! {
+    static TIME_SOURCE: std::cell::Cell<Option<fn() -> f64>> = const { std::cell::Cell::new(None) };
+}
+
+pub fn set_time_source(f: fn() -> f64) {
+    TIME_SOURCE.with(|t| t.set(Some(f)));
+}
+
 fn os_time(_i: &mut Interpreter, _a: Vec<Value>) -> NativeResult {
+    if let Some(f) = TIME_SOURCE.with(|t| t.get()) {
+        return Ok(vec![Value::Int((f() / 1000.0) as i64)]);
+    }
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -2544,6 +2555,21 @@ fn os_time(_i: &mut Interpreter, _a: Vec<Value>) -> NativeResult {
     Ok(vec![Value::Int(secs)])
 }
 fn os_clock(_i: &mut Interpreter, _a: Vec<Value>) -> NativeResult {
+    if let Some(f) = TIME_SOURCE.with(|t| t.get()) {
+        thread_local! {
+            static START_MS: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
+        }
+        let now = f();
+        let start = START_MS.with(|s| {
+            if let Some(v) = s.get() {
+                v
+            } else {
+                s.set(Some(now));
+                now
+            }
+        });
+        return Ok(vec![Value::Float((now - start) / 1000.0)]);
+    }
     thread_local! {
         static START: std::time::Instant = std::time::Instant::now();
     }
@@ -2551,13 +2577,21 @@ fn os_clock(_i: &mut Interpreter, _a: Vec<Value>) -> NativeResult {
 }
 
 fn coro_create(interp: &mut Interpreter, args: Vec<Value>) -> NativeResult {
-    let func = args.into_iter().next().unwrap_or(Value::Nil);
-    if !matches!(func, Value::Function(_) | Value::Native(_)) {
-        return Err(format!("coroutine.create: expected a function, got {}", func.type_name()));
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (&interp, &args);
+        return Err("coroutines are not available in the browser playground".into());
     }
-    let global = interp.env.global_scope();
-    let state = super::coroutine::create(func, global, interp.family.clone());
-    Ok(vec![Value::Coroutine(Rc::new(RefCell::new(state)))])
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let func = args.into_iter().next().unwrap_or(Value::Nil);
+        if !matches!(func, Value::Function(_) | Value::Native(_)) {
+            return Err(format!("coroutine.create: expected a function, got {}", func.type_name()));
+        }
+        let global = interp.env.global_scope();
+        let state = super::coroutine::create(func, global, interp.family.clone());
+        Ok(vec![Value::Coroutine(Rc::new(RefCell::new(state)))])
+    }
 }
 
 fn coro_resume(_interp: &mut Interpreter, args: Vec<Value>) -> NativeResult {
@@ -2787,12 +2821,59 @@ fn builtin_tonumber(_i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
     Ok(vec![out])
 }
 
+thread_local! {
+    static PRINT_CAPTURE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+pub fn capture_output(enabled: bool) {
+    PRINT_CAPTURE.with(|c| {
+        let mut c = c.borrow_mut();
+        if enabled {
+            if c.is_none() {
+                *c = Some(String::new());
+            }
+        } else {
+            *c = None;
+        }
+    });
+}
+
+pub fn take_captured_output() -> String {
+    PRINT_CAPTURE.with(|c| {
+        let mut c = c.borrow_mut();
+        match c.as_mut() {
+            Some(buf) => std::mem::take(buf),
+            None => String::new(),
+        }
+    })
+}
+
+fn emit_line(line: &str, error: bool) {
+    let captured = PRINT_CAPTURE.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some(buf) = c.as_mut() {
+            buf.push_str(line);
+            buf.push('\n');
+            true
+        } else {
+            false
+        }
+    });
+    if !captured {
+        if error {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
+        }
+    }
+}
+
 fn builtin_print(i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
     let mut parts = Vec::with_capacity(args.len());
     for v in &args {
         parts.push(i.display_string(v).map_err(|e| e.0)?);
     }
-    println!("{}", parts.join("\t"));
+    emit_line(&parts.join("\t"), false);
     Ok(vec![])
 }
 
@@ -2801,7 +2882,7 @@ fn builtin_warn(i: &mut Interpreter, args: Vec<Value>) -> NativeResult {
     for v in &args {
         parts.push(i.display_string(v).map_err(|e| e.0)?);
     }
-    eprintln!("{}", parts.join("\t"));
+    emit_line(&parts.join("\t"), true);
     Ok(vec![])
 }
 

@@ -1,0 +1,15 @@
+[package]
+name = "luar-playground"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+luar = { path = "../Luar" }
+
+[profile.release]
+lto = "thin"
+opt-level = "s"
+codegen-units = 1
