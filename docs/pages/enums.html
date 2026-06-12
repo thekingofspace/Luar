@@ -1,19 +1,54 @@
 <h1 id="enums">Enums</h1>
-<p>An enum is a set of named integer constants, accessed through the enum name.</p>
+<p>An enum is a set of named integer constants, accessed through the enum name
+with a dot: <code>EnumName.Variant</code>.</p>
 <pre><code><span class="kw">enum</span> <span class="typ">State</span> { Idle Running Done }
 <span class="fn">print</span>(<span class="typ">State</span>.Idle, <span class="typ">State</span>.Running, <span class="typ">State</span>.Done)   <span class="com">-- 0  1  2</span></code></pre>
-<p>Variants auto-increment from 0; explicit values are allowed and later auto
-variants continue from there. Variants are separated by newlines, commas, or
-whitespace.</p>
-<pre><code><span class="kw">enum</span> <span class="typ">Status</span> { Active = <span class="num">10</span>  Inactive  Banned = <span class="num">99</span> }   <span class="com">-- 10, 11, 99</span></code></pre>
-<h3>Adding to an enum and visibility</h3>
-<p>Declaring an existing enum adds variants to it instead of replacing it. A
-plain enum is module-global but private; a <code>pub enum</code> is visible to
-other modules.</p>
-<pre><code><span class="kw">enum</span> <span class="typ">Color</span> { Red Green Blue }   <span class="com">-- 0, 1, 2</span>
-<span class="kw">enum</span> <span class="typ">Color</span> { Yellow }           <span class="com">-- 3</span>
+<p>Variants auto-increment from 0. An explicit <code>= value</code> is allowed,
+and later auto variants continue counting from it. Variants are separated by
+newlines, commas, semicolons, or plain whitespace &mdash; whichever reads best.</p>
+<pre><code><span class="kw">enum</span> <span class="typ">Status</span> { Active = <span class="num">10</span>  Inactive  Banned = <span class="num">99</span> }   <span class="com">-- 10, 11, 99</span>
+<span class="kw">enum</span> <span class="typ">Flags</span> { A, B, C }                              <span class="com">-- commas work too: 0, 1, 2</span></code></pre>
 
-<span class="kw">pub enum</span> <span class="typ">GameState</span> { Menu Playing Paused }   <span class="com">-- visible to other files</span></code></pre>
+<h3>What an enum is at run time</h3>
+<p>An enum is a table whose entries are the variants, specially flagged so that
+<code>type()</code> can tell it apart from an ordinary table. The enum name is a
+<b>constant</b> binding &mdash; you cannot reassign it. Reading a variant that
+was never declared gives <code>nil</code>, like any missing table field, so a
+typo in a variant name does not error by itself; comparisons against it are
+simply never true.</p>
+<pre><code><span class="kw">enum</span> <span class="typ">State</span> { Idle Running Done }
+<span class="fn">print</span>(<span class="fn">type</span>(<span class="typ">State</span>))        <span class="com">-- enum</span>
+<span class="fn">print</span>(<span class="fn">type</span>(<span class="typ">State</span>.Idle))   <span class="com">-- number</span>
+<span class="fn">print</span>(<span class="typ">State</span>.Idel)         <span class="com">-- nil (typo: no error, just nil)</span></code></pre>
+
+<h3>Adding to an enum and visibility</h3>
+<p>Declaring an enum whose name already exists does not replace it &mdash; the
+new variants are <b>merged into</b> the existing enum, and auto-numbering
+continues after the highest integer value already present. This lets one file
+(or one part of a file) extend an enum declared in another.</p>
+<pre><code><span class="kw">enum</span> <span class="typ">Color</span> { Red Green Blue }   <span class="com">-- 0, 1, 2</span>
+<span class="kw">enum</span> <span class="typ">Color</span> { Yellow }           <span class="com">-- merged in as 3</span>
+<span class="fn">print</span>(<span class="typ">Color</span>.Yellow)             <span class="com">-- 3</span></code></pre>
+<p>Visibility follows the usual rules, with one twist: an enum is <b>always</b>
+hoisted to the top level of its module, even when the <code>enum</code> statement
+sits inside a function or a block. A plain enum is visible everywhere in the
+declaring module but not outside it; <code>pub enum</code> (or the equivalent
+<code>export enum</code>) makes it visible to every other module as well.</p>
+<pre><code><span class="kw">pub enum</span> <span class="typ">GameState</span> { Menu Playing Paused }   <span class="com">-- visible to other files</span>
+
+<span class="kw">function</span> <span class="fn">setup</span>()
+  <span class="kw">enum</span> <span class="typ">Mode</span> { Fast Safe }   <span class="com">-- still module-wide, despite being declared here</span>
+<span class="kw">end</span>
+setup()
+<span class="fn">print</span>(<span class="typ">Mode</span>.Safe)   <span class="com">-- 1</span></code></pre>
+
+<h3>Editor check: duplicate variants</h3>
+<p>Listing the same variant twice inside one declaration is almost always a
+mistake (the second silently overwrites the first), so the editor flags it with
+the <code>DuplicateEnumVariant</code> check:
+<code>duplicate variant 'Red' in enum 'Color'</code>. Like every check it can be
+silenced with a <code>--#disable DuplicateEnumVariant</code> directive (see the
+<a href="#ferrite">linting page</a>).</p>
 <h3>Using an enum as a type</h3>
 <p>An enum name is also a type. Annotating a variable, field, or parameter with
 an enum name says it should hold one of that enum's variants. This documents your

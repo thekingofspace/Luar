@@ -9,14 +9,86 @@ tables. Arrays are 1-based.</p>
 <span class="fn">print</span>(map.name)     <span class="com">-- "luar"  (sugar for map["name"])</span>
 <span class="fn">print</span>(#array)       <span class="com">-- 3</span></code></pre>
 
+<h3>Constructors</h3>
+<p>A table constructor mixes three kinds of entry, separated by <code>,</code> or
+<code>;</code> (a trailing separator is fine):</p>
+<ul>
+<li><b>Positional</b> values fill the array part in order, starting at index 1.</li>
+<li><b><code>name = value</code></b> sets a string key. The name can be any
+identifier — Luar has no reserved words, so even <code>{ local = 1,
+function = 2 }</code> works, and reads back as <code>t.local</code> and
+<code>t.function</code>.</li>
+<li><b><code>[expr] = value</code></b> computes the key, for anything that is not
+a plain name: numbers, strings with spaces, or other values entirely.</li>
+</ul>
+<pre><code><span class="kw">local</span> t = {
+  <span class="str">"first"</span>,                  <span class="com">-- t[1]</span>
+  answer = <span class="num">42</span>,              <span class="com">-- t.answer</span>
+  [<span class="num">10</span>] = <span class="str">"ten"</span>,             <span class="com">-- t[10]</span>
+  [<span class="str">"two words"</span>] = <span class="kw">true</span>,    <span class="com">-- t["two words"]</span>
+}</code></pre>
+<p>If the last positional entry is a function call or <code>...</code>, all of
+its values are appended:</p>
+<pre><code><span class="kw">local</span> pair = <span class="kw">function</span>() <span class="kw">return</span> <span class="num">8</span>, <span class="num">9</span> <span class="kw">end</span>
+<span class="kw">local</span> t = { <span class="num">7</span>, pair() }   <span class="com">-- { 7, 8, 9 }</span></code></pre>
+
+<h3>Keys can be (almost) any value</h3>
+<p>Table keys are not limited to strings and integers. Booleans, tables,
+functions, classes, and coroutines all work as keys. The rules:</p>
+<ul>
+<li><b>Strings</b> compare by content: <code>t["ab"]</code> and
+<code>t["a" .. "b"]</code> are the same slot.</li>
+<li><b>Numbers</b>: a float with no fractional part is treated as the matching
+integer, so <code>t[2.0]</code> and <code>t[2]</code> are the same slot. A
+float <em>with</em> a fractional part is an invalid key.</li>
+<li><b>Tables, functions, classes, and coroutines</b> compare by <b>identity</b>:
+two distinct empty tables are two distinct keys, even though they look equal.
+The table holds a reference to such a key, so the key is kept alive as long as
+the entry exists.</li>
+<li><b><code>nil</code> is never a valid key.</b> Using <code>nil</code> (or a
+fractional float) as a key raises <code>invalid table key of type ...</code>.
+Reading with an invalid key just gives <code>nil</code>.</li>
+</ul>
+<pre><code><span class="kw">local</span> k1 = {}
+<span class="kw">local</span> k2 = {}
+<span class="kw">local</span> reg = {}
+reg[k1] = <span class="str">"first"</span>
+reg[k2] = <span class="str">"second"</span>
+<span class="fn">print</span>(reg[k1], reg[k2])   <span class="com">-- first  second  (identity, not contents)</span>
+
+<span class="kw">local</span> handlers = {}
+handlers[<span class="fn">print</span>] = <span class="str">"the print function"</span>   <span class="com">-- functions as keys</span></code></pre>
+
+<h3>Array part, map part, and #</h3>
+<p>Internally a table has two parts: a contiguous <b>array part</b> for integer
+keys 1, 2, 3, … with no gaps, and a <b>map part</b> for everything else. You
+normally never notice, but two things depend on it:</p>
+<ul>
+<li><code>#t</code> is the length of the <b>array part only</b>. Named keys and
+scattered integer keys do not count.</li>
+<li>Assigning to index <code>#t + 1</code> appends to the array part; this is
+what <code>table.insert(t, v)</code> does. <code>ipairs</code> walks the array
+part in order, while <code>pairs</code> visits every key in both parts.</li>
+</ul>
+<pre><code><span class="kw">local</span> t = { <span class="num">10</span>, <span class="num">20</span> }
+t[#t + <span class="num">1</span>] = <span class="num">30</span>          <span class="com">-- append; t is now { 10, 20, 30 }</span>
+t.label = <span class="str">"x"</span>
+<span class="fn">print</span>(#t)               <span class="com">-- 3   (label does not count)</span></code></pre>
+<p><code>table.clear(t)</code> empties both parts in place while keeping the
+table's identity and its metatable — useful when other code holds references to
+the same table. See the <a href="#stdlib">standard library</a> for the full
+<code>table</code> module (<code>insert</code>, <code>remove</code>,
+<code>concat</code>, <code>sort</code>, <code>unpack</code>, …).</p>
+
 <h3>Metatables</h3>
 <p>A metatable is a second table that controls how the first table behaves. By
 itself a plain table just stores keys and values. Attach a metatable to it, and
 you can change what happens when someone reads a missing key, calls the table,
 turns it into a string, or uses it with an operator like <code>+</code>.</p>
-<p>Set a metatable with <code>setmetatable(t, meta)</code> and read it back with
-<code>getmetatable(t)</code>. The special fields you put in the metatable are
-called metamethods, and their names all begin with two underscores.</p>
+<p>Set a metatable with <code>setmetatable(t, meta)</code> (it returns
+<code>t</code>; pass <code>nil</code> to remove the metatable) and read it back
+with <code>getmetatable(t)</code>. The special fields you put in the metatable
+are called metamethods, and their names all begin with two underscores.</p>
 <pre><code><span class="kw">local</span> base = { greet = <span class="kw">function</span>() <span class="kw">return</span> <span class="str">"hi"</span> <span class="kw">end</span> }
 <span class="kw">local</span> obj = <span class="fn">setmetatable</span>({}, { __index = base })
 <span class="fn">print</span>(obj.greet())   <span class="com">-- found through __index</span></code></pre>
@@ -78,6 +150,15 @@ the table. It is called as <code>__tostring(t)</code> and must return a string.<
 })
 <span class="fn">print</span>(point)   <span class="com">-- (1, 2)</span></code></pre>
 
+<h3>__type: naming the table's type</h3>
+<p>Read by the <code>TypeOf(v)</code> builtin (the plain <code>type(v)</code>
+builtin ignores metatables and still says <code>"table"</code>). It may be a
+plain string, or a function called as <code>__type(t)</code> that returns a
+string.</p>
+<pre><code><span class="kw">local</span> vec = <span class="fn">setmetatable</span>({}, { __type = <span class="str">"Vector"</span> })
+<span class="fn">print</span>(<span class="fn">TypeOf</span>(vec))   <span class="com">-- Vector</span>
+<span class="fn">print</span>(<span class="fn">type</span>(vec))     <span class="com">-- table</span></code></pre>
+
 <h3>__len: the length operator</h3>
 <p>Runs when you take the length with <code>#t</code>. It is called as
 <code>__len(t)</code> and should return a number.</p>
@@ -89,21 +170,28 @@ the table. It is called as <code>__tostring(t)</code> and must return a string.<
 <h3>__eq, __lt, __le: comparison</h3>
 <p>These let two tables be compared.</p>
 <ul>
-<li><code>__eq(a, b)</code> runs for <code>a == b</code> (and the opposite for
-<code>~=</code>). It only applies when both sides are tables. Return a boolean.</li>
-<li><code>__lt(a, b)</code> runs for <code>a &lt; b</code>. The greater-than form
-<code>a &gt; b</code> is handled by swapping the operands, so you do not write a
-separate one.</li>
-<li><code>__le(a, b)</code> runs for <code>a &lt;= b</code>, and <code>&gt;=</code>
-is derived the same way.</li>
+<li><code>__eq(a, b)</code> runs for <code>a == b</code> (and <code>~=</code> is
+its negation). It only applies when <b>both</b> sides are tables; comparing a
+table to anything else is plain <code>false</code>. Return a boolean.</li>
+<li><code>__lt(a, b)</code> runs for <code>a &lt; b</code>.</li>
+<li><code>__le(a, b)</code> runs for <code>a &lt;= b</code>.</li>
 </ul>
+<p>Note that on plain tables only <code>&lt;</code> and <code>&lt;=</code>
+consult the metatable. The flipped operators <code>&gt;</code> and
+<code>&gt;=</code> do <b>not</b> fall back to <code>__lt</code>/<code>__le</code>
+— <code>a &gt; b</code> between tables is a run-time error ("cannot compare
+table and table"), so write <code>b &lt; a</code> instead. (Class instances are
+more convenient: for them <code>&gt;</code> and <code>&gt;=</code> are derived
+automatically by swapping the operands of <code>operator &lt;</code> /
+<code>operator &lt;=</code>. See <a href="#classes">Classes</a>.)</p>
 <pre><code><span class="kw">local</span> meta = {
   __eq = <span class="kw">function</span>(a, b) <span class="kw">return</span> a.id == b.id <span class="kw">end</span>,
   __lt = <span class="kw">function</span>(a, b) <span class="kw">return</span> a.id &lt; b.id <span class="kw">end</span>,
 }
 <span class="kw">local</span> a = <span class="fn">setmetatable</span>({ id = <span class="num">1</span> }, meta)
 <span class="kw">local</span> b = <span class="fn">setmetatable</span>({ id = <span class="num">2</span> }, meta)
-<span class="fn">print</span>(a &lt; b, a &gt; b)   <span class="com">-- true  false</span></code></pre>
+<span class="fn">print</span>(a &lt; b)   <span class="com">-- true</span>
+<span class="fn">print</span>(b &lt; a)   <span class="com">-- false  (use this instead of a &gt; b)</span></code></pre>
 
 <h3>Arithmetic and concatenation</h3>
 <p>These run when a table is used with an arithmetic operator or
@@ -134,7 +222,8 @@ raw functions do exactly that: <code>rawget(t, key)</code> reads without
 <code>__index</code>, <code>rawset(t, key, value)</code> writes without
 <code>__newindex</code>, <code>rawlen(t)</code> takes the length without
 <code>__len</code>, and <code>rawequal(a, b)</code> compares without
-<code>__eq</code>.</p>
+<code>__eq</code>. There is no <code>__metatable</code> protection field:
+<code>getmetatable</code> always returns the real metatable.</p>
 
 <div class="note">The host program can attach native (Rust) functions as
 metamethods, so behavior like a custom <code>__index</code> can be driven from

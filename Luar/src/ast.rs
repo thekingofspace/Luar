@@ -88,6 +88,7 @@ pub enum Stmt {
         mixins: Vec<String>,
         interfaces: Vec<String>,
         members: Vec<ClassMember>,
+        line: u32,
     },
 
     Interface {
@@ -123,6 +124,7 @@ pub struct FnBody {
     pub params: Vec<String>,
     pub is_vararg: bool,
     pub body: Vec<Stmt>,
+    pub line: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -218,7 +220,7 @@ pub enum Expr {
 
     Call { callee: Box<Expr>, args: Vec<Expr> },
 
-    Function { name: String, params: Vec<String>, is_vararg: bool, body: Vec<Stmt> },
+    Function { name: String, params: Vec<String>, is_vararg: bool, body: Vec<Stmt>, line: u32 },
 
     Vararg,
 

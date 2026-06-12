@@ -1,13 +1,111 @@
 <h1 id="gc">Garbage collection</h1>
-<p>LUAR manages memory automatically. Heap objects (tables, functions, classes,
-interfaces, and coroutines) are reference-counted, and a tracing mark-and-sweep
-collector reclaims objects that are no longer reachable, including reference
-cycles that plain counting would miss.</p>
-<ul>
-<li>The collector traces from the active scope chain, the module root, and the
-shared global scope, marking everything reachable and freeing the rest.</li>
-<li>Collection runs automatically as the program allocates.</li>
-<li>You can force a collection at any point with <code>collectgarbage()</code>.</li>
-<li>Assigning <code>nil</code> to a binding (even an immutable one) drops its
-reference, which lets the value be collected if nothing else holds it.</li>
-</ul>
+<p>LUAR manages memory automatically. Heap objects (tables, functions, and
+classes) are reference-counted, so most values are reclaimed the instant the
+last reference to them disappears. On top of that, a tracing mark-and-sweep
+collector runs periodically to reclaim <b>reference cycles</b> &mdash;
+structures that point at each other and would otherwise keep themselves alive
+forever. You never free memory by hand; at most you drop a reference and let
+the system do the rest.</p>
+<pre><code><span class="kw">local</span> a = {}
+<span class="kw">local</span> b = {}
+a.other = b
+b.other = a          <span class="com">-- a cycle: each table keeps the other alive</span>
+a = <span class="kw">nil</span>
+b = <span class="kw">nil</span>              <span class="com">-- unreachable now; the collector reclaims the pair</span></code></pre>
+
+<h3>How a collection works</h3>
+<p>A collection starts from the <b>roots</b>: every variable on the active
+scope chain (which ends at the shared global scope), every variable in the
+module's root scope, and every <code>buff</code> variable. The mark phase
+follows everything reachable from those roots &mdash; table entries, table
+keys, metatables, the scopes captured by functions, and class members. The
+sweep phase then empties every table it could not reach. Emptying a table
+breaks any cycle running through it, and reference counting immediately frees
+everything the cycle was holding.</p>
+<p>Collections run at safe points <b>between top-level statements</b> &mdash;
+the interpreter never interrupts a statement halfway through. A collection is
+scheduled automatically once enough allocations have happened since the last
+one (10,000 by default), or on request with <code>collectgarbage()</code>.</p>
+
+<h3>collectgarbage()</h3>
+<p>The <code>collectgarbage()</code> builtin <b>requests</b> a collection: it
+flags the collector, and the actual collection runs at the next safe point. It
+takes no arguments and returns nothing.</p>
+<pre><code>build_temporary_world()      <span class="com">-- allocates heavily, then drops it all</span>
+<span class="fn">collectgarbage</span>()             <span class="com">-- reclaim it at the next statement boundary</span></code></pre>
+
+<h3>Freeing values yourself</h3>
+<p>You rarely need to. Assigning <code>nil</code> to a binding drops its
+reference, and the value is reclaimed once nothing else holds it. This is
+allowed even on an immutable binding &mdash; setting a <code>const</code> to
+<code>nil</code> is the sanctioned way to "free" it (any other reassignment is
+still an error).</p>
+<pre><code><span class="kw">const</span> cache = load_cache()
+<span class="com">-- ... use it ...</span>
+cache = <span class="kw">nil</span>   <span class="com">-- legal on a const: releases the binding</span></code></pre>
+<p>Two kinds of storage opt out of automatic collection: <code>buff</code>
+variables are roots that never go out of scope and are released only with
+<code>freebuff</code>, and a required module stays cached for the life of the
+program (a Rust host can evict one &mdash; see below).</p>
+
+<h3>Destructors run deterministically</h3>
+<p>A class <code>destructor</code> does not wait for the collector. It runs the
+moment the last variable holding the instance lets go of it &mdash; provided
+nothing else still refers to the object at that moment:</p>
+<table>
+<tr><th>Event</th><th>Example</th></tr>
+<tr><td>The scope holding the only reference ends</td><td>the end of a <code>do</code> block, a function returning, a loop iteration finishing</td></tr>
+<tr><td>The binding is reassigned</td><td><code>h = other</code></td></tr>
+<tr><td>The binding is set to <code>nil</code></td><td><code>h = nil</code></td></tr>
+<tr><td>A new declaration replaces the binding</td><td><code>local h = Handle(2)</code> over an existing <code>h</code></td></tr>
+</table>
+<p>If other references are still alive at that point (the instance was returned,
+stored in a table, or captured by a closure), the destructor is skipped and the
+object lives on. A destructor never re-enters itself, so cleanup code cannot
+trigger the same destructor recursively. See
+<a href="#classes">Classes</a> for how to declare one.</p>
+<pre><code><span class="kw">class</span> <span class="typ">Handle</span> {
+  <span class="kw">public</span> id: <span class="typ">number</span> = <span class="num">0</span>
+  <span class="kw">constructor</span>(id) self.id = id <span class="kw">end</span>
+  <span class="kw">destructor</span>() <span class="fn">print</span>(<span class="str">`closing {self.id}`</span>) <span class="kw">end</span>
+}
+
+<span class="kw">do</span>
+  <span class="kw">local</span> h = <span class="typ">Handle</span>(<span class="num">1</span>)
+<span class="kw">end</span>                     <span class="com">-- prints "closing 1" right here</span></code></pre>
+<p>One ordering rule worth knowing: a tail call (<code>return f(x)</code> as
+the entire return) dismantles the calling frame <i>before</i> <code>f</code>
+runs, so destructors for the caller's locals fire before the tail-called
+function executes, not after it returns.</p>
+<pre><code><span class="kw">local function</span> <span class="fn">step</span>()
+  <span class="kw">local</span> h = <span class="typ">Handle</span>(<span class="num">7</span>)
+  <span class="kw">return</span> <span class="fn">finish</span>()      <span class="com">-- tail call: "closing 7" prints before finish() runs</span>
+<span class="kw">end</span></code></pre>
+
+<h3>Script ownership (for Rust hosts)</h3>
+<p>Every function, table, and class remembers the <b>script</b> that created
+it. A script is one top-level program or one required module, identified by a
+numeric id. This lets a host that loads and unloads scripts at runtime tear one
+down completely without restarting the interpreter:</p>
+<table>
+<tr><th>Interpreter method</th><th>What it does</th></tr>
+<tr><td><code>current_script_id()</code></td><td>The id of this interpreter's own script.</td></tr>
+<tr><td><code>script_of_value(&amp;v)</code></td><td>The id of the script that created a function, table, or class value.</td></tr>
+<tr><td><code>source_of_value(&amp;v)</code></td><td>The source file path of that script, when one was registered with <code>set_source_path</code>.</td></tr>
+<tr><td><code>has_live_functions(id)</code> / <code>live_function_count(id)</code></td><td>Whether (and how many) functions created by the script are still reachable.</td></tr>
+<tr><td><code>free_script(id)</code></td><td>Kills every function the script created &mdash; marks them dead and replaces them with <code>nil</code> in every scope and every table &mdash; then clears the script's root scope.</td></tr>
+<tr><td><code>free_module(name)</code></td><td>Resolves <code>name</code> like <code>require</code> would, evicts it from the module cache, and frees its script.</td></tr>
+<tr><td><code>collect_garbage()</code></td><td>Runs a mark-and-sweep collection immediately.</td></tr>
+</table>
+<p>Calling a function from a freed script raises
+<code>attempt to call a function from a freed script</code>. This is the
+defensive backstop: after <code>free_script</code> the references themselves
+have already been nilled out everywhere, so a stale call can only happen
+through a handle the host itself kept.</p>
+<p>Lower-level knobs live in <code>luar::runtime::gc</code>:
+<code>set_threshold(n)</code> changes how many allocations pass between
+automatic collections, <code>request()</code> and <code>should_collect()</code>
+schedule and inspect a pending collection, and <code>live_objects()</code>
+counts the live tables and functions on the current thread's heap. The heap is
+<b>per-thread</b>: an interpreter and every value it creates must stay on the
+thread that created them.</p>

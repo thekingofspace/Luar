@@ -40,7 +40,6 @@ pub struct Native {
     pub func: NativeFn,
 }
 
-#[derive(Debug)]
 pub struct Function {
     pub name: String,
     pub params: Vec<Rc<str>>,
@@ -54,6 +53,20 @@ pub struct Function {
     pub(crate) dead: Cell<bool>,
 
     pub(crate) gc_mark: Cell<bool>,
+
+    pub(crate) defined_in: Option<Rc<Class>>,
+}
+
+impl fmt::Debug for Function {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Function")
+            .field("name", &self.name)
+            .field("params", &self.params)
+            .field("is_vararg", &self.is_vararg)
+            .field("script", &self.script)
+            .field("defined_in", &self.defined_in.as_ref().map(|c| c.name.clone()))
+            .finish()
+    }
 }
 
 pub struct FieldDef {
@@ -490,6 +503,17 @@ impl Value {
         body: Rc<Vec<Stmt>>,
         captured: ScopeRef,
     ) -> Value {
+        Self::function_in(name, params, is_vararg, body, captured, None)
+    }
+
+    pub fn function_in(
+        name: String,
+        params: Vec<String>,
+        is_vararg: bool,
+        body: Rc<Vec<Stmt>>,
+        captured: ScopeRef,
+        defined_in: Option<Rc<Class>>,
+    ) -> Value {
         let rc = Rc::new(Function {
             name,
             params: params.into_iter().map(Rc::from).collect(),
@@ -499,6 +523,7 @@ impl Value {
             script: gc::current_script(),
             dead: Cell::new(false),
             gc_mark: Cell::new(false),
+            defined_in,
         });
         gc::register_function(&rc);
         Value::Function(rc)

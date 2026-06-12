@@ -1,7 +1,8 @@
 <h1 id="overview">LUAR</h1>
 <p>LUAR is a small, class-based scripting language inspired by Lua and Luau. It
-has a tree-walking interpreter written in Rust, a static checker called Ferrite,
-a garbage collector, a precompilation format, and a host embedding API.</p>
+has a tree-walking interpreter written in Rust, a static checker called Ferrite
+that runs in your editor, real asynchronous coroutines, a garbage collector, a
+precompilation format, and a host embedding API for Rust programs.</p>
 
 <pre><code><span class="com">-- A documented function. Hover it in the editor to read this text.</span>
 <span class="com">-- @param name the person to greet</span>
@@ -37,7 +38,50 @@ then scrubbed before execution, so they cost nothing at run time.</li>
 overloading, getters and setters, and access control.</li>
 <li>Modules are files. <code>pub</code> declarations are shared across modules;
 everything else stays private to the file that declared it.</li>
-<li>Errors are values you catch with <code>pcall</code>.</li>
+<li>Runtime errors are caught with <code>pcall</code>, which returns
+<code>false</code> and the error message instead of crashing.</li>
 <li>The whole language runs on the interpreter, including precompiled code, so
 every feature is available everywhere.</li>
 </ul>
+
+<h3>Highlights</h3>
+<ul>
+<li><b><a href="#classes">Classes</a>.</b> Single inheritance with
+<code>extends</code>, <code>mixin</code> composition, <code>implements</code>
+contracts, <code>public</code>/<code>private</code>/<code>protected</code>/<code>static</code>
+members, <code>abstract</code>/<code>final</code>/<code>override</code>
+modifiers, operator overloading, getters and setters, and destructors that run
+deterministically when the last reference to an instance goes away.</li>
+<li><b>Static checking in the editor.</b> The <a href="#ferrite">Ferrite
+checker</a> runs over twenty lint checks on every edit, and the
+<a href="#lsp">language server</a> adds type inference, inlay hints, and its own
+diagnostics &mdash; all without a compile step, since checking happens on the
+source while the runtime stays dynamic. See <a href="#type-rules">Type
+rules</a>.</li>
+<li><b>Real async coroutines.</b> When a host-provided native blocks (a
+<code>wait</code>, a file read), the coroutine detaches and keeps running on its
+own thread while the main script continues; the host drains stragglers before
+exit. Scripted coroutines use the familiar
+<code>coroutine.create/resume/yield</code> API from the
+<a href="#stdlib">standard library</a>.</li>
+<li><b>Proper tail calls.</b> A <code>return f(x)</code> whose value is a single
+call reuses the current stack frame, so loops written as recursion &mdash;
+including mutual recursion &mdash; never overflow the stack. See
+<a href="#functions">Functions</a>.</li>
+<li><b>Memory you can steer.</b> A <a href="#gc">garbage collector</a> handles
+the common case, while <a href="#buff"><code>buff</code> declarations</a> give
+fixed-size, manually freed slots when you want control.</li>
+<li><b><a href="#precompilation">Precompilation</a>.</b> Pack a program to a
+binary <code>.luarb</code> file to ship without source text and skip parsing at
+load time; it runs on the same interpreter with every feature intact.</li>
+<li><b><a href="#host-api">Embeddable in Rust</a>.</b> A host can register
+native functions, define native classes, call script functions, launch them as
+background coroutines, and trace any value back to the script file that created
+it.</li>
+<li><b><a href="#modules">Modules</a>.</b> <code>require</code> with relative
+paths, <code>@alias</code> names from a <code>luari.json</code>, precompiled
+module fallback, caching, and circular-require detection.</li>
+</ul>
+
+<p>Ready to try it? <a href="#getting-started">Getting started</a> walks through
+building the runner, the first script, and the VS Code extension.</p>

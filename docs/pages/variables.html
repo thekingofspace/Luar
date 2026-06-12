@@ -36,27 +36,65 @@ everything else, including <code>0</code> and the empty string, is "truthy".</p>
 and <code>tonumber(text)</code>.</p>
 
 <h3>local, const, and bare assignment</h3>
-<pre><code><span class="kw">local</span> count = <span class="num">0</span>      <span class="com">-- reassignable</span>
+<p>There are two kinds of binding: <b>mutable</b> (reassignable) and
+<b>immutable</b>. Only <code>local</code> creates a mutable one — every other way
+of declaring defaults to immutable, including <code>const</code>, a bare
+assignment to a new name, a <code>pub</code> declaration with no other keyword,
+and <code>function</code> declarations.</p>
+<pre><code><span class="kw">local</span> count = <span class="num">0</span>      <span class="com">-- mutable: reassignment is fine</span>
 count = count + <span class="num">1</span>
 
 <span class="kw">const</span> PI = <span class="num">3.14159</span>  <span class="com">-- immutable</span>
 
-greeting = <span class="str">"hi"</span>        <span class="com">-- a bare name declares an immutable local</span></code></pre>
-<p>Assigning to an immutable binding is a Ferrite error, with one exception:
-assigning <code>nil</code> is allowed and frees what the binding held.</p>
+greeting = <span class="str">"hi"</span>        <span class="com">-- a bare new name declares an immutable local</span>
+pub version = <span class="num">1</span>        <span class="com">-- no `local` keyword, so also immutable</span></code></pre>
+<p>Reassigning an immutable binding fails at run time with
+<code>cannot assign to const 'name' (only `nil` may free it)</code>, and the
+Ferrite checker flags it while you type (MutateImmutable). The one exception is
+<code>nil</code>: assigning <code>nil</code> to an immutable binding is allowed
+and frees the value it held.</p>
 <pre><code><span class="kw">const</span> handle = openThing()
-handle = <span class="kw">nil</span>   <span class="com">-- allowed: releases the value</span></code></pre>
+handle = <span class="kw">nil</span>   <span class="com">-- allowed: releases the value</span>
+handle = <span class="num">5</span>     <span class="com">-- run-time error: cannot assign to const 'handle'</span></code></pre>
+<p>Compound assignment (<code>+=</code>, <code>-=</code>, <code>*=</code>,
+<code>/=</code>, <code>%=</code>, <code>..=</code>) reads, combines, and writes
+back in one statement, so it requires a mutable binding too.</p>
+<pre><code><span class="kw">local</span> msg = <span class="str">"a"</span>
+msg ..= <span class="str">"b"</span>     <span class="com">-- msg is now "ab"</span></code></pre>
 
-<h3>pub</h3>
+<h3>Type annotations</h3>
+<p>Any declaration may carry a type after the name. Annotations are used by the
+editor for checking, hovers, and completion, and are erased before the script
+runs — they never change behaviour.</p>
+<pre><code><span class="kw">local</span> age: <span class="typ">number</span> = <span class="num">30</span>
+<span class="kw">const</span> NAME: <span class="typ">string</span> = <span class="str">"luar"</span></code></pre>
+
+<h3>pub and export</h3>
 <p><code>pub</code> promotes a binding to the shared global scope. In a module a
 <code>pub</code> binding is visible to every file that requires it; without it,
-the binding stays private to the file.</p>
+the binding stays private to the file. Writing <code>export</code> before a
+declaration does the same thing as <code>pub</code>.</p>
 <pre><code><span class="kw">pub const</span> VERSION = <span class="str">"1.0"</span>   <span class="com">-- visible everywhere once required</span>
 <span class="kw">const</span> SECRET = <span class="str">"hidden"</span>      <span class="com">-- private to this file</span>
-<span class="kw">pub local</span> counter = <span class="num">0</span>       <span class="com">-- shared and reassignable</span></code></pre>
+<span class="kw">pub local</span> counter = <span class="num">0</span>       <span class="com">-- shared and reassignable</span>
+<span class="kw">export const</span> NAME = <span class="str">"luar"</span>  <span class="com">-- same as pub const</span></code></pre>
 
-<h3>Multiple declarations and scope</h3>
-<pre><code><span class="kw">local</span> a, b, c = <span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>
-<span class="kw">local</span> x, y = y, x       <span class="com">-- swap using multiple values</span></code></pre>
+<h3>Multiple declarations</h3>
+<p>One statement can declare several names. A declaration always needs an
+initializer — <code>local a</code> on its own is a syntax error; write
+<code>local a = nil</code> if you really want an empty slot. Values are matched
+to names left to right: names without a value get <code>nil</code>, and extra
+values are discarded. A function call (or <code>...</code>) in the last position
+supplies all of its values.</p>
+<pre><code><span class="kw">local</span> a, b, c = <span class="num">1</span>, <span class="num">2</span>     <span class="com">-- c is nil</span>
+<span class="kw">local</span> lo, hi = <span class="fn">minmax</span>(<span class="num">9</span>, <span class="num">4</span>)   <span class="com">-- both returns are used</span></code></pre>
+<p>Assignment to already-declared mutable variables works the same way, which
+gives the classic swap idiom — every value on the right is evaluated before
+anything is stored:</p>
+<pre><code><span class="kw">local</span> x, y = <span class="num">1</span>, <span class="num">2</span>
+x, y = y, x             <span class="com">-- x = 2, y = 1</span></code></pre>
+
+<h3>Scope and shadowing</h3>
 <p>Each block introduces a new scope. An inner declaration that reuses an outer
-name shadows it (Ferrite warns with ShadowedVariable).</p>
+name shadows it (Ferrite warns with ShadowedVariable). See
+<a href="#scope">Scope</a> for the full rules.</p>

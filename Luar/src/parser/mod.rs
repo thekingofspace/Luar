@@ -263,22 +263,24 @@ impl Parser {
                         break;
                     }
                 }
+                let fn_line = self.peek().span.line;
                 let (mut params, is_vararg, body) = self.parse_function_rest()?;
                 if is_method {
                     params.insert(0, "self".to_string());
                 }
-                let func = Expr::Function { name: String::new(), params, is_vararg, body };
+                let func = Expr::Function { name: String::new(), params, is_vararg, body, line: fn_line };
                 let lvalue = expr_to_lvalue(target)
                     .ok_or_else(|| self.error("invalid function declaration target"))?;
                 return Ok(Stmt::Assign { targets: vec![lvalue], op: AssignOp::Assign, values: vec![func], line });
             }
 
+            let fn_line = self.peek().span.line;
             let (params, is_vararg, body) = self.parse_function_rest()?;
             return Ok(Stmt::Declare {
                 visibility,
                 mutability,
                 names: vec![first.clone()],
-                inits: vec![Expr::Function { name: first, params, is_vararg, body }],
+                inits: vec![Expr::Function { name: first, params, is_vararg, body, line: fn_line }],
                 line,
             });
         }
@@ -304,6 +306,7 @@ impl Parser {
     }
 
     fn parse_class(&mut self) -> PResult<Stmt> {
+        let line = self.peek().span.line;
         let mut visibility = Visibility::Local;
         let mut is_final = false;
         let mut is_abstract = false;
@@ -346,7 +349,7 @@ impl Parser {
             members.push(self.parse_class_member()?);
         }
         self.expect_delim("}")?;
-        Ok(Stmt::Class { visibility, is_final, is_abstract, name, parent, mixins, interfaces, members })
+        Ok(Stmt::Class { visibility, is_final, is_abstract, name, parent, mixins, interfaces, members, line })
     }
 
     fn parse_interface(&mut self) -> PResult<Stmt> {
@@ -618,8 +621,9 @@ impl Parser {
     }
 
     fn parse_fn_body(&mut self) -> PResult<FnBody> {
+        let line = self.peek().span.line;
         let (params, is_vararg, body) = self.parse_function_rest()?;
-        Ok(FnBody { params, is_vararg, body })
+        Ok(FnBody { params, is_vararg, body, line })
     }
 
     fn parse_if(&mut self) -> PResult<Stmt> {
@@ -888,9 +892,10 @@ impl Parser {
                     Ok(Expr::Nil)
                 }
                 "function" => {
+                    let fn_line = self.peek().span.line;
                     self.bump();
                     let (params, is_vararg, body) = self.parse_function_rest()?;
-                    Ok(Expr::Function { name: String::new(), params, is_vararg, body })
+                    Ok(Expr::Function { name: String::new(), params, is_vararg, body, line: fn_line })
                 }
                 "switch" => self.parse_switch(),
                 _ => {
@@ -973,6 +978,9 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> PResult<Type> {
+        if self.eat_op("...") {
+            return self.parse_type_union();
+        }
         let left = self.parse_type_union()?;
 
         if self.eat_op("->") {
@@ -1000,8 +1008,13 @@ impl Parser {
 
     fn parse_type_postfix(&mut self) -> PResult<Type> {
         let mut ty = self.parse_type_primary()?;
-        while self.eat_op("?") {
-            ty = Type::Optional(Box::new(ty));
+        loop {
+            if self.eat_op("?") {
+                ty = Type::Optional(Box::new(ty));
+            } else if self.eat_op("...") {
+            } else {
+                break;
+            }
         }
         Ok(ty)
     }
@@ -1009,6 +1022,10 @@ impl Parser {
     fn parse_type_primary(&mut self) -> PResult<Type> {
         let t = self.peek().clone();
         match t.kind {
+            TokenKind::Operator if t.text.starts_with('<') => {
+                self.skip_type_arguments();
+                self.parse_type_primary()
+            }
             TokenKind::Str => {
                 self.bump();
                 Ok(Type::Literal(t.text))
@@ -1082,12 +1099,14 @@ impl Parser {
             match t.kind {
                 TokenKind::Eof => break,
                 TokenKind::Operator => {
+                    let mut prev = '\0';
                     for ch in t.text.chars() {
                         if ch == '<' {
                             depth += 1;
-                        } else if ch == '>' {
+                        } else if ch == '>' && prev != '-' {
                             depth -= 1;
                         }
+                        prev = ch;
                     }
                     self.bump();
                     if depth <= 0 {
@@ -1349,6 +1368,36 @@ mod tests {
         ] {
             assert!(parse(tokenize(src).unwrap()).is_ok(), "failed to parse: {src}");
         }
+    }
+
+    #[test]
+    fn variadic_function_types_parse() {
+        for src in [
+            "type fun = (...any) -> ...any",
+            "type f2 = (...) -> any",
+            "type f3 = (number, ...any) -> nil",
+            "local cb: (...any) -> any = nil",
+            "class C {\n    public SourceConnect:NotNil<(...any) -> any>\n}",
+            "class D {\n    constructor(var:(...any) -> ...any)\n    end\n}",
+            "class E {\n    public Handler:...any\n    constructor(var:...any)\n    end\n}",
+            "type V = (...any) ->...any",
+            "type GetServiceFn = <service>(self:any, Service:keyof<Services>) -> ValueOf<Services, service>",
+            "type F = <>(self:Game, Service:keyof<Services>) -> any",
+            "type Game = { GetService: <service>(self:Game, name:string) -> any }",
+            "export type Signal<T...> = {\n    Connect:(self:Signal<T...>, callback:(T...) -> () ) -> Connection,\n    Wait:(self:Signal<T...>) -> T...,\n    Fire:(self:Signal<T...>, T...) -> (),\n}",
+        ] {
+            assert!(parse(tokenize(src).unwrap()).is_ok(), "failed to parse: {src}");
+        }
+    }
+
+    #[test]
+    fn arrow_inside_generic_args_does_not_close_them() {
+        let src = "class C {\n    public a:NotNil<(...any) -> any>\n    public b: number = 1\n}";
+        let stmts = p(src);
+        let Stmt::Class { members, .. } = &stmts[0] else {
+            panic!("expected class");
+        };
+        assert_eq!(members.len(), 2, "{members:?}");
     }
 
     #[test]

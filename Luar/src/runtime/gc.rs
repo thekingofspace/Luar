@@ -290,6 +290,9 @@ fn mark_stack(stack: &mut Vec<Value>) {
                 if rc.gc_mark.replace(true) {
                     continue;
                 }
+                if let Some(class) = &rc.defined_in {
+                    stack.push(Value::Class(class.clone()));
+                }
                 let mut chain = Some(rc.captured.clone());
                 while let Some(scope) = chain {
                     stack.extend(scope_values(&scope));

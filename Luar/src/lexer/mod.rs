@@ -353,6 +353,12 @@ impl Lexer {
         let mut text = String::new();
         while let Some(c) = self.peek() {
             if SYMBOLS.contains(&c) {
+                if c == '.' && !text.is_empty() && !text.ends_with('.') {
+                    break;
+                }
+                if c == '<' && !text.is_empty() {
+                    break;
+                }
                 text.push(c);
                 self.bump();
             } else {
@@ -460,6 +466,34 @@ mod tests {
         assert_eq!(toks[1].kind, TokenKind::Operator);
         assert_eq!(toks[1].text, "==");
         assert_eq!(toks[3].text, "..");
+    }
+
+    #[test]
+    fn dots_split_from_preceding_operators() {
+        let toks = tokenize(":...").unwrap();
+        assert_eq!(toks[0].text, ":");
+        assert_eq!(toks[1].text, "...");
+        let toks = tokenize("->...").unwrap();
+        assert_eq!(toks[0].text, "->");
+        assert_eq!(toks[1].text, "...");
+        let toks = tokenize("...:").unwrap();
+        assert_eq!(toks[0].text, "...:");
+        let toks = tokenize("a..b").unwrap();
+        assert_eq!(toks[1].text, "..");
+    }
+
+    #[test]
+    fn angle_opens_split_from_preceding_operators() {
+        let toks = tokenize(":<").unwrap();
+        assert_eq!(toks[0].text, ":");
+        assert_eq!(toks[1].text, "<");
+        let toks = tokenize("=<").unwrap();
+        assert_eq!(toks[0].text, "=");
+        assert_eq!(toks[1].text, "<");
+        let toks = tokenize("a <= b").unwrap();
+        assert_eq!(toks[1].text, "<=");
+        let toks = tokenize("a < b").unwrap();
+        assert_eq!(toks[1].text, "<");
     }
 
     #[test]

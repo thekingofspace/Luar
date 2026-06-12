@@ -216,6 +216,7 @@ pub fn global_env() -> HashMap<String, Type> {
                     name: None,
                 })]),
             ),
+            ("clear", func(&["t"], false, vec![])),
         ]),
     );
 

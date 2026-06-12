@@ -13,7 +13,8 @@ The <code>.luar</code> extension is added for you.</p>
 <p><code>pub</code> declarations are published to the shared global scope, so any
 file that requires the module can use them. <code>local</code> and
 <code>const</code> declarations stay private to the module. A module can also
-return a value, which becomes the result of <code>require</code>.</p>
+return a value, which becomes the result of <code>require</code> &mdash; if it
+returns nothing, the requirer receives <code>nil</code>.</p>
 <pre><code><span class="com">-- greeting.luar</span>
 <span class="kw">pub const</span> SHARED_VERSION = <span class="str">"1.0"</span>   <span class="com">-- visible everywhere once required</span>
 <span class="kw">const</span> SECRET = <span class="str">"hidden"</span>            <span class="com">-- private to this module</span>
@@ -27,29 +28,108 @@ M.answer = <span class="num">42</span>
 <span class="fn">print</span>(g.hello(<span class="str">"luar"</span>))   <span class="com">-- the editor completes g.hello and g.answer</span>
 <span class="fn">print</span>(SHARED_VERSION)    <span class="com">-- available because it is pub</span></code></pre>
 
+<h3>How a path is resolved</h3>
+<p>For <code>require("&lt;path&gt;")</code>, LUAR tries these in order and loads
+the first that exists:</p>
+<table>
+<tr><th>Step</th><th>Looks for</th></tr>
+<tr><td>1</td><td><code>&lt;path&gt;.luar</code> &mdash; a source file</td></tr>
+<tr><td>2</td><td><code>&lt;path&gt;.luarb</code> &mdash; a precompiled file (see <a href="#precompilation">Precompilation</a>)</td></tr>
+<tr><td>3</td><td><code>&lt;path&gt;/init.luar</code> &mdash; a folder module</td></tr>
+<tr><td>4</td><td><code>&lt;path&gt;/init.luarb</code> &mdash; a precompiled folder module</td></tr>
+</table>
+<p>If none exists, the call fails with
+<code>require: cannot find module '&lt;path&gt;'</code>. A precompiled
+<code>.luarb</code> is a drop-in replacement for its source: anywhere
+<code>require</code> finds source, it accepts the packed form too.</p>
+
 <h3 id="folder-modules">Folder modules: init.luar</h3>
 <p>A folder can be a module. If a folder contains a file named
-<code>init.luar</code>, you can require the folder by name and that
-<code>init.luar</code> is what runs. This lets you group a feature into its own
-folder and present a single entry point.</p>
+<code>init.luar</code> (or <code>init.luarb</code>), you can require the folder
+by name and that init file is what runs. This lets you group a feature into its
+own folder and present a single entry point.</p>
 <pre><code>ui/
   init.luar      <span class="com"># this runs when you require("./ui")</span>
   button.luar
   slider.luar</code></pre>
 <pre><code><span class="kw">local</span> ui = <span class="fn">require</span>(<span class="str">"./ui"</span>)   <span class="com">-- runs ui/init.luar</span></code></pre>
-<p>When you require a path, LUAR looks for <code>&lt;path&gt;.luar</code> first,
-then falls back to <code>&lt;path&gt;/init.luar</code>.</p>
+<p>Inside an <code>init.luar</code>, paths starting with a dot resolve from the
+folder's <b>parent</b> directory &mdash; the folder module behaves like a file
+sitting next to its folder, so <code>require("./other")</code> in
+<code>ui/init.luar</code> finds <code>other.luar</code> beside <code>ui/</code>,
+not inside it. To reach files inside its own folder, an init file requires them
+without the leading <code>./</code> (for example <code>require("button")</code>),
+or gathers them all with <code>require("@self")</code>.</p>
 
 <h3 id="require-self">require("@self"): a folder's children</h3>
 <p>Inside an <code>init.luar</code> (or any file), <code>require("@self")</code>
 returns a table of every sibling module in the same folder. Each
-<code>name.luar</code> file (except <code>init.luar</code>) and each subfolder
-that has its own <code>init.luar</code> becomes an entry, keyed by its name and
-already required. This makes it easy for an <code>init.luar</code> to gather up
-its folder's pieces.</p>
+<code>name.luar</code> or <code>name.luarb</code> file (except the init file
+itself) and each subfolder that has its own <code>init.luar(b)</code> becomes an
+entry, keyed by its name and already required. Modules that are currently in the
+middle of being required are skipped, so an <code>init.luar</code> can safely
+gather up its folder's pieces.</p>
 <pre><code><span class="com">-- ui/init.luar</span>
 <span class="kw">local</span> parts = <span class="fn">require</span>(<span class="str">"@self"</span>)   <span class="com">-- { button = ..., slider = ... }</span>
 <span class="kw">return</span> {
   Button = parts.button,
   Slider = parts.slider,
 }</code></pre>
+
+<h3 id="aliases">Aliases: @name and luari.json</h3>
+<p>Relative paths get brittle in a deep tree &mdash; <code>"../../engine/audio"</code>
+breaks the moment a file moves. An <b>alias</b> names a folder once, in a config
+file, and every module can then require through it:</p>
+<pre><code><span class="kw">local</span> audio = <span class="fn">require</span>(<span class="str">"@engine/audio"</span>)   <span class="com">-- alias plus a sub-path</span>
+<span class="kw">local</span> eng   = <span class="fn">require</span>(<span class="str">"@engine"</span>)         <span class="com">-- or the alias root itself</span></code></pre>
+<p>Aliases are defined in a <code>luari.json</code> file (the names
+<code>luari</code> and <code>.luari</code> work too). Paths are relative to the
+folder containing the config file:</p>
+<pre><code>{
+  <span class="str">"aliases"</span>: {
+    <span class="str">"engine"</span>: <span class="str">"./src/engine"</span>,
+    <span class="str">"vendor"</span>: <span class="str">"./third_party"</span>
+  },
+  <span class="str">"luard"</span>: [<span class="str">"./types/host.luard"</span>]
+}</code></pre>
+<p>When a module requires <code>"@engine/..."</code>, LUAR walks <b>up</b> the
+directory tree from that module's folder, checking each level for
+<code>luari.json</code> / <code>luari</code> / <code>.luari</code>, until it
+finds one that defines the alias. A project usually keeps a single config at its
+root; nested configs simply win for the files beneath them. An alias nobody
+defines fails with <code>require: unknown alias '@engine' (define it in a
+luari.json file)</code>.</p>
+<p>The <code>"luard"</code> key in the example is read by the <b>editor</b>, not
+the runtime: it lists extra <code>.luard</code> ambient declaration files (a
+path or an array of paths, relative to the config) whose declarations the
+language server treats as globals in every file. The runtime only uses
+<code>"aliases"</code>.</p>
+<p>If no <code>luari.json</code> variant defines the alias at some level, a
+plain-text <code>.luarrc</code> file is also consulted there: one
+<code>@name = path</code> (or <code>name = path</code>) per line, with
+<code>#</code> for comments.</p>
+<pre><code><span class="com"># .luarrc — same idea, plain text</span>
+@engine = src/engine
+@vendor = third_party</code></pre>
+
+<h3>The module cache</h3>
+<p>Each module runs <b>once</b>. The first <code>require</code> executes the
+file and caches its returned value under the file's canonical path; every later
+require of the same file &mdash; through any spelling, relative path, or alias
+that reaches it &mdash; returns the same cached value without running anything.
+This is what makes a module table a safe place for shared state, and why
+top-level side effects (prints, registrations) happen only on the first
+require.</p>
+<p>The cache lives for the whole program. A Rust host can evict one module with
+<code>free_module(name)</code>, which also tears down the module's functions
+&mdash; see <a href="#gc">Garbage collection</a>; the next require then runs the
+file fresh.</p>
+
+<h3>Require cycles</h3>
+<p>If module A requires B while B is (directly or indirectly) requiring A, the
+require fails immediately rather than looping forever. The error spells out the
+whole chain:</p>
+<pre><code>require: circular require of './a' (a.luar -&gt; b.luar -&gt; a.luar)</code></pre>
+<p>The usual fix is to move the shared piece into a third module both can
+require, or to pass the value in as an argument instead of requiring it back.
+The editor also flags cycles as you type, before anything runs.</p>

@@ -5,79 +5,96 @@
 function with a dot, like <code>string.upper("hi")</code>. Every function is
 listed below with what it does. Positions in strings and arrays are 1-based: the
 first item is at index 1.</p>
+<p>There is no method-call sugar on values: <code>("hi"):upper()</code> does not
+work &mdash; always call through the namespace, <code>string.upper("hi")</code>.</p>
 
 <h2 id="string">string</h2>
-<p>Functions for working with text.</p>
+<p>Functions for working with text. All positions count <em>characters</em>
+(Unicode code points), not bytes. There are no Lua patterns &mdash; searching
+and splitting use plain text. Where a string is expected, a number is accepted
+and converted automatically.</p>
 <table>
 <tr><th>Function</th><th>Description</th></tr>
 <tr><td><code>string.len(s)</code></td><td>The number of characters in <code>s</code>. Same as <code>#s</code>.</td></tr>
-<tr><td><code>string.sub(s, i, j)</code></td><td>The part of <code>s</code> from position <code>i</code> to <code>j</code> (inclusive). <code>j</code> may be omitted to go to the end.</td></tr>
+<tr><td><code>string.sub(s, i, j?)</code></td><td>The part of <code>s</code> from position <code>i</code> to <code>j</code> (inclusive). Negative positions count from the end (<code>-1</code> is the last character); <code>j</code> defaults to <code>-1</code>. An empty range gives <code>""</code>.</td></tr>
 <tr><td><code>string.upper(s)</code></td><td>A copy of <code>s</code> with letters uppercased.</td></tr>
 <tr><td><code>string.lower(s)</code></td><td>A copy of <code>s</code> with letters lowercased.</td></tr>
-<tr><td><code>string.rep(s, n)</code></td><td>The string <code>s</code> repeated <code>n</code> times.</td></tr>
+<tr><td><code>string.rep(s, n, sep?)</code></td><td>The string <code>s</code> repeated <code>n</code> times, with <code>sep</code> between copies when given. <code>n</code> of zero or less gives <code>""</code>.</td></tr>
 <tr><td><code>string.reverse(s)</code></td><td>The characters of <code>s</code> in reverse order.</td></tr>
-<tr><td><code>string.byte(s, i)</code></td><td>The numeric code of the character at position <code>i</code>.</td></tr>
-<tr><td><code>string.char(...)</code></td><td>A string built from the given character codes.</td></tr>
-<tr><td><code>string.find(s, sub)</code></td><td>The start and end positions of the first occurrence of <code>sub</code> in <code>s</code>, or nil if not found.</td></tr>
+<tr><td><code>string.byte(s, i?, j?)</code></td><td>The numeric codes of the characters from position <code>i</code> to <code>j</code>, as multiple return values. <code>i</code> defaults to 1, <code>j</code> defaults to <code>i</code> (one code); negative <code>i</code> counts from the end.</td></tr>
+<tr><td><code>string.char(...)</code></td><td>A string built from the given character codes. An invalid code is an error.</td></tr>
+<tr><td><code>string.find(s, sub, init?)</code></td><td>The start and end positions of the first occurrence of <code>sub</code> in <code>s</code> at or after position <code>init</code> (default 1), or <code>nil</code> if not found. Plain text only &mdash; no patterns.</td></tr>
 <tr><td><code>string.contains(s, sub)</code></td><td>True if <code>s</code> contains <code>sub</code>.</td></tr>
 <tr><td><code>string.startswith(s, prefix)</code></td><td>True if <code>s</code> begins with <code>prefix</code>.</td></tr>
 <tr><td><code>string.endswith(s, suffix)</code></td><td>True if <code>s</code> ends with <code>suffix</code>.</td></tr>
 <tr><td><code>string.trim(s)</code></td><td>A copy of <code>s</code> with leading and trailing whitespace removed.</td></tr>
-<tr><td><code>string.split(s, sep)</code></td><td>An array of the pieces of <code>s</code> split on each occurrence of <code>sep</code>.</td></tr>
-<tr><td><code>string.format(fmt, ...)</code></td><td>A formatted string. <code>fmt</code> contains placeholders such as <code>%s</code> (string), <code>%d</code> (integer), <code>%f</code> or <code>%.2f</code> (float), and <code>%x</code> (hex), filled in by the remaining arguments.</td></tr>
+<tr><td><code>string.split(s, sep?)</code></td><td>An array of the pieces of <code>s</code> split on each occurrence of <code>sep</code>. <code>sep</code> defaults to a single space; an empty <code>sep</code> splits into individual characters.</td></tr>
+<tr><td><code>string.format(fmt, ...)</code></td><td>A formatted string. Supported placeholders: <code>%s</code> (any value), <code>%d</code> / <code>%i</code> (integer), <code>%x</code> / <code>%X</code> (hex), <code>%f</code> / <code>%g</code> (float, with optional precision like <code>%.2f</code>), and <code>%%</code> for a literal percent. Unrecognized placeholders are copied through unchanged.</td></tr>
 </table>
 <pre><code><span class="fn">print</span>(<span class="typ">string</span>.upper(<span class="str">"luar"</span>))                 <span class="com">-- LUAR</span>
 <span class="fn">print</span>(<span class="typ">string</span>.sub(<span class="str">"hello"</span>, <span class="num">1</span>, <span class="num">3</span>))           <span class="com">-- hel</span>
+<span class="fn">print</span>(<span class="typ">string</span>.sub(<span class="str">"hello"</span>, <span class="num">-3</span>))             <span class="com">-- llo</span>
 <span class="fn">print</span>(<span class="typ">string</span>.split(<span class="str">"a,b,c"</span>, <span class="str">","</span>))            <span class="com">-- { "a", "b", "c" }</span>
-<span class="fn">print</span>(<span class="typ">string</span>.format(<span class="str">"%s is %d"</span>, <span class="str">"x"</span>, <span class="num">42</span>))   <span class="com">-- x is 42</span></code></pre>
+<span class="fn">print</span>(<span class="typ">string</span>.rep(<span class="str">"ab"</span>, <span class="num">3</span>, <span class="str">"-"</span>))            <span class="com">-- ab-ab-ab</span>
+<span class="fn">print</span>(<span class="typ">string</span>.format(<span class="str">"%s is %.2f"</span>, <span class="str">"x"</span>, <span class="num">1.5</span>)) <span class="com">-- x is 1.50</span></code></pre>
 
 <h2 id="table">table</h2>
-<p>Functions for working with tables used as arrays.</p>
+<p>Functions for working with tables used as arrays. They operate on the
+contiguous array part (indices 1, 2, 3, ...); see
+<a href="#tables">Tables</a> for how the array and hash parts work.</p>
 <table>
 <tr><th>Function</th><th>Description</th></tr>
-<tr><td><code>table.insert(t, value)</code></td><td>Append <code>value</code> to the end of the array.</td></tr>
-<tr><td><code>table.insert(t, pos, value)</code></td><td>Insert <code>value</code> at position <code>pos</code>, shifting later items up.</td></tr>
-<tr><td><code>table.remove(t)</code></td><td>Remove and return the last element.</td></tr>
-<tr><td><code>table.remove(t, pos)</code></td><td>Remove and return the element at <code>pos</code>, shifting later items down.</td></tr>
-<tr><td><code>table.concat(t, sep)</code></td><td>Join an array of strings into one string, separated by <code>sep</code>.</td></tr>
-<tr><td><code>table.sort(t)</code></td><td>Sort the array in place in ascending order.</td></tr>
-<tr><td><code>table.sort(t, compare)</code></td><td>Sort using a comparator function; <code>compare(a, b)</code> returns true if <code>a</code> should come before <code>b</code>.</td></tr>
-<tr><td><code>table.keys(t)</code></td><td>An array of the table's keys.</td></tr>
-<tr><td><code>table.pack(...)</code></td><td>Collect the given values into a new array.</td></tr>
-<tr><td><code>table.unpack(t)</code></td><td>Expand an array into multiple return values.</td></tr>
+<tr><td><code>table.insert(t, value)</code></td><td>Append <code>value</code> to the end of the array. Returns nothing.</td></tr>
+<tr><td><code>table.insert(t, pos, value)</code></td><td>Insert <code>value</code> at position <code>pos</code> (clamped into range), shifting later items up. On a fixed-size <a href="#buff">buff</a> table that is already full, inserting is a "buff overflow" error.</td></tr>
+<tr><td><code>table.remove(t, pos?)</code></td><td>Remove and return the element at <code>pos</code> (default: the last element), shifting later items down. Returns <code>nil</code> when the array is empty or <code>pos</code> is out of range.</td></tr>
+<tr><td><code>table.concat(t, sep?, i?, j?)</code></td><td>Join the elements from index <code>i</code> to <code>j</code> (defaults: the whole array) into one string, separated by <code>sep</code> (default <code>""</code>). Each element is converted to its string form.</td></tr>
+<tr><td><code>table.sort(t, compare?)</code></td><td>Sort the array part in place, ascending by <code>&lt;</code>. With a comparator, <code>compare(a, b)</code> must return true when <code>a</code> should come before <code>b</code>. The sort is stable: equal elements keep their order. Returns nothing.</td></tr>
+<tr><td><code>table.keys(t)</code></td><td>A new array of the table's keys: the array indices <code>1..#t</code> first, then the hash-part keys (in no particular order).</td></tr>
+<tr><td><code>table.clear(t)</code></td><td>Remove every entry (array and hash part) from the table <em>in place</em>, keeping its metatable. Returns nothing. Because the same table object is emptied, every other reference to it sees the now-empty table.</td></tr>
+<tr><td><code>table.pack(...)</code></td><td>Collect the given values into a new array table, with an extra field <code>n</code> holding the count.</td></tr>
+<tr><td><code>table.unpack(t, i?, j?)</code></td><td>Expand the elements from index <code>i</code> to <code>j</code> (defaults: the whole array) into multiple return values. There is no global <code>unpack</code> &mdash; only this one.</td></tr>
 </table>
 <pre><code><span class="kw">local</span> t = { <span class="num">3</span>, <span class="num">1</span>, <span class="num">2</span> }
 <span class="typ">table</span>.insert(t, <span class="num">4</span>)
 <span class="typ">table</span>.sort(t)
 <span class="fn">print</span>(<span class="typ">table</span>.concat(t, <span class="str">", "</span>))   <span class="com">-- 1, 2, 3, 4</span>
-<span class="typ">table</span>.sort(t, <span class="kw">function</span>(a, b) <span class="kw">return</span> a &gt; b <span class="kw">end</span>)   <span class="com">-- descending</span></code></pre>
+<span class="typ">table</span>.sort(t, <span class="kw">function</span>(a, b) <span class="kw">return</span> a &gt; b <span class="kw">end</span>)   <span class="com">-- descending</span>
+
+<span class="kw">local</span> packed = <span class="typ">table</span>.pack(<span class="str">"a"</span>, <span class="str">"b"</span>)
+<span class="fn">print</span>(packed.n)                  <span class="com">-- 2</span>
+<span class="fn">print</span>(<span class="typ">table</span>.unpack(packed, <span class="num">1</span>, packed.n))   <span class="com">-- a   b</span></code></pre>
 
 <h2 id="math">math</h2>
-<p>Numeric functions and constants.</p>
+<p>Numeric functions and constants. They accept any number; a string that looks
+like a number (such as <code>"10"</code>) is converted automatically. Functions
+marked with results that "collapse to integers" return an integer whenever the
+mathematical result is whole (so <code>math.floor(2.7)</code> is the integer
+<code>2</code>, not <code>2.0</code>).</p>
 <table>
 <tr><th>Function</th><th>Description</th></tr>
-<tr><td><code>math.abs(x)</code></td><td>The absolute value of <code>x</code>.</td></tr>
-<tr><td><code>math.ceil(x)</code></td><td>The smallest integer not less than <code>x</code> (round up).</td></tr>
-<tr><td><code>math.floor(x)</code></td><td>The largest integer not greater than <code>x</code> (round down).</td></tr>
-<tr><td><code>math.round(x)</code></td><td><code>x</code> rounded to the nearest integer.</td></tr>
-<tr><td><code>math.sqrt(x)</code></td><td>The square root of <code>x</code>.</td></tr>
-<tr><td><code>math.sin(x)</code>, <code>math.cos(x)</code>, <code>math.tan(x)</code></td><td>Trigonometric functions; <code>x</code> is in radians.</td></tr>
-<tr><td><code>math.asin(x)</code>, <code>math.acos(x)</code>, <code>math.atan(x)</code></td><td>Inverse trigonometric functions.</td></tr>
-<tr><td><code>math.exp(x)</code></td><td>e raised to the power <code>x</code>.</td></tr>
-<tr><td><code>math.log(x)</code></td><td>The natural logarithm of <code>x</code>.</td></tr>
-<tr><td><code>math.pow(x, y)</code></td><td><code>x</code> raised to the power <code>y</code> (same as <code>x ^ y</code>).</td></tr>
-<tr><td><code>math.fmod(x, y)</code></td><td>The remainder of dividing <code>x</code> by <code>y</code>.</td></tr>
-<tr><td><code>math.modf(x)</code></td><td>The integer and fractional parts of <code>x</code>.</td></tr>
-<tr><td><code>math.max(...)</code></td><td>The largest of the given numbers.</td></tr>
-<tr><td><code>math.min(...)</code></td><td>The smallest of the given numbers.</td></tr>
+<tr><td><code>math.abs(x)</code></td><td>The absolute value of <code>x</code>. Whole results collapse to integers.</td></tr>
+<tr><td><code>math.ceil(x)</code></td><td>The smallest integer not less than <code>x</code> (round up). Returns an integer.</td></tr>
+<tr><td><code>math.floor(x)</code></td><td>The largest integer not greater than <code>x</code> (round down). Returns an integer. Useful after <code>/</code>, which always produces a float.</td></tr>
+<tr><td><code>math.round(x)</code></td><td><code>x</code> rounded to the nearest integer. Returns an integer.</td></tr>
+<tr><td><code>math.sqrt(x)</code></td><td>The square root of <code>x</code>. Whole results collapse to integers.</td></tr>
+<tr><td><code>math.sin(x)</code>, <code>math.cos(x)</code>, <code>math.tan(x)</code></td><td>Trigonometric functions; <code>x</code> is in radians. Return floats.</td></tr>
+<tr><td><code>math.asin(x)</code>, <code>math.acos(x)</code></td><td>Inverse trigonometric functions. Return floats (radians).</td></tr>
+<tr><td><code>math.atan(y, x?)</code></td><td>The arc tangent of <code>y</code>, in radians. With two arguments it is the two-argument form (<code>atan2</code>): the angle of the point <code>(x, y)</code>, using the signs of both to pick the quadrant.</td></tr>
+<tr><td><code>math.exp(x)</code></td><td>e raised to the power <code>x</code>. Returns a float.</td></tr>
+<tr><td><code>math.log(x, base?)</code></td><td>The natural logarithm of <code>x</code>, or the logarithm in the given <code>base</code>. Returns a float.</td></tr>
+<tr><td><code>math.pow(x, y)</code></td><td><code>x</code> raised to the power <code>y</code> (same as <code>x ^ y</code>). Whole results collapse to integers.</td></tr>
+<tr><td><code>math.fmod(x, y)</code></td><td>The remainder of <code>x / y</code>, truncated toward zero (the result keeps the sign of <code>x</code>). Always a float. Note this differs from the <code>%</code> operator, which floor-divides.</td></tr>
+<tr><td><code>math.modf(x)</code></td><td>Two return values: the integer part of <code>x</code> (as an integer) and the fractional part (as a float).</td></tr>
+<tr><td><code>math.max(...)</code></td><td>The largest of the given numbers. At least one argument is required.</td></tr>
+<tr><td><code>math.min(...)</code></td><td>The smallest of the given numbers. At least one argument is required.</td></tr>
 <tr><td><code>math.clamp(x, lo, hi)</code></td><td><code>x</code> limited to the range <code>lo</code> to <code>hi</code>.</td></tr>
-<tr><td><code>math.sign(x)</code></td><td><code>-1</code>, <code>0</code>, or <code>1</code> depending on the sign of <code>x</code>.</td></tr>
-<tr><td><code>math.deg(x)</code></td><td>Radians converted to degrees.</td></tr>
-<tr><td><code>math.rad(x)</code></td><td>Degrees converted to radians.</td></tr>
+<tr><td><code>math.sign(x)</code></td><td>The integer <code>-1</code>, <code>0</code>, or <code>1</code> depending on the sign of <code>x</code>.</td></tr>
+<tr><td><code>math.deg(x)</code></td><td>Radians converted to degrees (float).</td></tr>
+<tr><td><code>math.rad(x)</code></td><td>Degrees converted to radians (float).</td></tr>
 <tr><td><code>math.random()</code></td><td>A random float in the range 0 (inclusive) to 1 (exclusive).</td></tr>
-<tr><td><code>math.random(m)</code></td><td>A random integer from 1 to <code>m</code>.</td></tr>
-<tr><td><code>math.random(lo, hi)</code></td><td>A random integer from <code>lo</code> to <code>hi</code>.</td></tr>
-<tr><td><code>math.randomseed(n)</code></td><td>Seed the random generator so results are repeatable.</td></tr>
+<tr><td><code>math.random(m)</code></td><td>A random integer from 1 to <code>m</code> inclusive. <code>m</code> less than 1 is an error ("interval is empty").</td></tr>
+<tr><td><code>math.random(lo, hi)</code></td><td>A random integer from <code>lo</code> to <code>hi</code> inclusive. <code>hi &lt; lo</code> is an error.</td></tr>
+<tr><td><code>math.randomseed(n)</code></td><td>Seed the random generator so the sequence is repeatable. Returns nothing. The generator is per thread, so each coroutine has its own sequence.</td></tr>
 </table>
 <table>
 <tr><th>Constant</th><th>Value</th></tr>
@@ -87,37 +104,41 @@ first item is at index 1.</p>
 </table>
 
 <h2 id="bit32">bit32</h2>
-<p>Bitwise operations on integers, treated as 32-bit.</p>
+<p>Bitwise operations on integers, treated as 32-bit unsigned values. Arguments
+are truncated to 32 bits; results are integers in the range 0 to
+4294967295 (so <code>bit32.bnot(0)</code> is <code>4294967295</code>, not
+<code>-1</code>).</p>
 <table>
 <tr><th>Function</th><th>Description</th></tr>
-<tr><td><code>bit32.band(a, b, ...)</code></td><td>Bitwise AND of the arguments.</td></tr>
-<tr><td><code>bit32.bor(a, b, ...)</code></td><td>Bitwise OR.</td></tr>
-<tr><td><code>bit32.bxor(a, b, ...)</code></td><td>Bitwise exclusive OR.</td></tr>
+<tr><td><code>bit32.band(...)</code></td><td>Bitwise AND of all the arguments.</td></tr>
+<tr><td><code>bit32.bor(...)</code></td><td>Bitwise OR of all the arguments.</td></tr>
+<tr><td><code>bit32.bxor(...)</code></td><td>Bitwise exclusive OR of all the arguments.</td></tr>
 <tr><td><code>bit32.bnot(a)</code></td><td>Bitwise NOT (flip every bit).</td></tr>
-<tr><td><code>bit32.lshift(a, n)</code></td><td>Shift <code>a</code> left by <code>n</code> bits.</td></tr>
-<tr><td><code>bit32.rshift(a, n)</code></td><td>Shift <code>a</code> right by <code>n</code> bits (zero fill).</td></tr>
-<tr><td><code>bit32.arshift(a, n)</code></td><td>Arithmetic right shift (sign-preserving).</td></tr>
+<tr><td><code>bit32.lshift(a, n)</code></td><td>Shift <code>a</code> left by <code>n</code> bits. <code>n</code> outside 0&ndash;31 gives 0.</td></tr>
+<tr><td><code>bit32.rshift(a, n)</code></td><td>Shift <code>a</code> right by <code>n</code> bits, filling with zeros. <code>n</code> outside 0&ndash;31 gives 0.</td></tr>
+<tr><td><code>bit32.arshift(a, n)</code></td><td>Arithmetic right shift: the sign bit is copied into the vacated bits. A negative <code>n</code> shifts left instead; <code>n</code> of 32 or more gives 0 (or 4294967295 when the sign bit was set).</td></tr>
 </table>
 
 <h2 id="os">os</h2>
 <table>
 <tr><th>Function</th><th>Description</th></tr>
-<tr><td><code>os.time()</code></td><td>The current time, in seconds.</td></tr>
-<tr><td><code>os.clock()</code></td><td>A high-resolution timer, useful for measuring how long something takes.</td></tr>
+<tr><td><code>os.time()</code></td><td>The current time as an integer: seconds since the Unix epoch.</td></tr>
+<tr><td><code>os.clock()</code></td><td>A float: seconds elapsed since the program first called it. Useful for measuring how long something takes; subtract two readings.</td></tr>
 </table>
+<p>There is no <code>os.date</code>.</p>
 
 <h2 id="coroutine">coroutine</h2>
 <p>A coroutine is a function that can pause itself and be resumed later, keeping
-its place and its local variables. It is a way to write code that yields control
-and continues where it left off, without threads.</p>
+its place and its local variables. Coroutines share the globals of the script
+that created them.</p>
 <table>
 <tr><th>Function</th><th>Description</th></tr>
-<tr><td><code>coroutine.create(fn)</code></td><td>Make a new coroutine that will run <code>fn</code> when first resumed.</td></tr>
-<tr><td><code>coroutine.resume(co, ...)</code></td><td>Start or continue a coroutine. The arguments are passed to the function on the first resume, or become the result of the matching <code>yield</code> after that. Returns whether it succeeded plus any yielded or returned values.</td></tr>
-<tr><td><code>coroutine.yield(...)</code></td><td>Pause the current coroutine, handing the given values back to whoever resumed it.</td></tr>
-<tr><td><code>coroutine.status(co)</code></td><td>The coroutine's state, such as suspended, running, or dead.</td></tr>
+<tr><td><code>coroutine.create(fn)</code></td><td>Make a new coroutine that will run <code>fn</code> when first resumed. <code>fn</code> must be a function. Returns a thread value.</td></tr>
+<tr><td><code>coroutine.resume(co, ...)</code></td><td>Start or continue a coroutine. The arguments are passed to the function on the first resume, or become the result of the matching <code>yield</code> after that. Returns <code>true</code> followed by the yielded or returned values, or <code>false</code> followed by an error message (for example when resuming a dead or waiting coroutine).</td></tr>
+<tr><td><code>coroutine.yield(...)</code></td><td>Pause the current coroutine, handing the given values back to whoever resumed it. Returns whatever the next resume passes in. Yielding from the main thread is an error.</td></tr>
+<tr><td><code>coroutine.status(co)</code></td><td>The coroutine's state as a string: <code>"suspended"</code> (ready to resume), <code>"running"</code> (executing, including in the background), <code>"waiting"</code> (blocked inside a host call), or <code>"dead"</code> (finished or failed).</td></tr>
 <tr><td><code>coroutine.running()</code></td><td>The coroutine running right now, plus a boolean that is <code>true</code> when it is the main thread. The main thread is itself a coroutine, so you always get a thread back; inside a coroutine you get that coroutine and <code>false</code>.</td></tr>
-<tr><td><code>coroutine.close(co)</code></td><td>Finish a suspended coroutine so it can be cleaned up.</td></tr>
+<tr><td><code>coroutine.close(co)</code></td><td>Finish a suspended coroutine so it can be cleaned up. Returns a boolean: whether it was closed.</td></tr>
 </table>
 <pre><code><span class="kw">local</span> co = <span class="typ">coroutine</span>.create(<span class="kw">function</span>(a)
   <span class="fn">print</span>(<span class="str">"start"</span>, a)
@@ -126,6 +147,30 @@ and continues where it left off, without threads.</p>
 <span class="kw">end</span>)
 <span class="typ">coroutine</span>.resume(co, <span class="num">10</span>)   <span class="com">-- start: 10   then yields 11</span>
 <span class="typ">coroutine</span>.resume(co, <span class="num">20</span>)   <span class="com">-- resumed with: 20</span></code></pre>
+
+<h3 id="coroutine-async">Coroutines really run together</h3>
+<p>Unlike classic Lua coroutines, LUAR coroutines are not purely cooperative:
+each one runs on its own thread, coordinated by a lock so that only one piece of
+LUAR code executes at a time. Your code still behaves single-threaded, but a
+slow or blocked coroutine does not stop the others. Two things follow from
+this:</p>
+<ul>
+<li><strong>A long resume moves to the background.</strong> If a resume does not
+yield or return within a short grace period, <code>coroutine.resume</code>
+returns just <code>true</code> and the coroutine keeps running on its own; its
+status stays <code>"running"</code>. Resuming it again waits for its next yield
+or return.</li>
+<li><strong>Blocking host calls detach.</strong> When a coroutine calls a host
+function that blocks (such as a <code>wait</code> or sleep provided by the
+embedding program), the coroutine detaches: its status becomes
+<code>"waiting"</code> and the rest of the program continues immediately. A
+waiting coroutine cannot be resumed by hand &mdash; <code>coroutine.resume</code>
+returns <code>false, "cannot resume waiting coroutine"</code> &mdash; it picks
+itself back up when the blocking work finishes.</li>
+</ul>
+<p>The standalone runner (and the standard host setup) waits for all background
+and waiting coroutines to finish before the program exits, so work started this
+way is not cut short.</p>
 
 <h2 id="global-builtins">Global builtins</h2>
 <p>Besides the namespaces above, there are functions available directly without a

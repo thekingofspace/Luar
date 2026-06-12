@@ -10,10 +10,12 @@ pub enum TypeExpr {
     Intersection(Vec<TypeExpr>),
     Table(TableTypeExpr),
     Function {
+        generics: Vec<String>,
         params: Vec<Param>,
         ret: Box<TypeExpr>,
     },
     Tuple(Vec<TypeExpr>),
+    Pack(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -161,8 +163,17 @@ impl fmt::Display for TypeExpr {
                 Ok(())
             }
             TypeExpr::Table(t) => write!(f, "{t}"),
-            TypeExpr::Function { params, ret } => {
-                if params.len() == 1
+            TypeExpr::Function { generics, params, ret } => {
+                if !generics.is_empty() {
+                    write!(f, "<")?;
+                    for (i, g) in generics.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{g}")?;
+                    }
+                    write!(f, ">")?;
+                } else if params.len() == 1
                     && matches!(
                         &params[0],
                         Param::Positional { name: None, ty }
@@ -193,6 +204,7 @@ impl fmt::Display for TypeExpr {
                 }
                 write!(f, ")")
             }
+            TypeExpr::Pack(name) => write!(f, "{name}..."),
         }
     }
 }

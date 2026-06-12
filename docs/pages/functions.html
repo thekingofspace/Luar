@@ -1,13 +1,57 @@
 <h1 id="functions">Functions</h1>
 
 <h3>Declaring functions</h3>
-<pre><code><span class="kw">function</span> <span class="fn">add</span>(a, b)
+<p>A plain <code>function</code> declaration creates an <b>immutable</b> binding
+(the same as <code>const</code>). Prefix it with <code>local</code> to get a
+binding you can reassign later, or with <code>pub</code> to share it with other
+files (see <a href="#variables">Variables</a>).</p>
+<pre><code><span class="kw">function</span> <span class="fn">add</span>(a, b)      <span class="com">-- immutable binding, like const</span>
   <span class="kw">return</span> a + b
 <span class="kw">end</span>
 
-<span class="kw">local function</span> <span class="fn">helper</span>()
+<span class="kw">local function</span> <span class="fn">helper</span>()  <span class="com">-- reassignable binding</span>
   <span class="kw">return</span> <span class="num">1</span>
+<span class="kw">end</span>
+
+<span class="kw">pub function</span> <span class="fn">shared</span>()    <span class="com">-- visible to files that require this one</span>
 <span class="kw">end</span></code></pre>
+<p>Functions are ordinary values, so the anonymous form can be stored anywhere a
+value goes:</p>
+<pre><code><span class="kw">local</span> double = <span class="kw">function</span>(n) <span class="kw">return</span> n * <span class="num">2</span> <span class="kw">end</span></code></pre>
+
+<h3>Defining functions inside tables</h3>
+<p>A dotted name after <code>function</code> assigns the function into an existing
+table. A colon instead of the final dot adds an implicit first parameter named
+<code>self</code>, so the function can be called with method syntax
+(<code>t:name(...)</code>).</p>
+<pre><code><span class="kw">local</span> shapes = { pi = <span class="num">3.14159</span> }
+
+<span class="kw">function</span> shapes.<span class="fn">area</span>(r)        <span class="com">-- same as shapes.area = function(r) ... end</span>
+  <span class="kw">return</span> shapes.pi * r * r
+<span class="kw">end</span>
+
+<span class="kw">function</span> shapes:<span class="fn">describe</span>()      <span class="com">-- implicit `self` parameter</span>
+  <span class="kw">return</span> <span class="str">`a circle of radius 2 has area {self.area(2)}`</span>
+<span class="kw">end</span>
+
+<span class="fn">print</span>(shapes.area(<span class="num">2</span>))
+<span class="fn">print</span>(shapes:describe())</code></pre>
+<p>The dotted path can be deeper than one level (<code>function a.b.c()</code>),
+but every table on the path must already exist — this form is an assignment, not
+a declaration.</p>
+
+<h3>Parameters and arguments</h3>
+<p>Calls adjust their arguments to the parameter list: missing arguments become
+<code>nil</code>, and extra arguments are dropped (unless the function is
+variadic, below). Parameters are fresh mutable locals on every call. Type
+annotations on parameters and return values are for the editor only and are
+erased before execution.</p>
+<pre><code><span class="kw">function</span> <span class="fn">greet</span>(name: <span class="typ">string</span>, punct: <span class="typ">string</span>): <span class="typ">string</span>
+  <span class="kw">if</span> punct == <span class="kw">nil</span> <span class="kw">then</span> punct = <span class="str">"!"</span> <span class="kw">end</span>   <span class="com">-- default-argument idiom</span>
+  <span class="kw">return</span> <span class="str">`hi {name}{punct}`</span>
+<span class="kw">end</span>
+
+<span class="fn">print</span>(<span class="fn">greet</span>(<span class="str">"sam"</span>))   <span class="com">-- punct arrives as nil</span></code></pre>
 
 <h3>Closures</h3>
 <pre><code><span class="kw">local</span> make = <span class="kw">function</span>(start)
@@ -21,17 +65,46 @@
 <span class="kw">local</span> next = make(<span class="num">10</span>)
 <span class="fn">print</span>(next())   <span class="com">-- 11</span>
 <span class="fn">print</span>(next())   <span class="com">-- 12</span></code></pre>
+<p>The inner function keeps the variables of the scope it was created in alive —
+see <a href="#scope">Scope</a> for how capture works.</p>
 
-<h3>Multiple returns and varargs</h3>
+<h3>Multiple returns</h3>
+<p>A <code>return</code> may carry several values, separated by commas.</p>
 <pre><code><span class="kw">function</span> <span class="fn">minmax</span>(a, b)
   <span class="kw">if</span> a &lt; b <span class="kw">then</span> <span class="kw">return</span> a, b <span class="kw">end</span>
   <span class="kw">return</span> b, a
 <span class="kw">end</span>
 
-<span class="kw">function</span> <span class="fn">sum</span>(...)
+<span class="kw">local</span> lo, hi = <span class="fn">minmax</span>(<span class="num">9</span>, <span class="num">4</span>)   <span class="com">-- lo = 4, hi = 9</span></code></pre>
+<p>How many of those values survive depends on where the call appears:</p>
+<ul>
+<li>In the <b>last</b> position of an expression list — a declaration, an
+assignment, the arguments of another call, a <code>return</code>, or a table
+constructor — the call expands to <b>all</b> of its values.</li>
+<li>Anywhere else (the middle of a list, an arithmetic expression), it is cut
+down to its <b>first</b> value.</li>
+<li>Wrapping a call in parentheses, <code>(f())</code>, also truncates it to one
+value.</li>
+<li>Missing values become <code>nil</code>; extra values are discarded.</li>
+</ul>
+<pre><code><span class="kw">local</span> a, b = <span class="fn">minmax</span>(<span class="num">1</span>, <span class="num">2</span>), <span class="num">99</span>   <span class="com">-- a = 1 (truncated), b = 99</span>
+<span class="kw">local</span> t = { <span class="fn">minmax</span>(<span class="num">1</span>, <span class="num">2</span>) }       <span class="com">-- { 1, 2 } (expands in last position)</span></code></pre>
+
+<h3>Varargs</h3>
+<p>End a parameter list with <code>...</code> to accept any number of extra
+arguments. Inside the body, <code>...</code> stands for those extras: in the last
+position of a list it expands to all of them, elsewhere it yields the first one.
+<code>{ ... }</code> collects them into a table, and
+<code>select("#", ...)</code> counts them. A type for the extras may be written
+as <code>...: Type</code> (erased at run time).</p>
+<pre><code><span class="kw">function</span> <span class="fn">sum</span>(...)
   <span class="kw">local</span> total = <span class="num">0</span>
   <span class="kw">for</span> _, n <span class="kw">in</span> <span class="fn">ipairs</span>({ ... }) <span class="kw">do</span> total += n <span class="kw">end</span>
   <span class="kw">return</span> total
+<span class="kw">end</span>
+
+<span class="kw">function</span> <span class="fn">count</span>(...)
+  <span class="kw">return</span> <span class="fn">select</span>(<span class="str">"#"</span>, ...)   <span class="com">-- number of extra arguments</span>
 <span class="kw">end</span></code></pre>
 
 <h3>Proper tail calls</h3>
@@ -47,29 +120,34 @@ passed through unchanged.</p>
 
 <span class="fn">count</span>(<span class="num">10000000</span>, <span class="num">0</span>)  <span class="com">-- runs in constant stack space</span></code></pre>
 <p>Only plain calls qualify: <code>return f(x) + 1</code> and
-<code>return a, f(x)</code> are ordinary returns. Because the calling frame is
+<code>return a, f(x)</code> are ordinary returns, and a tail position call to
+something that is not a Luar function (a native function or a class
+constructor) is simply evaluated normally. Because the calling frame is
 gone before the tail call runs, its scoped destructors fire before
 <code>f</code> executes rather than after it returns.</p>
 
 <h3>Call sugar</h3>
-<p>When a function takes a single string or table literal, the parentheses are
-optional.</p>
+<p>When a function takes a single string, interpolated string, or table literal,
+the parentheses are optional.</p>
 <pre><code><span class="fn">print</span> <span class="str">"hello"</span>              <span class="com">-- print("hello")</span>
+<span class="fn">print</span> <span class="str">`got {n}`</span>            <span class="com">-- print(`got {n}`)</span>
 configure { debug = <span class="kw">true</span> }   <span class="com">-- configure({ debug = true })</span></code></pre>
 
 <h3>Generic parameters</h3>
-<pre><code><span class="kw">local function</span> <span class="fn">identity</span>&lt;T&gt;(x)
+<pre><code><span class="kw">local function</span> <span class="fn">identity</span>&lt;T&gt;(x: T): T
   <span class="kw">return</span> x
 <span class="kw">end</span></code></pre>
-<p>Generic parameters are used by the editor and scrubbed before execution.</p>
+<p>Generic parameters, like all type annotations, are used by the editor and
+scrubbed before execution.</p>
 
 <h3>Documentation comments</h3>
-<p>A comment directly above a function documents it. Markdown such as
-<code>**bold**</code> is rendered in the hover box, and lines beginning with
-<code>@</code> are highlighted as tags.</p>
-<pre><code><span class="com">-- Clamp a number into the range [lo, hi].</span>
-<span class="com">-- @param value the number to clamp</span>
-<span class="com">-- @return number</span>
+<p>Comment lines written directly above a declaration become its documentation:
+the editor shows them in the hover box when you point at the name (and at
+members of classes). Consecutive <code>--</code> lines are collected until a
+non-comment line or a <code>--#</code> directive line is reached, and the text
+is rendered as Markdown, so emphasis like <code>**bold**</code> works.</p>
+<pre><code><span class="com">-- Clamp a number into the range **[lo, hi]**.</span>
+<span class="com">-- Values below lo become lo; values above hi become hi.</span>
 <span class="kw">function</span> <span class="fn">clamp</span>(value, lo, hi)
   <span class="kw">if</span> value &lt; lo <span class="kw">then</span> <span class="kw">return</span> lo <span class="kw">end</span>
   <span class="kw">if</span> value &gt; hi <span class="kw">then</span> <span class="kw">return</span> hi <span class="kw">end</span>

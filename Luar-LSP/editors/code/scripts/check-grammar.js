@@ -54,6 +54,8 @@ async function main() {
     ["if not true then", "not", "storage.modifier.logical"],
     ["local x = grag.test", "test", "variable.other.property"],
     ["local t = { local = 1, type = 2 }", "type", "variable.other.property"],
+    ["local m = p_data.Real[\"Money\"]", "Real", "variable.other.property"],
+    ["local m = p_data.Real[idx]", "Real", "variable.other.property"],
   ];
   const negatives = [
     ["obj:method()", "method", "entity.name.type"],

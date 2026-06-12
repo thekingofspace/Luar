@@ -249,7 +249,7 @@ impl Compiler {
                 ctx.emit(I::new(OpCode::PushConst, k));
             }
             Expr::Name(name) => self.load_name(ctx, name),
-            Expr::Function { name, params, is_vararg, body } => {
+            Expr::Function { name, params, is_vararg, body, .. } => {
                 if *is_vararg {
                     return Err(CompileError("varargs (`...`) not supported in VM yet".into()));
                 }

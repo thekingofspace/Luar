@@ -1,22 +1,114 @@
 <h1 id="builtins">Global builtins</h1>
+<p>These functions are available everywhere without a <code>require</code> or a
+namespace. They are grouped below by what they do; every entry says what the
+function returns. All of them are ordinary global bindings, so they can be
+shadowed or replaced (see <a href="#overriding-globals">Overriding globals</a>
+at the bottom).</p>
+
+<h3 id="builtins-output">Output</h3>
 <table>
 <tr><th>Function</th><th>Purpose</th></tr>
-<tr><td><code>print(...)</code></td><td>Print values separated by tabs.</td></tr>
-<tr><td><code>warn(...)</code></td><td>Like print, but writes to the warning channel (stderr).</td></tr>
-<tr><td><code>type(v)</code></td><td>The type name of a value: <code>"nil"</code>, <code>"bool"</code>, <code>"number"</code>, <code>"string"</code>, <code>"table"</code>, <code>"function"</code>, <code>"thread"</code>, <code>"enum"</code>, <code>"class"</code>, or <code>"interface"</code>.</td></tr>
-<tr><td><code>tostring(v)</code></td><td>A string for a value, honoring a tostring overload.</td></tr>
-<tr><td><code>tonumber(v, base?)</code></td><td>A number parsed from a value, or nil. With a base (2&ndash;36) the value is read as a string of digits in that base.</td></tr>
-<tr><td><code>assert(v, message?)</code></td><td>Raise an error if v is falsy, otherwise return all arguments. The message defaults to "assertion failed!".</td></tr>
-<tr><td><code>error(message, level?)</code></td><td>Raise message as an error. The optional level is accepted for compatibility.</td></tr>
-<tr><td><code>select(n, ...)</code></td><td>With <code>"#"</code>, the number of extra arguments; with a number, the arguments from position n onward (negative counts from the end).</td></tr>
-<tr><td><code>pcall(fn, ...)</code></td><td>Call fn, catching errors; returns ok plus results or the error.</td></tr>
-<tr><td><code>ipairs(t)</code>, <code>pairs(t)</code>, <code>next(t, k)</code></td><td>Iteration.</td></tr>
-<tr><td><code>setmetatable(t, m)</code>, <code>getmetatable(t)</code></td><td>Metatables.</td></tr>
-<tr><td><code>rawget</code>, <code>rawset</code>, <code>rawequal</code>, <code>rawlen</code></td><td>Bypass metamethods.</td></tr>
-<tr><td><code>require(path)</code></td><td>Load and run a module.</td></tr>
-<tr><td><code>collectgarbage()</code></td><td>Run the garbage collector now.</td></tr>
-<tr><td><code>instanceof</code>, <code>classname</code>, <code>classof</code>, <code>superclass</code>, <code>methodsof</code>, <code>isabstract</code></td><td>Class reflection (see <a href="#classes">Classes</a>).</td></tr>
+<tr><td><code>print(...)</code></td><td>Write each argument's display string to standard output, separated by tabs, ending with a newline. Honors a class <code>operator tostring</code> and a table <code>__tostring</code> metamethod. Returns nothing.</td></tr>
+<tr><td><code>warn(...)</code></td><td>Exactly like <code>print</code>, but writes to standard error instead.</td></tr>
 </table>
+
+<h3 id="builtins-types">Types and conversion</h3>
+<table>
+<tr><th>Function</th><th>Purpose</th></tr>
+<tr><td><code>type(v)</code></td><td>The basic type name as a string: <code>"nil"</code>, <code>"bool"</code>, <code>"number"</code>, <code>"string"</code>, <code>"table"</code>, <code>"enum"</code>, <code>"function"</code>, <code>"thread"</code>, <code>"class"</code>, or <code>"interface"</code>. Both integers and floats are <code>"number"</code>; class <em>instances</em> are <code>"table"</code>.</td></tr>
+<tr><td><code>TypeOf(v)</code></td><td>The "deep" type name as a string. Unlike <code>type</code>, it asks the value itself first &mdash; see <a href="#typeof">TypeOf and the type protocol</a> below. Falls back to the same name <code>type</code> would give.</td></tr>
+<tr><td><code>tostring(v)</code></td><td>The display string of any value. Honors <code>operator tostring</code> on class instances and the <code>__tostring</code> metamethod on tables; tables without one render inline like <code>{1, 2}</code>.</td></tr>
+<tr><td><code>tonumber(v)</code></td><td>Numbers pass through unchanged. Strings are trimmed and parsed as an integer first, then as a float; anything else (including unparseable strings) gives <code>nil</code>.</td></tr>
+<tr><td><code>tonumber(s, base)</code></td><td>Parse the string <code>s</code> as an integer in the given base (2&ndash;36); returns <code>nil</code> if it does not parse. A base outside 2&ndash;36, or a non-string value, is an error.</td></tr>
+</table>
+
+<h3 id="typeof">TypeOf and the type protocol</h3>
+<p><code>type(v)</code> always answers with the built-in kind of a value, so every
+class instance is just <code>"table"</code>. <code>TypeOf(v)</code> lets values
+describe themselves. It checks, in order:</p>
+<ol>
+<li>If <code>v</code> is a class instance (or a class value) whose class declares
+<code>operator type()</code>, that operator is called and must return a string.</li>
+<li>If <code>v</code> is a plain table with a <code>__type</code> entry in its
+metatable, that entry is used: a string is returned as-is, a function is called
+with the table and must return a string.</li>
+<li>Otherwise <code>TypeOf</code> returns the same name as <code>type(v)</code>.</li>
+</ol>
+<pre><code><span class="kw">class</span> <span class="typ">Vec</span> {
+  <span class="kw">public</span> x: <span class="typ">number</span> = <span class="num">0</span>
+  <span class="kw">operator</span> <span class="fn">type</span>() <span class="kw">return</span> <span class="str">"Vec"</span> <span class="kw">end</span>
+}
+
+<span class="kw">local</span> v = <span class="typ">Vec</span>()
+<span class="fn">print</span>(<span class="fn">type</span>(v))     <span class="com">-- table</span>
+<span class="fn">print</span>(<span class="fn">TypeOf</span>(v))   <span class="com">-- Vec</span>
+
+<span class="kw">local</span> p = <span class="fn">setmetatable</span>({}, { __type = <span class="str">"Point"</span> })
+<span class="fn">print</span>(<span class="fn">TypeOf</span>(p))   <span class="com">-- Point</span></code></pre>
+<p>If the operator or <code>__type</code> handler returns anything other than a
+string, <code>TypeOf</code> raises an error.</p>
+
+<h3 id="builtins-errors">Errors</h3>
+<table>
+<tr><th>Function</th><th>Purpose</th></tr>
+<tr><td><code>assert(v, message?, ...)</code></td><td>If <code>v</code> is truthy, returns <em>all</em> of its arguments (so it can wrap a call transparently). Otherwise raises <code>message</code> &mdash; a non-string message is converted to its display string &mdash; or <code>"assertion failed!"</code> when no message is given.</td></tr>
+<tr><td><code>error(message)</code></td><td>Raise <code>message</code> as a runtime error; a non-string value is converted to its display string. There is no <code>level</code> argument &mdash; any extra arguments are ignored.</td></tr>
+<tr><td><code>pcall(fn, ...)</code></td><td>Call <code>fn</code> with the given arguments, catching any error. Returns <code>true</code> followed by the function's results on success, or <code>false</code> followed by the error message string on failure.</td></tr>
+</table>
+<pre><code><span class="kw">local</span> ok, err = <span class="fn">pcall</span>(<span class="kw">function</span>()
+  <span class="fn">error</span>(<span class="str">"boom"</span>)
+<span class="kw">end</span>)
+<span class="fn">print</span>(ok, err)   <span class="com">-- false  boom</span></code></pre>
+<p>There is no <code>xpcall</code>; use <code>pcall</code> and handle the message
+yourself.</p>
+
+<h3 id="builtins-iteration">Iteration and varargs</h3>
+<table>
+<tr><th>Function</th><th>Purpose</th></tr>
+<tr><td><code>ipairs(t)</code></td><td>An iterator over the array part of <code>t</code>: pairs <code>1, t[1]</code>, <code>2, t[2]</code>, ... stopping at the first <code>nil</code>. Use in <code>for i, v in ipairs(t) do</code>.</td></tr>
+<tr><td><code>pairs(t)</code></td><td>Returns <code>next, t, nil</code>, iterating every entry: the array part first (in order), then the hash part (in no particular order).</td></tr>
+<tr><td><code>next(t, key?)</code></td><td>The key and value following <code>key</code> in <code>t</code>, or <code>nil</code> when there are no more. Passing <code>nil</code> (or nothing) starts from the beginning.</td></tr>
+<tr><td><code>select("#", ...)</code></td><td>The number of extra arguments, as an integer.</td></tr>
+<tr><td><code>select(n, ...)</code></td><td>The arguments from position <code>n</code> onward, as multiple values. A negative <code>n</code> counts from the end; <code>0</code> or an index past the end (when negative) is an error.</td></tr>
+</table>
+
+<h3 id="builtins-metatables">Metatables and raw access</h3>
+<p>See <a href="#metamethods">Metamethods</a> for what a metatable can do.</p>
+<table>
+<tr><th>Function</th><th>Purpose</th></tr>
+<tr><td><code>setmetatable(t, m)</code></td><td>Set the metatable of table <code>t</code> to table <code>m</code>, or remove it when <code>m</code> is <code>nil</code>. Returns <code>t</code>. Errors if <code>t</code> is not a table or <code>m</code> is neither a table nor <code>nil</code>.</td></tr>
+<tr><td><code>getmetatable(t)</code></td><td>The metatable of <code>t</code>, or <code>nil</code> if it has none (or is not a table). There is no <code>__metatable</code> protection &mdash; you always get the real metatable.</td></tr>
+<tr><td><code>rawget(t, k)</code></td><td>Read <code>t[k]</code> without invoking <code>__index</code>. Returns the value, or <code>nil</code> when absent.</td></tr>
+<tr><td><code>rawset(t, k, v)</code></td><td>Write <code>t[k] = v</code> without invoking <code>__newindex</code>. Returns <code>t</code>.</td></tr>
+<tr><td><code>rawequal(a, b)</code></td><td>Equality without metamethods: numbers by value (ints and floats cross-compare), strings by content, tables/functions/classes by identity. Returns a boolean.</td></tr>
+<tr><td><code>rawlen(v)</code></td><td>The array length of a table or the character count of a string, ignoring any <code>__len</code> metamethod. Returns an integer.</td></tr>
+</table>
+
+<h3 id="builtins-modules-gc">Modules and memory</h3>
+<table>
+<tr><th>Function</th><th>Purpose</th></tr>
+<tr><td><code>require(path)</code></td><td>Load a module and return its value (the module's first returned value). Each module runs once and is cached; later requires return the same value. Supports relative paths, <code>@alias</code> names, folder modules, and precompiled <code>.luarb</code> files &mdash; see <a href="#modules">Modules</a>. A circular require is an error.</td></tr>
+<tr><td><code>collectgarbage()</code></td><td>Ask the garbage collector to run at the next safe point (between top-level statements) &mdash; it does not collect immediately. Returns nothing.</td></tr>
+</table>
+
+<h3 id="builtins-reflection">Class reflection</h3>
+<p>These inspect classes and instances; see <a href="#classes">Classes</a>.</p>
+<table>
+<tr><th>Function</th><th>Purpose</th></tr>
+<tr><td><code>instanceof(v, C)</code></td><td>True if <code>v</code> is an instance of class <code>C</code> or one of its subclasses, or of a class that implements interface <code>C</code>. False for non-instances; errors if <code>C</code> is not a class or interface.</td></tr>
+<tr><td><code>classname(v)</code></td><td>The name (a string) of a class value or of an instance's class, otherwise <code>nil</code>.</td></tr>
+<tr><td><code>classof(v)</code></td><td>The class value of an instance, otherwise <code>nil</code>.</td></tr>
+<tr><td><code>superclass(v)</code></td><td>The parent class of a class or instance, or <code>nil</code> if it has none.</td></tr>
+<tr><td><code>methodsof(v)</code></td><td>An array of the method names of a class or instance, walking up the inheritance chain, without duplicates.</td></tr>
+<tr><td><code>isabstract(v)</code></td><td>True if the class (or the instance's class) is declared <code>abstract</code>.</td></tr>
+</table>
+
+<h3 id="builtins-absent">What is deliberately not here</h3>
+<p>Coming from Lua, note these differences: there is no <code>xpcall</code>, no
+global <code>unpack</code> (use <code>table.unpack</code>), no
+<code>coroutine.launch</code>, and no <code>os.date</code>. String functions do
+not support Lua patterns &mdash; <code>string.find</code> is a plain substring
+search.</p>
 
 <h3 id="overriding-globals">Overriding globals</h3>
 <p>The builtins are ordinary global bindings, so you can replace them with your

@@ -8,14 +8,31 @@
   span many lines
 ]]</span></code></pre>
 <p>A comment directly above a declaration becomes its documentation and is shown
-on hover. A line beginning with <code>--#</code> is a Ferrite directive, not a
-normal comment.</p>
+on hover. A comment containing <code>--#</code> is a checker directive, not
+documentation. Directives silence <a href="#ferrite">Ferrite</a> and editor
+diagnostics by code name:</p>
+<pre><code><span class="com">--#disable UnusedVariable, ShadowedVariable</span>
+<span class="com">-- the directive above silences those two codes in the whole file</span>
+
+<span class="kw">local</span> kept = <span class="num">1</span> <span class="com">--#disable-line UnusedVariable</span>
+
+<span class="com">--#disable-next-line all</span>
+<span class="kw">local</span> scratch = <span class="num">2</span></code></pre>
+<p>The three forms are <code>--#disable</code> (whole file),
+<code>--#disable-line</code> (its own line), and
+<code>--#disable-next-line</code>. Codes are separated by spaces or commas, and
+everything after the directive keyword is read as code names, so do not put
+other text on a directive line. The special code <code>all</code> silences every
+check. The full list of codes is in the <a href="#ferrite">Ferrite
+chapter</a>.</p>
 
 <h3>Literals</h3>
 <pre><code><span class="kw">nil</span>               <span class="com">-- the absence of a value</span>
 <span class="kw">true</span>  <span class="kw">false</span>      <span class="com">-- booleans</span>
 <span class="num">42</span>    <span class="num">-7</span>         <span class="com">-- integers</span>
-<span class="num">3.14</span>  <span class="num">1.0e3</span>      <span class="com">-- floats</span>
+<span class="num">0xFF</span>  <span class="num">0x1f</span>       <span class="com">-- hexadecimal integers (0x or 0X)</span>
+<span class="num">3.14</span>  <span class="num">1.0e3</span>      <span class="com">-- floats; exponents use e or E with an optional sign</span>
+<span class="num">1_000_000</span>         <span class="com">-- underscores may group digits (but not exponent digits)</span>
 <span class="str">"text"</span>  <span class="str">'text'</span>    <span class="com">-- strings (double or single quotes)</span></code></pre>
 
 <h3 id="strings">Strings</h3>
@@ -88,15 +105,42 @@ multiple lines and support all the escape sequences above.</p>
 <tr><td>Logical</td><td><code>and or not</code> (short-circuit, yield operand values)</td></tr>
 <tr><td>Length / unary minus</td><td><code>#x</code>, <code>-x</code></td></tr>
 <tr><td>Compound assignment</td><td><code>+= -= *= /= %= ..=</code></td></tr>
+<tr><td>Access and calls</td><td><code>t.key</code>, <code>t[key]</code>, <code>f(args)</code>, <code>obj:method(args)</code></td></tr>
+<tr><td>Type cast</td><td><code>value :: Type</code> &mdash; an annotation for the editor tooling; erased before execution, so it never changes the value.</td></tr>
 </table>
 
+<h4>Precedence</h4>
+<p>From loosest to tightest binding. Operators on the same row bind equally and
+group left to right unless noted.</p>
+<table>
+<tr><th>Level</th><th>Operators</th></tr>
+<tr><td>1 (loosest)</td><td><code>or</code></td></tr>
+<tr><td>2</td><td><code>and</code></td></tr>
+<tr><td>3</td><td><code>== ~= &lt; &lt;= &gt; &gt;=</code></td></tr>
+<tr><td>4</td><td><code>..</code> (groups right: <code>a .. b .. c</code> is <code>a .. (b .. c)</code>)</td></tr>
+<tr><td>5</td><td><code>+ -</code></td></tr>
+<tr><td>6</td><td><code>* / %</code></td></tr>
+<tr><td>7</td><td>unary <code>not # -</code></td></tr>
+<tr><td>8 (tightest)</td><td><code>^</code> (groups right, and binds tighter than unary minus: <code>-x^2</code> is <code>-(x^2)</code>)</td></tr>
+</table>
+
+<h4>Calling without parentheses</h4>
+<p>When the single argument is a string literal, an interpolated string, or a
+table constructor, the parentheses may be dropped:</p>
+<pre><code><span class="fn">print</span> <span class="str">"hello"</span>          <span class="com">-- same as print("hello")</span>
+<span class="fn">print</span> <span class="str">`hi {name}`</span>      <span class="com">-- same as print(`hi {name}`)</span>
+<span class="fn">configure</span> { debug = <span class="kw">true</span> }   <span class="com">-- same as configure({ debug = true })</span></code></pre>
+
 <div class="note">A bare expression is only a statement when it is a call (including the call
-sugar forms) or a <code>switch</code>. A value on a line by itself, such as
-<code>1 + 1</code>, is a syntax error.</div>
+sugar forms above) or a <code>switch</code>. A value on a line by itself, such as
+<code>1 + 1</code>, is a syntax error. Semicolons between statements are allowed
+and ignored.</div>
 
 <h3 id="keywords">Keywords</h3>
-<p>Every reserved word in LUAR, grouped by what it does. A name in this list cannot be
-used as a variable.</p>
+<p>Every keyword in LUAR, grouped by what it does. Keywords are recognized by
+their position in the grammar rather than reserved outright, but you should
+treat them all as reserved: reusing one as a variable name will usually be
+misparsed.</p>
 
 <h4>Declaring and freeing variables</h4>
 <table>
@@ -133,6 +177,7 @@ used as a variable.</p>
 <tr><td><code>mixin</code></td><td>Folds the members of one or more other classes into a class.</td></tr>
 <tr><td><code>implements</code></td><td>Declares the interfaces a class satisfies.</td></tr>
 <tr><td><code>constructor</code></td><td>The special method that runs once when a class is instantiated.</td></tr>
+<tr><td><code>destructor</code></td><td>The special method that runs when the last remaining reference to an instance disappears.</td></tr>
 <tr><td><code>operator</code></td><td>Overloads an operator for a class, for example <code>operator +</code>.</td></tr>
 <tr><td><code>get</code></td><td>Defines a getter: a method that runs when a property is read.</td></tr>
 <tr><td><code>set</code></td><td>Defines a setter: a method that runs when a property is assigned.</td></tr>
@@ -172,4 +217,5 @@ used as a variable.</p>
 <tr><td><code>super</code></td><td>Inside a method, the parent class, used to call an overridden method.</td></tr>
 <tr><td><code>true</code> / <code>false</code></td><td>The two boolean values.</td></tr>
 <tr><td><code>nil</code></td><td>The absence of a value. Everything except <code>nil</code> and <code>false</code> is truthy.</td></tr>
+<tr><td><code>...</code></td><td>Inside a function declared with a trailing <code>...</code> parameter, the extra arguments that were passed. In the last position of an expression list it expands to all of them; anywhere else it yields the first.</td></tr>
 </table>

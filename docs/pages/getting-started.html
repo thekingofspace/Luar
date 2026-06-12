@@ -1,16 +1,172 @@
 <h1 id="getting-started">Getting started</h1>
-<p>A LUAR source file uses the <code>.luar</code> extension.</p>
+<p>This page takes you from a fresh clone of the repository to running scripts,
+editing with full language support in VS Code, and laying out a small project.
+A LUAR source file uses the <code>.luar</code> extension.</p>
 <pre><code><span class="fn">print</span>(<span class="str">"hello, world"</span>)</code></pre>
 
+<h3>What you need</h3>
+<ul>
+<li>A recent stable Rust toolchain (install with <code>rustup</code>). The crates
+use the 2024 edition, so you need Rust 1.85 or newer.</li>
+<li>Node.js and npm &mdash; only if you want to build the VS Code extension
+yourself.</li>
+</ul>
+
+<h3>Building from source</h3>
+<p>The repository holds four independent crates (there is no workspace root, so
+each one builds on its own):</p>
+<table>
+<tr><th>Folder</th><th>What it is</th></tr>
+<tr><td><code>Luar/</code></td><td>The language itself: lexer, parser, interpreter, Ferrite checker, and the Rust <a href="#host-api">host API</a>.</td></tr>
+<tr><td><code>Luar-Runtime/</code></td><td>The <code>luar-runtime</code> command-line runner.</td></tr>
+<tr><td><code>Luar-LSP/</code></td><td>The <code>luar-lsp</code> language server, with the VS Code extension under <code>editors/code/</code>.</td></tr>
+<tr><td><code>testbed/</code></td><td>A small example host that embeds the interpreter.</td></tr>
+</table>
+<p>To get a runner you can call from the command line:</p>
+<pre><code>git clone https://github.com/thekingofspace/Luar
+cd Luar/Luar-Runtime
+cargo build --release</code></pre>
+<p>The binary lands at <code>target/release/luar-runtime</code>
+(<code>luar-runtime.exe</code> on Windows). Put it on your <code>PATH</code>, or
+run scripts directly through Cargo with
+<code>cargo run --release -- path/to/script.luar</code>.</p>
+
 <h3>Running scripts</h3>
-<p>The runner executes a script after checking it with Ferrite.</p>
-<pre><code>run hello.luar          <span class="com"># run a source file</span>
-run hello.luarc         <span class="com"># run a precompiled file</span>
-compile hello.luar hello.luarc   <span class="com"># precompile to .luarc</span></code></pre>
+<pre><code>luar-runtime hello.luar      <span class="com"># run a source file</span>
+luar-runtime game.luarb      <span class="com"># run a precompiled file</span>
+luar-runtime game            <span class="com"># bare name: tries game.luar, then game.luarb</span>
+luar-runtime my-project/     <span class="com"># directory: tries main.luar, main.luarb, init.luar, init.luarb inside it</span>
+luar-runtime                 <span class="com"># no argument: runs main.luar in the current directory</span></code></pre>
+<p>The directory containing the script becomes the base directory for
+<code>require</code>, so a script can load its neighbours by name. When the
+script finishes, the runner waits for any coroutines still working in the
+background before it exits. On failure it prints
+<code>luar-runtime: &lt;error&gt;</code> and exits with code 1.</p>
 
 <h3>File types</h3>
 <table>
 <tr><th>Extension</th><th>Meaning</th></tr>
 <tr><td><code>.luar</code></td><td>A LUAR source file.</td></tr>
-<tr><td><code>.luarc</code></td><td>A precompiled file (a serialized program). See <a href="#precompilation">Precompilation</a>.</td></tr>
+<tr><td><code>.luarb</code></td><td>A precompiled program (a serialized syntax tree). The runner and <code>require</code> load it directly. See <a href="#precompilation">Precompilation</a>.</td></tr>
+<tr><td><code>.luard</code></td><td>An ambient declaration file for the editor: its declarations become known globals in every file for hover, completion, and type checking. It is never executed. See <a href="#lsp">Editor &amp; LSP</a>.</td></tr>
 </table>
+
+<h3>A first program</h3>
+<p>Here is a small but complete script: a <code>Signal</code> class that stores
+listener functions and fires them all with a value. It shows classes, access
+control, anonymous functions, and interpolated strings working together. Save it
+as <code>signal.luar</code> and run it with <code>luar-runtime signal.luar</code>.</p>
+<pre><code><span class="kw">class</span> <span class="typ">Signal</span> {
+  <span class="kw">private</span> listeners = {}
+
+  <span class="kw">function</span> <span class="fn">connect</span>(fn)
+    table.insert(<span class="kw">self</span>.listeners, fn)
+  <span class="kw">end</span>
+
+  <span class="kw">function</span> <span class="fn">fire</span>(value)
+    <span class="kw">for</span> _, fn <span class="kw">in</span> <span class="fn">ipairs</span>(<span class="kw">self</span>.listeners) <span class="kw">do</span>
+      <span class="fn">fn</span>(value)
+    <span class="kw">end</span>
+  <span class="kw">end</span>
+}
+
+<span class="kw">const</span> onScore = <span class="typ">Signal</span>()
+
+onScore:<span class="fn">connect</span>(<span class="kw">function</span> (points)
+  <span class="fn">print</span>(<span class="str">`scored {points} points`</span>)
+<span class="kw">end</span>)
+
+onScore:<span class="fn">connect</span>(<span class="kw">function</span> (points)
+  <span class="kw">if</span> points &gt;= <span class="num">100</span> <span class="kw">then</span> <span class="fn">print</span>(<span class="str">"new high score!"</span>) <span class="kw">end</span>
+<span class="kw">end</span>)
+
+onScore:<span class="fn">fire</span>(<span class="num">120</span>)</code></pre>
+<p>Running it prints:</p>
+<pre><code>scored 120 points
+new high score!</code></pre>
+<p>A few things worth noticing. Each instance gets its own fresh
+<code>listeners</code> table, because field defaults are evaluated once per
+instance at construction. The field is <code>private</code>, so only the class's
+own methods can touch it. And <code>const</code> makes <code>onScore</code> a
+binding that cannot be reassigned.</p>
+
+<h3>Precompiled scripts</h3>
+<p>A <code>.luarb</code> file is the same program with lexing and parsing
+already done. The runner executes it exactly like source, and
+<code>require</code> falls back to <code>module.luarb</code> when
+<code>module.luar</code> is missing, so you can ship bytecode-only modules. To
+produce one, use the host API from Rust:</p>
+<pre><code><span class="kw">let</span> bytes = luar::precompile_source(&amp;src)?;   <span class="com">// Vec&lt;u8&gt;, the packed program</span>
+std::fs::write(<span class="str">"game.luarb"</span>, &amp;bytes)?;</code></pre>
+<p>See <a href="#precompilation">Precompilation</a> for what the format is and
+when to reach for it.</p>
+
+<h3>The VS Code extension</h3>
+<p>The extension gives you syntax highlighting, diagnostics (Ferrite plus the
+editor-only checks), hover documentation, completion, inlay type hints,
+automatic <code>end</code> insertion, and auto-import of project modules. It is
+built from <code>Luar-LSP/editors/code</code> and packaged as a
+<code>.vsix</code> file:</p>
+<pre><code><span class="com"># 1. build the language server</span>
+cd Luar-LSP
+cargo build --release
+
+<span class="com"># 2. place the server binary where the extension looks for it</span>
+cp target/release/luar-lsp editors/code/server/      <span class="com"># luar-lsp.exe on Windows</span>
+
+<span class="com"># 3. build and package the extension</span>
+cd editors/code
+npm install
+npm run build
+npm run package          <span class="com"># produces luar-lang-&lt;version&gt;.vsix</span></code></pre>
+<p>Install the result with <code>code --install-extension luar-lang-&lt;version&gt;.vsix</code>,
+or from the Extensions panel via <i>Install from VSIX</i>. The extension
+activates for <code>.luar</code> and <code>.luard</code> files. If you would
+rather keep the server binary somewhere else, point the
+<code>luar.serverPath</code> setting at it; when no server is found, syntax
+highlighting still works and the language features are disabled. The command
+<i>Luar: Restart Language Server</i> restarts the server after you rebuild it.</p>
+<p>Settings live under <code>luar.*</code>: <code>inlayHints</code>,
+<code>showMutability</code>, <code>autoIndent</code>, <code>autoImport</code>,
+<code>serverPath</code>, and <code>trace.server</code>. They are described in
+<a href="#lsp">Editor &amp; LSP</a>.</p>
+
+<h3>Setting up a project</h3>
+<p>A project is just a folder of <code>.luar</code> files. A typical layout:</p>
+<pre><code>my-game/
+  main.luar          <span class="com"># entry point: luar-runtime my-game/</span>
+  luari.json         <span class="com"># optional: require aliases and editor settings</span>
+  lib/
+    util.luar
+  config/
+    settings.luar</code></pre>
+<p>Modules load each other with <code>require</code>. A path starting with
+<code>./</code> resolves relative to the requiring file's directory, and the
+module's returned value is what <code>require</code> hands back:</p>
+<pre><code><span class="com">-- lib/util.luar</span>
+<span class="kw">function</span> <span class="fn">greet</span>(name)
+  <span class="kw">return</span> <span class="str">`hello, {name}`</span>
+<span class="kw">end</span>
+
+<span class="kw">return</span> { greet = greet }</code></pre>
+<pre><code><span class="com">-- main.luar</span>
+<span class="kw">local</span> util = <span class="fn">require</span>(<span class="str">"./lib/util"</span>)
+<span class="fn">print</span>(util.greet(<span class="str">"world"</span>))</code></pre>
+<p>A <code>luari.json</code> file (the names <code>luari</code> and
+<code>.luari</code> also work) defines <code>@alias</code> names for
+<code>require</code>, and can list extra ambient <code>.luard</code> files for
+the editor:</p>
+<pre><code>{
+  <span class="str">"aliases"</span>: {
+    <span class="str">"Settings"</span>: <span class="str">"./config/settings"</span>
+  },
+  <span class="str">"luard"</span>: [<span class="str">"./types/globals.luard"</span>]
+}</code></pre>
+<p>With that in place, any module in the project can write
+<code>require("@Settings")</code> regardless of where it sits, and
+<code>require("@Settings/extra")</code> appends a subpath. The runtime searches
+upward from the requiring module's directory for the config file, so one file at
+the project root covers everything. The <code>"luard"</code> key (a single path
+or an array) is read only by the editor. Each module runs once and is cached,
+and circular requires are reported as errors with the full chain. See
+<a href="#modules">Modules</a> for the complete resolution rules.</p>

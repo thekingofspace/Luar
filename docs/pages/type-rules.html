@@ -15,17 +15,26 @@ tool should expect a full type expression (see the grammar below) in every slot.
 <table>
 <tr><th>Position</th><th>Example</th></tr>
 <tr><td>Variable binding</td><td><code><span class="kw">local</span> x: <span class="typ">number</span> = <span class="num">1</span></code> (also <code>const</code> and bare names)</td></tr>
+<tr><td>Assignment target</td><td><code>a: <span class="typ">number</span>, b: <span class="typ">string</span> = <span class="num">1</span>, <span class="str">"x"</span></code> (each target may carry a type)</td></tr>
 <tr><td>Function parameter</td><td><code><span class="kw">function</span> <span class="fn">f</span>(a: <span class="typ">number</span>, b: <span class="typ">string</span>)</code></td></tr>
+<tr><td>Vararg parameter</td><td><code><span class="kw">function</span> <span class="fn">f</span>(...: <span class="typ">number</span>)</code></td></tr>
 <tr><td>Function return</td><td><code><span class="kw">function</span> <span class="fn">f</span>(): <span class="typ">boolean</span></code></td></tr>
-<tr><td>Loop variable</td><td><code><span class="kw">for</span> i: <span class="typ">number</span> = <span class="num">1</span>, <span class="num">10</span> <span class="kw">do</span></code></td></tr>
+<tr><td>Loop variable</td><td><code><span class="kw">for</span> i: <span class="typ">number</span> = <span class="num">1</span>, <span class="num">10</span> <span class="kw">do</span></code> (and generic-for names)</td></tr>
 <tr><td>Class field</td><td><code><span class="kw">public</span> name: <span class="typ">string</span> = <span class="str">""</span></code></td></tr>
-<tr><td>Type alias</td><td><code><span class="kw">type</span> <span class="typ">Id</span> = <span class="typ">number</span></code></td></tr>
+<tr><td>Buff declaration</td><td><code><span class="kw">buff</span> <span class="num">16</span> buf: <span class="typ">string</span> = <span class="str">""</span></code></td></tr>
+<tr><td>Type alias</td><td><code><span class="kw">type</span> <span class="typ">Id</span> = <span class="typ">number</span></code> (also <code><span class="kw">export type</span></code>)</td></tr>
 <tr><td>Generic parameter list</td><td><code><span class="kw">type</span> <span class="typ">Box</span>&lt;T&gt;</code>, <code><span class="kw">function</span> <span class="fn">f</span>&lt;T&gt;(x)</code>, <code><span class="kw">class</span> <span class="typ">C</span>&lt;T&gt;</code></td></tr>
 <tr><td>Cast</td><td><code>value :: <span class="typ">SomeType</span></code></td></tr>
 </table>
 <p>The <code>type</code> alias and the cast operator <code>::</code> are themselves
 scrubbed: a <code>type</code> declaration produces no runtime value, and a cast
-evaluates only its left-hand expression and ignores the type.</p>
+evaluates only its left-hand expression and ignores the type. The cast is a
+postfix on an expression, so it chains like any other postfix:
+<code>(t.field :: <span class="typ">Handler</span>)(x)</code>. An alias may be
+prefixed with <code>export</code> (<code>export type Name = ...</code> &mdash;
+note that <code>pub type</code> is <em>not</em> accepted); the prefix parses but
+the alias statement records no visibility, so exported and plain aliases are
+currently identical to tooling.</p>
 
 <h3>Binding order</h3>
 <p>Type operators bind from loosest to tightest in this order. A correct parser
@@ -69,9 +78,10 @@ sep           = <span class="str">","</span> | <span class="str">";"</span></cod
 followed by a generic argument list in angle brackets. The angle-bracket slot is
 matched by <b>balancing</b> <code>&lt;</code> and <code>&gt;</code> (nesting is
 allowed), and the language <b>skips</b> whatever is inside &mdash; the arguments
-are not retained. Interpreting them (generic instantiation, type functions such
-as <code>readonly&lt;T&gt;</code> or <code>keyof&lt;T&gt;</code>) is entirely up to
-your tool. The only rule the language enforces is that the brackets balance.</p>
+are not retained. Interpreting them is entirely up to your tool; the bundled
+language server interprets generic alias instantiation and a small set of type
+functions such as <code>keyof&lt;T&gt;</code> (see below). The only rule the
+language enforces is that the brackets balance.</p>
 <pre><code><span class="typ">number</span>
 <span class="typ">Folder</span>
 <span class="typ">Array</span>&lt;<span class="typ">number</span>&gt;
@@ -118,7 +128,93 @@ with a vararg <code>...</code>, optionally typed.</p>
 (<span class="typ">number</span>, <span class="typ">string</span>) -&gt; <span class="typ">boolean</span>
 (x: <span class="typ">number</span>, y: <span class="typ">number</span>) -&gt; <span class="typ">number</span>   <span class="com">-- parameter names allowed, then ignored</span>
 (<span class="typ">string</span>, ...<span class="typ">number</span>) -&gt; <span class="typ">nil</span>          <span class="com">-- trailing vararg, optionally typed</span>
-(<span class="typ">number</span>)                          <span class="com">-- no arrow: just the grouped type number</span></code></pre>
+(...) -&gt; <span class="typ">any</span>                       <span class="com">-- untyped vararg alone is fine</span>
+(...<span class="typ">any</span>) -&gt; ...<span class="typ">any</span>                  <span class="com">-- a return may be variadic too</span>
+(<span class="typ">number</span>)                          <span class="com">-- no arrow: just the grouped type number</span>
+<span class="typ">number</span> -&gt; <span class="typ">string</span>                   <span class="com">-- one-parameter sugar: parentheses optional</span></code></pre>
+<p>The single-parameter form without parentheses comes straight from the
+top-level rule <code>type = union ( "-&gt;" type )?</code>: any type followed by
+an arrow is a one-parameter function type, so <code>T -&gt; R</code> and
+<code>(T) -&gt; R</code> mean the same thing.</p>
+
+<h4>Generic-prefixed function types <code>&lt;T&gt;(...) -&gt; R</code></h4>
+<p>A type may open with its own angle-bracket slot before the parameter list.
+As everywhere else, the language balances and skips the brackets &mdash; the
+prefix declares type parameters for tooling to interpret. This is how a
+declaration file writes a generic function signature:</p>
+<pre><code>&lt;T&gt;(x: T) -&gt; T
+&lt;&gt;(...) -&gt; <span class="typ">any</span>                     <span class="com">-- an empty slot also parses</span>
+&lt;service&gt;(self: <span class="typ">any</span>, k: <span class="typ">keyof</span>&lt;<span class="typ">Services</span>&gt;) -&gt; <span class="typ">ValueOf</span>&lt;<span class="typ">Services</span>, service&gt;</code></pre>
+
+<h3>Type aliases and generics</h3>
+<p><code>type Name = T</code> introduces an alias; <code>type Name&lt;A, B&gt; =
+T</code> introduces a generic alias. The runtime discards the whole statement,
+but the bundled editor records the alias, <b>substitutes the generic
+arguments</b> wherever the alias is used, and checks that the right number of
+arguments is supplied (the <code>GenericArity</code> check):</p>
+<pre><code><span class="kw">type</span> <span class="typ">Box</span>&lt;T&gt; = { value: T }
+
+<span class="kw">local</span> a: <span class="typ">Box</span>&lt;<span class="typ">number</span>&gt; = { value = <span class="num">1</span> }   <span class="com">-- editor sees a as { value: number }</span>
+<span class="kw">local</span> b: <span class="typ">Box</span> = { value = <span class="num">1</span> }           <span class="com">-- flagged: type 'Box' expects 1 generic argument(s), got 0</span></code></pre>
+<p>Generic parameter lists on functions and classes
+(<code>function f&lt;T&gt;(x: T)</code>, <code>class C&lt;T&gt;</code>) are
+accepted in the same skip-the-brackets way. Class, enum, and interface names
+declared anywhere in the project (or in <code>.luard</code> declaration files)
+also resolve as types, and a module-qualified name like
+<code>mod.Thing</code> resolves through the module bound to
+<code>mod</code> by a <code>require</code>.</p>
+
+<h3>Type functions the editor evaluates</h3>
+<p>Four generic names are not ordinary aliases: the bundled language server
+computes them when it resolves a type. Each accepts a lowercase or CamelCase
+spelling. They are still just balanced <code>&lt;...&gt;</code> slots to the
+runtime &mdash; zero effect on execution.</p>
+<table>
+<tr><th>Type function</th><th>Result</th></tr>
+<tr><td><code>keyof&lt;T&gt;</code> / <code>KeyOf&lt;T&gt;</code></td><td>The union of <code>T</code>'s field names as string literal types. <code>T</code> must resolve to a record type.</td></tr>
+<tr><td><code>ValueOf&lt;T, K&gt;</code> / <code>valueof&lt;T, K&gt;</code></td><td>The type of field <code>K</code> in record <code>T</code>; <code>K</code> may be a string literal or a union of them (the result is then the union of the matched field types).</td></tr>
+<tr><td><code>NotNil&lt;T&gt;</code> / <code>notnil&lt;T&gt;</code></td><td><code>T</code> with <code>nil</code> removed: unwraps <code>T?</code> and drops <code>nil</code> from unions, following aliases.</td></tr>
+<tr><td><code>ToBasic&lt;T&gt;</code> / <code>tobasic&lt;T&gt;</code></td><td>Collapses <code>T</code> to its primitive kind: a literal string type becomes <code>string</code>, <code>true</code>/<code>false</code> become <code>boolean</code>, class instances become <code>class</code>, and so on. A type it cannot simplify is left as written.</td></tr>
+</table>
+<pre><code><span class="kw">type</span> <span class="typ">Point</span> = { x: <span class="typ">number</span>, name: <span class="typ">string</span> }
+
+<span class="kw">local</span> k: <span class="typ">keyof</span>&lt;<span class="typ">Point</span>&gt; = <span class="str">"x"</span>            <span class="com">-- editor resolves the type to "x" | "name"</span>
+<span class="kw">local</span> n: <span class="typ">ValueOf</span>&lt;<span class="typ">Point</span>, <span class="str">"x"</span>&gt; = <span class="num">1</span>       <span class="com">-- editor resolves it to number</span>
+<span class="kw">local</span> v: <span class="typ">ValueOf</span>&lt;<span class="typ">Point</span>, <span class="typ">keyof</span>&lt;<span class="typ">Point</span>&gt;&gt; = <span class="num">1</span>   <span class="com">-- union of matched fields: number | string</span>
+
+<span class="kw">type</span> <span class="typ">MaybeName</span> = <span class="typ">string</span> | <span class="typ">nil</span>
+<span class="kw">local</span> who: <span class="typ">NotNil</span>&lt;<span class="typ">MaybeName</span>&gt; = <span class="str">"Ada"</span>   <span class="com">-- editor resolves it to string</span>
+<span class="kw">local</span> w2: <span class="typ">NotNil</span>&lt;<span class="typ">string</span>?&gt; = <span class="str">"Bo"</span>       <span class="com">-- same: the ? is unwrapped</span>
+
+<span class="kw">local</span> s: <span class="typ">ToBasic</span>&lt;<span class="str">"on"</span>&gt; = <span class="str">"off"</span>         <span class="com">-- editor resolves it to string</span>
+<span class="kw">local</span> t: <span class="typ">ToBasic</span>&lt;true&gt; = <span class="kw">false</span>         <span class="com">-- editor resolves it to boolean</span></code></pre>
+
+<h3>NotNil checks in the editor</h3>
+<p><code>NotNil</code> is more than a resolver: the language server enforces it
+at three sites, each reported with the <code>[NotNil]</code> tag and silenceable
+with <code>--#disable NotNil</code> (or <code>--#disable-line</code> /
+<code>--#disable-next-line</code>):</p>
+<ul>
+<li>A binding annotated <code>NotNil&lt;...&gt;</code> declared without a non-nil
+initializer: <code>'name' is typed NotNil and must be initialized with a non-nil
+value</code>. Trailing names fed by a multi-value call or <code>...</code> are
+excused, since the editor cannot see those values.</li>
+<li>Assigning the literal <code>nil</code> to such a binding:
+<code>cannot set 'name' to nil ('name' is typed NotNil)</code>.</li>
+<li>Passing the literal <code>nil</code> in a parameter position typed
+<code>NotNil</code>: <code>argument 1 to 'greet' cannot be nil (parameter 'who'
+is typed NotNil)</code>.</li>
+</ul>
+<pre><code><span class="kw">function</span> <span class="fn">greet</span>(who: <span class="typ">NotNil</span>&lt;<span class="typ">string</span>?&gt;)
+  <span class="fn">print</span>(<span class="str">`hi {who}`</span>)
+<span class="kw">end</span>
+
+<span class="kw">local</span> name: <span class="typ">NotNil</span>&lt;<span class="typ">string</span>?&gt; = <span class="str">"Ada"</span>   <span class="com">-- ok</span>
+<span class="kw">local</span> bad: <span class="typ">NotNil</span>&lt;<span class="typ">string</span>?&gt;            <span class="com">-- flagged: must be initialized with a non-nil value</span>
+name = <span class="kw">nil</span>                            <span class="com">-- flagged: cannot set 'name' to nil</span>
+greet(<span class="kw">nil</span>)                            <span class="com">-- flagged: argument 1 to 'greet' cannot be nil</span></code></pre>
+<p>Remember these are editor diagnostics only &mdash; at run time the annotation
+is gone and <code>nil</code> flows like any other value.</p>
 
 <h3>Allowed symbols</h3>
 <p>The full set of punctuation the type grammar uses, with everything else being
@@ -147,7 +243,10 @@ This has a few consequences a tool author should rely on:</p>
 <li>Annotations can never change behavior, so a checker is free to be as strict or
 as lenient as it likes without affecting how a program runs.</li>
 <li>Generic arguments inside <code>&lt;...&gt;</code> are not kept by the language
-parser at all &mdash; if your tool wants them, it must parse the slot itself.</li>
+parser at all &mdash; if your tool wants them, it must parse the slot itself.
+(The bundled language server does exactly that: it re-parses the slots to
+instantiate generic aliases, check arity, and evaluate the type functions
+above.)</li>
 <li>A <code>type</code> alias and a <code>::</code> cast produce no runtime value;
 they are purely declarations for tooling.</li>
 <li>Because nothing is enforced at run time, a syntactically valid type that is

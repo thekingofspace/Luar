@@ -66,6 +66,7 @@ pub fn from_luar_type(ty: &luar::ast::Type) -> TypeExpr {
         }
         luar::ast::Type::Optional(inner) => TypeExpr::Optional(Box::new(from_luar_type(inner))),
         luar::ast::Type::Function { params, ret } => TypeExpr::Function {
+            generics: Vec::new(),
             params: params
                 .iter()
                 .map(|p| Param::Positional {
@@ -163,6 +164,11 @@ impl TypeEnv {
         for (name, generics) in &ann.alias_generics {
             if let Some(alias) = self.aliases.get_mut(name) {
                 alias.generics = generics.clone();
+            }
+        }
+        for (name, body) in &ann.alias_bodies {
+            if let Some(alias) = self.aliases.get_mut(name) {
+                alias.ty = body.clone();
             }
         }
     }
@@ -447,6 +453,7 @@ impl TypeEnv {
 
     fn value_type_dispatch(&self, ty: &TypeExpr, guard: &mut Guard) -> Type {
         match ty {
+            TypeExpr::Pack(_) => Type::Unknown,
             TypeExpr::Named(segs) if segs.len() == 1 => {
                 let seg = &segs[0];
                 let name = seg.name.as_str();
@@ -551,15 +558,31 @@ impl TypeEnv {
                     name: None,
                 }),
             },
-            TypeExpr::Function { params, ret } => {
+            TypeExpr::Function { generics, params, ret } => {
                 let mut infos = Vec::new();
+                let mut param_anns: Vec<Option<TypeExpr>> = Vec::new();
                 let mut is_vararg = false;
                 for p in params {
                     match p {
-                        Param::Positional { name, ty } => infos.push(ParamInfo {
-                            name: name.clone().unwrap_or_default(),
-                            ty: self.value_type_inner(ty, guard),
-                        }),
+                        Param::Positional { name, ty } => match ty {
+                            TypeExpr::Tuple(parts) => {
+                                for part in parts {
+                                    infos.push(ParamInfo {
+                                        name: String::new(),
+                                        ty: self.value_type_inner(part, guard),
+                                    });
+                                    param_anns.push(Some(part.clone()));
+                                }
+                            }
+                            TypeExpr::Pack(_) => is_vararg = true,
+                            _ => {
+                                infos.push(ParamInfo {
+                                    name: name.clone().unwrap_or_default(),
+                                    ty: self.value_type_inner(ty, guard),
+                                });
+                                param_anns.push(Some(ty.clone()));
+                            }
+                        },
                         Param::Vararg { .. } => is_vararg = true,
                     }
                 }
@@ -577,12 +600,21 @@ impl TypeEnv {
                     }
                     other => vec![self.value_type_inner(other, guard)],
                 };
+                let generic_sig = if generics.is_empty() {
+                    None
+                } else {
+                    Some(Box::new(crate::types::GenericSig {
+                        generics: generics.clone(),
+                        param_anns,
+                        ret_ann: (**ret).clone(),
+                    }))
+                };
                 Type::Function(Some(Box::new(FunctionType {
                     params: infos,
                     is_vararg,
                     returns,
                     returns_param: None,
-                    generic_sig: None,
+                    generic_sig,
                 })))
             }
             TypeExpr::Tuple(parts) => match parts.len() {
@@ -821,12 +853,22 @@ fn basic_expr_of(value: &Type) -> Option<TypeExpr> {
 fn instantiate(alias: &TypeAlias, args: Option<&[TypeExpr]>) -> TypeExpr {
     match args {
         Some(args) if !alias.generics.is_empty() => {
-            let map: HashMap<&str, &TypeExpr> = alias
-                .generics
-                .iter()
-                .map(|g| g.as_str())
-                .zip(args.iter())
-                .collect();
+            let mut packs: Vec<(String, TypeExpr)> = Vec::new();
+            let mut map: HashMap<&str, &TypeExpr> = HashMap::new();
+            let mut arg_idx = 0usize;
+            for g in &alias.generics {
+                if let Some(base) = g.strip_suffix("...") {
+                    let rest: Vec<TypeExpr> = args[arg_idx.min(args.len())..].to_vec();
+                    packs.push((base.to_string(), TypeExpr::Tuple(rest)));
+                    arg_idx = args.len();
+                } else if let Some(a) = args.get(arg_idx) {
+                    map.insert(g.as_str(), a);
+                    arg_idx += 1;
+                }
+            }
+            for (base, tuple) in &packs {
+                map.insert(base.as_str(), tuple);
+            }
             substitute(&alias.ty, &map, 0)
         }
         _ => alias.ty.clone(),
@@ -844,12 +886,27 @@ pub(crate) fn substitute(ty: &TypeExpr, map: &HashMap<&str, &TypeExpr>, depth: u
                 None => ty.clone(),
             }
         }
+        TypeExpr::Pack(name) => match map.get(name.as_str()) {
+            Some(replacement) => (*replacement).clone(),
+            None => ty.clone(),
+        },
         TypeExpr::Named(segs) => TypeExpr::Named(
             segs.iter()
                 .map(|seg| NameSeg {
                     name: seg.name.clone(),
                     args: seg.args.as_ref().map(|args| {
-                        args.iter().map(|a| substitute(a, map, depth + 1)).collect()
+                        let mut out = Vec::with_capacity(args.len());
+                        for a in args {
+                            match substitute(a, map, depth + 1) {
+                                TypeExpr::Tuple(parts)
+                                    if matches!(a, TypeExpr::Pack(_)) =>
+                                {
+                                    out.extend(parts);
+                                }
+                                other => out.push(other),
+                            }
+                        }
+                        out
                     }),
                 })
                 .collect(),
@@ -884,7 +941,8 @@ pub(crate) fn substitute(ty: &TypeExpr, map: &HashMap<&str, &TypeExpr>, depth: u
                 TableTypeExpr::Array(Box::new(substitute(elem, map, depth + 1)))
             }
         }),
-        TypeExpr::Function { params, ret } => TypeExpr::Function {
+        TypeExpr::Function { generics, params, ret } => TypeExpr::Function {
+            generics: generics.clone(),
             params: params
                 .iter()
                 .map(|p| match p {

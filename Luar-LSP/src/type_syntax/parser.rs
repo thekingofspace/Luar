@@ -132,6 +132,7 @@ impl Parser {
         let result = if self.eat(&Tok::Arrow) {
             let ret = self.parse_type()?;
             TypeExpr::Function {
+                generics: Vec::new(),
                 params: vec![Param::Positional {
                     name: None,
                     ty: lhs,
@@ -171,6 +172,13 @@ impl Parser {
 
     fn parse_postfix(&mut self) -> Result<TypeExpr, TypeSyntaxError> {
         let mut ty = self.parse_primary()?;
+        if matches!(self.peek(), Tok::Ellipsis) {
+            if let Some(name) = ty.simple_name() {
+                let name = name.to_string();
+                self.bump();
+                ty = TypeExpr::Pack(name);
+            }
+        }
         while self.eat(&Tok::Question) {
             ty = TypeExpr::Optional(Box::new(ty));
         }
@@ -191,6 +199,7 @@ impl Parser {
             Tok::Ident(_) => self.parse_named(),
             Tok::LBrace => self.parse_table(),
             Tok::LParen => self.parse_parens(),
+            Tok::Lt => self.parse_generic_fn(),
             other => Err(self.err(format!("expected a type, found '{other}'"))),
         };
         self.leave();
@@ -291,6 +300,29 @@ impl Parser {
         self.eat(&Tok::Comma) || self.eat(&Tok::Semi)
     }
 
+    fn parse_generic_fn(&mut self) -> Result<TypeExpr, TypeSyntaxError> {
+        self.expect(&Tok::Lt)?;
+        let mut generics = Vec::new();
+        if !matches!(self.peek(), Tok::Gt) {
+            loop {
+                generics.push(self.expect_ident()?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(&Tok::Gt)?;
+        let inner = self.parse_parens()?;
+        match inner {
+            TypeExpr::Function { params, ret, .. } => Ok(TypeExpr::Function {
+                generics,
+                params,
+                ret,
+            }),
+            other => Ok(other),
+        }
+    }
+
     fn parse_parens(&mut self) -> Result<TypeExpr, TypeSyntaxError> {
         self.expect(&Tok::LParen)?;
         let mut params: Vec<Param> = Vec::new();
@@ -328,6 +360,7 @@ impl Parser {
         if self.eat(&Tok::Arrow) {
             let ret = self.parse_type()?;
             return Ok(TypeExpr::Function {
+                generics: Vec::new(),
                 params,
                 ret: Box::new(ret),
             });
@@ -367,7 +400,11 @@ impl Parser {
         if self.eat(&Tok::Lt) {
             if !matches!(self.peek(), Tok::Gt) {
                 loop {
-                    generics.push(self.expect_ident()?);
+                    let mut g = self.expect_ident()?;
+                    if self.eat(&Tok::Ellipsis) {
+                        g.push_str("...");
+                    }
+                    generics.push(g);
                     if !self.eat(&Tok::Comma) {
                         break;
                     }

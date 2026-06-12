@@ -330,14 +330,14 @@ impl Ferrite {
                     self.emit(Severity::Error, "BreakOutsideLoop", *line, "`break` is not inside a loop".into());
                 }
             }
-            Stmt::Class { parent, mixins, members, .. } => {
+            Stmt::Class { parent, mixins, members, line, .. } => {
                 if let Some(p) = parent {
                     self.use_name(p);
                 }
                 for m in mixins {
                     self.use_name(m);
                 }
-                self.walk_class(members);
+                self.walk_class(members, *line);
             }
             Stmt::Enum { name, variants, line, .. } => {
                 for (_, value) in variants {
@@ -359,12 +359,21 @@ impl Ferrite {
         }
     }
 
-    fn walk_class(&mut self, members: &[ClassMember]) {
+    fn walk_class(&mut self, members: &[ClassMember], class_line: u32) {
         if members.is_empty() {
-            self.warn("EmptyClass", self.current_line, "class body is empty".into());
+            self.warn("EmptyClass", class_line, "class body is empty".into());
         }
         let mut seen: HashSet<String> = HashSet::new();
         for m in members {
+            let member_line = match m {
+                ClassMember::Method { func, .. }
+                | ClassMember::Constructor { func }
+                | ClassMember::Destructor { func }
+                | ClassMember::Operator { func, .. }
+                | ClassMember::Getter { func, .. }
+                | ClassMember::Setter { func, .. } => func.line,
+                ClassMember::Field { .. } => class_line,
+            };
             let name = match m {
                 ClassMember::Field { name, .. } => Some(name.clone()),
                 ClassMember::Method { name, .. } => Some(name.clone()),
@@ -374,7 +383,7 @@ impl Ferrite {
             };
             if let Some(n) = name {
                 if !seen.insert(n.clone()) {
-                    self.warn("DuplicateClassMember", self.current_line, format!("class member '{n}' is declared more than once"));
+                    self.warn("DuplicateClassMember", member_line, format!("class member '{n}' is declared more than once"));
                 }
             }
             match m {
@@ -382,30 +391,32 @@ impl Ferrite {
                 ClassMember::Field { .. } => {}
                 ClassMember::Method { name, is_abstract, is_final, func, .. } => {
                     if *is_abstract && *is_final {
-                        self.warn("FinalAndAbstract", self.current_line, format!("method '{name}' cannot be both `abstract` and `final`"));
+                        self.warn("FinalAndAbstract", func.line, format!("method '{name}' cannot be both `abstract` and `final`"));
                     }
                     if *is_abstract && !func.body.is_empty() {
-                        self.warn("AbstractMethodWithBody", self.current_line, format!("abstract method '{name}' must not have a body"));
+                        self.warn("AbstractMethodWithBody", func.line, format!("abstract method '{name}' must not have a body"));
                     }
                     if !*is_abstract {
-                        self.walk_fn(&func.params, &func.body);
+                        self.walk_fn(&func.params, &func.body, func.line);
                     }
                 }
                 ClassMember::Constructor { func }
                 | ClassMember::Destructor { func }
                 | ClassMember::Operator { func, .. }
                 | ClassMember::Getter { func, .. }
-                | ClassMember::Setter { func, .. } => self.walk_fn(&func.params, &func.body),
+                | ClassMember::Setter { func, .. } => {
+                    self.walk_fn(&func.params, &func.body, func.line);
+                }
             }
         }
     }
 
-    fn walk_fn(&mut self, params: &[String], body: &[Stmt]) {
+    fn walk_fn(&mut self, params: &[String], body: &[Stmt], line: u32) {
         let saved_loop = self.loop_depth;
         self.loop_depth = 0;
         self.push_scope();
         for p in params {
-            self.declare(p, true, false, self.current_line, Kind::Param);
+            self.declare(p, true, false, line, Kind::Param);
         }
         self.walk_block(body);
         self.pop_scope();
@@ -433,7 +444,7 @@ impl Ferrite {
                     self.walk_expr(a);
                 }
             }
-            Expr::Function { params, body, .. } => self.walk_fn(params, body),
+            Expr::Function { params, body, .. } => self.walk_fn(params, body, self.current_line),
             Expr::Table(entries) => {
                 let mut seen: HashSet<String> = HashSet::new();
                 for e in entries {

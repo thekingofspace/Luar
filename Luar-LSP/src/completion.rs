@@ -21,11 +21,11 @@ pub const KIND_ENUM_MEMBER: i64 = 20;
 pub const KIND_CONSTANT: i64 = 21;
 pub const KIND_TYPE_PARAMETER: i64 = 25;
 
-pub const KEYWORDS: [&str; 38] = [
+pub const KEYWORDS: [&str; 40] = [
     "local", "const", "pub", "export", "function", "class", "interface", "enum", "type", "if",
     "then", "elseif", "else", "end", "for", "while", "do", "in", "break", "return", "switch",
     "case", "default", "and", "or", "not", "self", "super", "true", "false", "nil", "extends",
-    "mixin", "implements", "constructor", "buff", "freebuff", "static",
+    "mixin", "implements", "constructor", "buff", "freebuff", "static", "final", "abstract",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -153,6 +153,15 @@ impl<'a> FileView<'a> {
     pub fn type_of_name(&self, name: &str, line: u32) -> Option<Type> {
         if let Some(b) = self.binding_at(name, line) {
             return Some(b.ty.clone());
+        }
+        if let Some((_, _, t)) = self
+            .analysis
+            .param_hints
+            .iter()
+            .filter(|(l, n, _)| n == name && *l <= line)
+            .max_by_key(|(l, _, _)| *l)
+        {
+            return Some(t.clone());
         }
         if let Some((_, t)) = self
             .project
@@ -503,7 +512,16 @@ impl<'a> FileView<'a> {
                     }
                     match t {
                         Type::Function(Some(sig)) => {
-                            items.push(Item::snippet(name, KIND_FUNCTION, sig.to_string()));
+                            let detail = if colon
+                                && sig.params.first().map(|p| p.name.as_str()) == Some("self")
+                            {
+                                let mut shown = (**sig).clone();
+                                shown.params.remove(0);
+                                shown.to_string()
+                            } else {
+                                sig.to_string()
+                            };
+                            items.push(Item::snippet(name, KIND_FUNCTION, detail));
                         }
                         other => items.push(Item::plain(name, KIND_FIELD, other.to_string())),
                     }
@@ -1180,6 +1198,10 @@ pub fn complete(view: &FileView, text: &str, line0: usize, col0: usize) -> Vec<I
                 auto_import: None,
                 extra_edit: None,
             });
+        } else if kw == "else" || kw == "elseif" {
+            let mut item = Item::plain(kw, KIND_KEYWORD, "keyword");
+            item.extra_edit = branch_indent_edit(text, line, line0, col0);
+            items.push(item);
         } else {
             items.push(Item::plain(kw, KIND_KEYWORD, "keyword"));
         }
@@ -1229,8 +1251,75 @@ pub fn complete(view: &FileView, text: &str, line0: usize, col0: usize) -> Vec<I
         }
     }
     items.extend(auto_import_items(view, text, &mut seen));
+    items.extend(declared_auto_import_items(view, text, &mut seen));
     items.sort_by(|a, b| a.label.cmp(&b.label));
     items.dedup_by(|a, b| a.label == b.label);
+    items
+}
+
+fn declared_auto_import_items(
+    view: &FileView,
+    text: &str,
+    seen: &mut std::collections::HashSet<String>,
+) -> Vec<Item> {
+    if view.project.auto_imports.is_empty() {
+        return Vec::new();
+    }
+    let insert_line = require_insert_line(text);
+    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let needs_leading_eol =
+        insert_line >= text.lines().count() && !text.is_empty() && !text.ends_with('\n');
+    let mut cluster: Vec<(usize, String)> = Vec::new();
+    for (row, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("local ") else {
+            continue;
+        };
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if name.is_empty() || !rest[name.len()..].trim_start().starts_with('=') {
+            continue;
+        }
+        if view.project.auto_imports.iter().any(|(k, _)| *k == name) {
+            cluster.push((row, name));
+        }
+    }
+    cluster.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut items = Vec::new();
+    for (key, expr) in &view.project.auto_imports {
+        if seen.contains(key) || view.analysis.binding(key).is_some() {
+            continue;
+        }
+        seen.insert(key.clone());
+        let (line0, prefix) = if cluster.is_empty() {
+            (
+                insert_line,
+                if needs_leading_eol { eol } else { "" },
+            )
+        } else {
+            let row = match cluster.iter().find(|(_, k)| k.as_str() > key.as_str()) {
+                Some((row, _)) => *row,
+                None => cluster.iter().map(|(r, _)| *r).max().unwrap_or(0) + 1,
+            };
+            (row, "")
+        };
+        let new_text = format!("{prefix}local {key} = {expr}{eol}");
+        items.push(Item {
+            label: key.clone(),
+            kind: KIND_VARIABLE,
+            detail: format!("auto-import — {expr}"),
+            insert_text: None,
+            is_snippet: false,
+            sort_text: Some(format!("z_{key}")),
+            auto_import: Some(AutoImport {
+                line0: line0 as u32,
+                new_text,
+            }),
+            extra_edit: None,
+        });
+    }
     items
 }
 
@@ -1977,6 +2066,105 @@ fn class_member_completion(text: &str, line0: usize, col0: usize) -> Option<Vec<
     Some(items)
 }
 
+fn line_block_balance(stripped_line: &str) -> i32 {
+    let mut balance = 0i32;
+    let mut prev = String::new();
+    let mut saw_loop_word = false;
+    for word in stripped_line
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+    {
+        match word {
+            "if" | "for" | "while" | "switch" | "case" | "default" | "constructor"
+            | "destructor" | "operator" => {
+                balance += 1;
+                if word == "for" || word == "while" {
+                    saw_loop_word = true;
+                }
+            }
+            "function" => {
+                if prev != "abstract" {
+                    balance += 1;
+                }
+            }
+            "do" => {
+                if prev != "for" && prev != "while" && !saw_loop_word {
+                    balance += 1;
+                }
+            }
+            "end" => balance -= 1,
+            _ => {}
+        }
+        prev = word.to_string();
+    }
+    balance
+}
+
+fn branch_indent_edit(
+    text: &str,
+    cur_line: &str,
+    line0: usize,
+    col0: usize,
+) -> Option<ExtraEdit> {
+    let before: String = cur_line.chars().take(col0).collect();
+    let partial = before.trim_start();
+    if !partial.is_empty() && !"elseif".starts_with(partial) && !"else".starts_with(partial) {
+        return None;
+    }
+    let cur_indent_len = before.chars().count() - partial.chars().count();
+    let stripped = strip_to_code(text);
+    let lines: Vec<&str> = stripped.lines().collect();
+    let mut pending_ends = 0i32;
+    for l in (0..line0.min(lines.len())).rev() {
+        let s = lines[l];
+        if s.trim().is_empty() {
+            continue;
+        }
+        let st = s.trim_start();
+        let first = st
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .find(|w| !w.is_empty())
+            .unwrap_or("");
+        let net = line_block_balance(s);
+        if net <= -1 {
+            pending_ends += -net;
+            continue;
+        }
+        if net >= 1 {
+            if pending_ends >= net {
+                pending_ends -= net;
+                continue;
+            }
+            if first != "if" {
+                return None;
+            }
+            let indent: String = s.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+            if indent.chars().count() == cur_indent_len {
+                return None;
+            }
+            return Some(ExtraEdit {
+                line0: line0 as u32,
+                start_col: 0,
+                end_col: cur_indent_len as u32,
+                new_text: indent,
+            });
+        }
+        if pending_ends == 0 && (first == "else" || first == "elseif") {
+            let indent: String = s.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+            if indent.chars().count() == cur_indent_len {
+                return None;
+            }
+            return Some(ExtraEdit {
+                line0: line0 as u32,
+                start_col: 0,
+                end_col: cur_indent_len as u32,
+                new_text: indent,
+            });
+        }
+    }
+    None
+}
+
 fn literal_strings_of_type(ty: &Type) -> Vec<String> {
     match ty {
         Type::StringLit(s) => vec![s.clone()],
@@ -2023,12 +2211,22 @@ fn call_argument_literals(
     if callee_text.is_empty() {
         return None;
     }
+    let colon_call = callee_text
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !(c.is_alphanumeric() || *c == '_'))
+        .is_some_and(|(_, c)| c == ':');
     let probe = format!("{callee_text}.");
     let chain = chain_before(&probe, probe.chars().count())?;
     let self_class = enclosing_class(text, line0, col0);
     let ty = view.resolve_chain_in(&chain.segments, line0 as u32 + 1, self_class.as_deref())?;
     let param_ty = match &ty {
-        Type::Function(Some(ft)) => ft.params.get(arg_idx).map(|p| p.ty.clone()),
+        Type::Function(Some(ft)) => {
+            let skip_self = colon_call
+                && ft.params.first().map(|p| p.name.as_str()) == Some("self");
+            let idx = if skip_self { arg_idx + 1 } else { arg_idx };
+            ft.params.get(idx).map(|p| p.ty.clone())
+        }
         Type::Class(c) => view
             .find_class(c)
             .and_then(|info| info.constructor.as_ref())

@@ -2,8 +2,8 @@
 <p>LUAR ships with a language server and a VS Code extension (<code>luar-lsp</code>,
 in <code>Luar-LSP/</code>). The server resolves the type of every binding by walking the
 real parser's AST, honours every written annotation, and powers completion,
-hover, inlay hints, and diagnostics. This page explains what the tooling does,
-the built-in type functions, and <code>.luard</code> ambient files.</p>
+hover, inlay hints, semantic coloring, and diagnostics. This page explains what
+the tooling does, the built-in type functions, and <code>.luard</code> ambient files.</p>
 
 <div class="note">A manually written type always wins over an inferred one.
 Anywhere you write <code>: T</code> or cast with <code>:: T</code>, the tool takes your
@@ -12,12 +12,22 @@ word for it.</div>
 <h3>Settings</h3>
 <table>
 <tr><th>Setting</th><th>Default</th><th>Effect</th></tr>
-<tr><td><code>luar.inlayHints</code></td><td><code>true</code></td><td>Show <code>: type</code> inlay hints on declarations. Hints appear only on the initial declaration (not on reassignments), and not on <code>local function name()</code> sugar. Casts such as <code>local x = nil :: T</code> do show their resolved type.</td></tr>
-<tr><td><code>luar.showMutability</code></td><td><code>true</code></td><td>Prefix hints with <code>imut</code> / <code>mut</code>.</td></tr>
-<tr><td><code>luar.autoIndent</code></td><td><code>true</code></td><td>Pressing Enter after a block opener inserts the matching <code>end</code> (checking the block is not already closed), and completes a missing <code>then</code> / <code>do</code> after <code>if x == "y"</code> or <code>for _, v in ipairs(t)</code>.</td></tr>
+<tr><td><code>luar.inlayHints</code></td><td><code>true</code></td><td>Show <code>: type</code> inlay hints on declarations. Hints appear only on the initial declaration (not on reassignments), and not on <code>function name()</code> lines. Casts such as <code>local x = nil :: T</code> do show their resolved type.</td></tr>
+<tr><td><code>luar.showMutability</code></td><td><code>true</code></td><td>Prefix inlay hints with <code>imut</code> / <code>mut</code> to show binding mutability. With it off, hints show just the type.</td></tr>
+<tr><td><code>luar.autoIndent</code></td><td><code>true</code></td><td>Pressing Enter after a block opener inserts the matching <code>end</code> (checking the block is not already closed), and completes a missing <code>then</code> / <code>do</code> after headers like <code>if x == "y"</code> or <code>for _, v in ipairs(t)</code>. Full rules under <i>Auto-end insertion</i> below.</td></tr>
 <tr><td><code>luar.autoImport</code></td><td><code>true</code></td><td>Every project module's name appears in completion; accepting one inserts <code>local name = require("...")</code> after your existing requires (or at the top of the file), preferring <code>@aliases</code> and otherwise the shortest <code>./</code> / <code>../</code> path. Modules already required (and names already in scope) are not offered.</td></tr>
-<tr><td><code>luar.serverPath</code></td><td><code>""</code></td><td>Override the bundled server binary.</td></tr>
-<tr><td><code>luar.trace.server</code></td><td><code>off</code></td><td>LSP message tracing.</td></tr>
+<tr><td><code>luar.serverPath</code></td><td><code>""</code></td><td>Path to an external <code>luar-lsp</code> executable. Empty uses the server bundled with the extension. Read when the client starts &mdash; run <i>Luar: Restart Language Server</i> after changing it.</td></tr>
+<tr><td><code>luar.trace.server</code></td><td><code>off</code></td><td>LSP message tracing: <code>off</code>, <code>messages</code>, or <code>verbose</code>.</td></tr>
+</table>
+<p><code>inlayHints</code>, <code>showMutability</code>, and <code>autoImport</code> are
+synced to the server live &mdash; changing them applies immediately.
+<code>autoIndent</code> is read by the extension on every keypress, so it also
+applies immediately.</p>
+
+<h3>Commands</h3>
+<table>
+<tr><th>Command</th><th>Effect</th></tr>
+<tr><td><b>Luar: Restart Language Server</b> (<code>luar.restartServer</code>)</td><td>Stops and restarts the server. Use it after changing <code>luar.serverPath</code>, after rebuilding the server binary, or to force a full re-read of external <code>.luard</code> files.</td></tr>
 </table>
 
 <h3>What gets resolved</h3>
@@ -31,7 +41,16 @@ join point. Reassigning a <code>const</code> or bare binding to anything but
 <code>nil</code> is flagged as an error, matching Ferrite.</p>
 
 <h3>Completion</h3>
+<p>Completion triggers on <code>.</code> <code>:</code> <code>"</code> <code>'</code>
+<code>@</code> <code>/</code> and <code>#</code>, and on plain identifiers.</p>
 <ul>
+<li><b>Names in scope</b> &mdash; every binding declared at or above the cursor,
+the parameters of the enclosing <code>function</code> / <code>constructor</code> /
+<code>operator</code> / <code>get</code> / <code>set</code> block, and loop
+variables. Parameters are found by a textual block scan, so they complete even
+while the file is mid-edit and does not parse. Globals from <code>.luard</code>
+files, <code>pub</code> globals from other files, and the builtin library round out
+the list; function names insert as call snippets.</li>
 <li><b>Members</b> &mdash; <code>v.</code> lists fields and getters; <code>v:</code> lists methods.
 Inheritance, mixins, interfaces, and <code>override</code> are followed. Private and
 protected members are hidden outside their class; <code>self.</code> sees everything.</li>
@@ -40,7 +59,11 @@ protected members are hidden outside their class; <code>self.</code> sees everyt
 the same type, and <code>(value :: T).field</code> casts.</li>
 <li><b>Types</b> &mdash; after <code>:</code>, <code>::</code>, in <code>type X = ...</code> bodies,
 and in return positions. Generic parameters in scope (<code>function f&lt;T&gt;</code>,
-<code>type Box&lt;T&gt;</code>) are offered too.</li>
+<code>type Box&lt;T&gt;</code>) are offered too, along with the type functions below as
+snippets.</li>
+<li><b>Module types</b> &mdash; in a type position, <code>Mod.</code> lists the
+<code>export type</code> names of the module bound to <code>Mod</code> by a
+<code>require</code>.</li>
 <li><b>Literal unions</b> &mdash; a binding typed <code>"on" | "off"</code> (directly,
 through an alias, or through <code>keyof</code>) offers its strings when assigning,
 comparing, in <code>case</code> patterns, and as call arguments
@@ -48,27 +71,108 @@ comparing, in <code>case</code> patterns, and as call arguments
 <li><b>Require paths</b> &mdash; files and folders, <code>@aliases</code>, and
 <code>@self</code> (only inside <code>init.luar</code>). The requiring file is never
 listed for <code>./</code>.</li>
-<li><b>Bracket keys</b> &mdash; <code>t["</code> offers string keys, including keys
-that need brackets like <code>["easter.Test tes"]</code>; such keys are excluded from
-dot completion.</li>
+<li><b>Bracket keys</b> &mdash; <code>t["</code> offers the table's string keys;
+<code>t[</code> offers them too and accepting one inserts <code>"key"]</code>. Keys that
+cannot be written with a dot (such as <code>["easter.Test tes"]</code>) also appear
+in <code>t.</code> completion as bracketed entries &mdash; accepting one removes the
+dot and writes the bracket form. <code>t:</code> completion drops bracket-only
+keys.</li>
+<li><b>Auto-import</b> &mdash; project modules not yet required, sorted to the
+bottom of the list (see the <code>luar.autoImport</code> setting).</li>
+<li><b>Directives</b> &mdash; after <code>--#</code> the editor completes
+<code>disable</code> / <code>disable-line</code> / <code>disable-next-line</code>, then the
+check names (see <i>Ferrite lints in the editor</i> below).</li>
 </ul>
 
-<h3>Hover and inlay hints</h3>
+<h3>Hover and documentation comments</h3>
 <p>Hovering a function shows its full signature
-(<code><span class="fn">clamp</span>(x: <span class="typ">number</span>, lo: <span class="typ">number</span>) -&gt; <span class="typ">number</span></code>).
-A <code>--</code> comment block written directly above a declaration &mdash; including
-class methods &mdash; is shown as documentation. Hovering <code>self</code> or
-<code>super</code> shows the enclosing class.</p>
+(<code><span class="fn">clamp</span>(x: <span class="typ">number</span>, lo: <span class="typ">number</span>) -&gt; <span class="typ">number</span></code>);
+other bindings show their declaration form (<code>const name: T</code>,
+<code>local name: T</code>, <code>buff name: T</code>, <code>class Name</code>,
+<code>enum Name</code>, <code>interface Name</code>). Hovering <code>self</code> or
+<code>super</code> shows the enclosing class or its parent.</p>
+<p>A block of consecutive <code>--</code> comment lines written directly above a
+declaration is shown as documentation on hover &mdash; for class members too,
+following the parent chain to find the documented definition, and for
+<code>.luard</code> globals, reading the declaring ambient file. Extra leading
+dashes and <code>--[[ ]]</code> markers are stripped, so <code>---</code> doc style
+works. A <code>--#</code> directive line is not documentation and ends the
+block.</p>
+<pre><code><span class="com">-- Clamps x into the inclusive range lo..hi.</span>
+<span class="com">-- Returns lo when x is below it, hi when above.</span>
+<span class="kw">function</span> <span class="fn">clamp</span>(x: <span class="typ">number</span>, lo: <span class="typ">number</span>, hi: <span class="typ">number</span>): <span class="typ">number</span>
+  <span class="kw">return</span> math.clamp(x, lo, hi)
+<span class="kw">end</span></code></pre>
+
+<h3>Inlay hints</h3>
+<p>Each declaration line gets a hint with the binding's resolved type, rendered
+right after the name &mdash; writing <code>local hp = 100</code> displays as if it
+were <code>local hp: mut number = 100</code>. The rules:</p>
+<ul>
+<li>Hints appear on declarations (<code>local</code>, <code>const</code>, <code>pub</code>),
+on bare assignments (shown as <code>imut</code> &mdash; they declare an immutable
+binding), and on <code>buff</code> declarations (shown as <code>mut</code>).
+Reassignments get no hint.</li>
+<li>A binding with a written <code>: T</code> annotation is skipped &mdash; you
+already said what it is. A <code>:: T</code> cast is not an annotation, so the
+resolved type still shows.</li>
+<li>Lines declaring a function (<code>function name(...)</code>) are skipped.</li>
+<li>With <code>luar.showMutability</code> off the label is just <code>: type</code>.
+Labels longer than 48 characters are truncated with <code>&hellip;</code>.</li>
+</ul>
+
+<h3>Auto-end insertion</h3>
+<p>With <code>luar.autoIndent</code> on, pressing Enter runs two checks against a
+copy of the document with comments and strings stripped (block comments, long
+strings, and backtick strings are all understood):</p>
+<ul>
+<li><b>Missing keyword</b> &mdash; if the line you left is an <code>if</code> /
+<code>elseif</code> header without <code>then</code>, or a <code>for</code> /
+<code>while</code> header without <code>do</code>, the keyword is appended to the line.
+This only happens when the header actually has a condition &mdash; the line must
+end in a word, closing bracket, or quote, and not in a trailing
+<code>and</code>/<code>or</code>/<code>not</code>.</li>
+<li><b>Missing <code>end</code></b> &mdash; if the line opens a block
+(<code>if</code>, <code>for</code>, <code>while</code>, <code>function</code>,
+<code>switch</code>, <code>case</code>, <code>default</code>, <code>constructor</code>,
+<code>destructor</code>, <code>operator</code>, <code>get name(</code> /
+<code>set name(</code>, or a leading <code>do</code>) <em>and</em> the whole document has
+more openers than <code>end</code>s, an <code>end</code> is inserted on the line below
+the cursor at the opener's indentation. <code>elseif</code> never gets an
+<code>end</code>. If the next line holds only closers (<code>)]},;</code>), the
+<code>end</code> goes in front of them.</li>
+</ul>
+<p>The balance counting knows that <code>for ... do</code> and
+<code>while ... do</code> are one block, not two, and that
+<code>interface { ... }</code> bodies are closed by braces rather than
+<code>end</code>.</p>
+
+<h3>Semantic coloring of <code>.luard</code> globals</h3>
+<p>Identifiers that name a global declared in a <code>.luard</code> ambient file are
+emitted as semantic tokens (<code>function</code> for function-typed globals,
+<code>variable</code> otherwise, always with the <code>defaultLibrary</code>
+modifier), so an engine's injected API is visibly distinct everywhere it is
+used. The extension maps both to the <code>support.function.builtin.luar</code>
+TextMate scope, which themes color like builtins. Identifiers directly after
+<code>.</code> or <code>:</code> are skipped, so fields that merely share a name stay
+uncolored. The extension also ships default colors for enum names
+(<code>entity.name.type.enum.luar</code>) and enum members
+(<code>variable.other.enummember.luar</code>).</p>
 
 <h3>Diagnostics</h3>
+<p>These are produced by the language server itself; Ferrite's lints are merged
+in alongside them (see below). Every code here honours the same
+<code>--#disable</code> directives as Ferrite.</p>
 <table>
-<tr><th>Diagnostic</th><th>Severity</th></tr>
-<tr><td>Parse errors (the analysis keeps working while you type)</td><td>error</td></tr>
-<tr><td>Reassigning an immutable binding to non-<code>nil</code></td><td>error</td></tr>
-<tr><td>Duplicate enum variants in one declaration</td><td>error</td></tr>
-<tr><td>Generic arity mismatch (<code>Box</code> used without <code>&lt;T&gt;</code>)</td><td>error</td></tr>
-<tr><td>Unknown <code>extends</code>/<code>mixin</code> target (names are case-sensitive)</td><td>warning</td></tr>
-<tr><td>A <code>require</code> that closes a cycle (the runtime errors on these)</td><td>warning</td></tr>
+<tr><th>Code</th><th>Severity</th><th>Fires when</th></tr>
+<tr><td>(syntax)</td><td>error</td><td>The file does not lex or parse. Analysis keeps working while you type by repairing around the error.</td></tr>
+<tr><td><code>MutateImmutable</code></td><td>error</td><td>Reassigning an immutable binding to non-<code>nil</code>: "cannot reassign immutable 'x' (only nil is allowed, which frees it)". Aware of <code>.luard</code> globals' declared mutability.</td></tr>
+<tr><td><code>DuplicateEnumVariant</code></td><td>error</td><td>The same variant name appears twice in one <code>enum</code> declaration.</td></tr>
+<tr><td><code>GenericArity</code></td><td>error</td><td>A generic type is used with the wrong number of arguments: "type 'Box' expects 1 generic argument(s), got 0".</td></tr>
+<tr><td><code>UnknownClass</code></td><td>warning</td><td>An <code>extends</code> or <code>mixin</code> target no file declares (class names are case-sensitive).</td></tr>
+<tr><td><code>FinalOverride</code></td><td>error</td><td>Extending a <code>final</code> class, or overriding a <code>final</code> method &mdash; both error at runtime.</td></tr>
+<tr><td><code>RequireCycle</code></td><td>warning</td><td>A <code>require</code> that closes a cycle, with the full chain (<code>a -&gt; b -&gt; a</code>) &mdash; the runtime errors on these.</td></tr>
+<tr><td><code>NotNil</code></td><td>error</td><td>A binding annotated <code>NotNil&lt;T&gt;</code> declared without a non-nil initializer; assigning literal <code>nil</code> to a <code>NotNil</code> variable; or passing literal <code>nil</code> to a parameter typed <code>NotNil</code>.</td></tr>
 </table>
 
 <h3>Modules in the editor</h3>
@@ -78,7 +182,9 @@ extra dot climbs one level (<code>../</code>, <code>.../</code>, &hellip;); a fo
 modules; <code>require</code> takes the type of whatever the module returns.
 <b>Inside <code>init.luar</code>, <code>./</code> resolves to the folder's parent</b> &mdash;
 the file stands for the folder itself, and <code>@self</code> reaches its contents.
-Aliases come from a <code>luari.json</code> at the project root:</p>
+Aliases come from a <code>luari.json</code> (also accepted: <code>luari</code>,
+<code>.luari</code>) at the project root, and the extension watches it &mdash; alias
+edits apply live:</p>
 <pre><code>{
   <span class="str">"aliases"</span>: {
     <span class="str">"Settings"</span>: <span class="str">"./Scenes/Settings"</span>
@@ -98,9 +204,11 @@ type syntax, and the angle brackets follow the normal generic grammar.</p>
 <tr><td><code>keyof&lt;T&gt;</code></td><td>Union of <code>T</code>'s field names as string literals. <code>keyof&lt;{ a: number, b: string }&gt;</code> is <code>"a" | "b"</code>. Drives string autocompletion.</td></tr>
 <tr><td><code>ValueOf&lt;T, K&gt;</code></td><td>The type of field <code>K</code> in <code>T</code>. <code>K</code> may be a literal or a union of literals: <code>ValueOf&lt;T, keyof&lt;T&gt;&gt;</code> is the union of all field types.</td></tr>
 <tr><td><code>ToBasic&lt;T&gt;</code></td><td>Widens to the basic kind: literals to <code>string</code>/<code>number</code>/<code>boolean</code>, records to <code>table</code>, classes to <code>class</code>, enums to <code>enum</code>, functions to <code>function</code>. Unions widen member-wise.</td></tr>
+<tr><td><code>NotNil&lt;T&gt;</code></td><td>Strips <code>nil</code> from <code>T</code> (unions and <code>T?</code> optionals). A binding typed <code>NotNil</code> must be initialized non-nil and can never be assigned literal <code>nil</code> &mdash; enforced by the <code>NotNil</code> diagnostic above.</td></tr>
 </table>
 <p>Both capitalisations are accepted (<code>keyof</code>/<code>KeyOf</code>,
-<code>valueof</code>/<code>ValueOf</code>, <code>tobasic</code>/<code>ToBasic</code>).</p>
+<code>valueof</code>/<code>ValueOf</code>, <code>tobasic</code>/<code>ToBasic</code>,
+<code>notnil</code>/<code>NotNil</code>).</p>
 
 <h3>Generics</h3>
 <pre><code><span class="kw">local</span> <span class="kw">function</span> <span class="fn">identity</span>&lt;T&gt;(x: <span class="typ">T</span>): <span class="typ">T</span>
@@ -157,11 +265,22 @@ TICK_RATE: <span class="typ">number</span> = <span class="num">60</span></code><
 <p>With that file anywhere in the project, every <code>.luar</code> file can call
 <code>spawn("door")</code> and get an <code>Entity</code> back, hover
 <code>TICK_RATE</code>, and use <code>EntityId</code> in annotations. Doc comments
-above the declarations appear on hover.</p>
+above the declarations appear on hover, and the declared names are
+semantically colored as builtins (see above). Function bodies can be empty
+&mdash; only the signatures matter. <code>.luard</code> files are not linted by
+Ferrite.</p>
+<p><b>Mutability carries over.</b> A <code>const</code> declaration (and
+<code>function</code> declarations, which are const by default) makes an immutable
+global: reassigning it in any <code>.luar</code> file is flagged
+<code>MutateImmutable</code>. A <code>local</code> declaration makes a mutable global,
+and the bare annotated form (<code>TICK_RATE: number = 60</code>) is also treated
+as mutable in a <code>.luard</code> file. A file that declares its own binding with
+the same name shadows the ambient global, and the local declaration's rules
+win.</p>
 <p>Ambient files do not have to live in the project. The <code>luard</code> key in
 <code>luari.json</code> imports external <code>.luard</code> files by path &mdash;
 absolute (an engine's types kept in AppData) or relative to the config file. It
-accepts one path or a list, and editing <code>luari.json</code> reloads them live:</p>
+accepts one path or a list:</p>
 <pre><code>{
     <span class="str">"aliases"</span>: { <span class="str">"Settings"</span>: <span class="str">"./Scenes/Settings"</span> },
     <span class="str">"luard"</span>: [
@@ -169,13 +288,56 @@ accepts one path or a list, and editing <code>luari.json</code> reloads them liv
         <span class="str">"./vendor/extra.luard"</span>
     ]
 }</code></pre>
+<p><b>When changes are picked up.</b> Editing any <code>.luard</code> file inside
+VS Code re-analyzes the ambient globals live. <code>luari.json</code> is watched:
+changing the <code>luard</code> list (adding or removing a path) reloads the
+ambient set. But an external <code>.luard</code> file edited <em>outside</em> the
+editor is not watched &mdash; open it in VS Code, change the <code>luard</code>
+list, or run <i>Luar: Restart Language Server</i> to pick the edit up.</p>
+
+<h3>Declared auto-imports (<code>Auto</code> blocks)</h3>
+<p>A <code>.luard</code> file may contain <code>Auto</code> blocks &mdash; a feature
+exclusive to ambient files. Each entry pairs a name with an expression; the name
+then shows up in completion in every <code>.luar</code> file, and accepting it
+inserts a binding near the top of the file, the same way module
+<a href="#lsp">auto-import</a> inserts a <code>require</code>.</p>
+<pre><code><span class="com">-- engine.luard</span>
+<span class="kw">const</span> game = {}
+
+Auto {
+    key <span class="str">"DS"</span> Variable <span class="str">"game:GetService(\"DataStoreService\")"</span>
+    key <span class="str">"Net"</span> Variable <span class="str">"game:GetService(\"NetworkService\")"</span>
+}</code></pre>
+<p>With that in place, typing <code>DS</code> in a script offers a completion item
+labeled <code>auto-import — game:GetService("DataStoreService")</code>. Accepting
+it inserts</p>
+<pre><code><span class="kw">local</span> DS = game:GetService(<span class="str">"DataStoreService"</span>)</code></pre>
+<p>after the file's <code>require</code> lines (or at the top when there are
+none), and leaves what you typed in place. The rules:</p>
+<ul>
+<li><code>key</code> is the variable name offered in completion; it must be a
+valid identifier. <code>Variable</code> is the exact expression text inserted on
+the right-hand side &mdash; escape quotes inside it with <code>\"</code>.</li>
+<li>Entries may be separated by newlines or commas, and several <code>Auto</code>
+blocks may appear across your <code>.luard</code> files. Duplicate keys keep the
+first entry.</li>
+<li>A name that the current file already binds (a local, a function, a previous
+import) is not offered again, so accepting an entry twice cannot duplicate the
+line.</li>
+<li>The block is editor-only syntax: it is stripped before the ambient file is
+type-checked, so it does not interfere with the other declarations around it. A
+malformed block is left in place and reported as a normal syntax error.</li>
+</ul>
 
 <h3>Ferrite lints in the editor</h3>
 <p>Every <code>.luar</code> file is checked live by
 <a href="#ferrite">Ferrite</a>, the built-in code analyzer. Warnings (unused
 variables, shadowing, unreachable code, duplicate keys, and the rest of the
-check table) appear as squiggles alongside the editor's own diagnostics.
-<code>.luard</code> ambient files are not linted.</p>
+check table) appear as squiggles alongside the editor's own diagnostics, with
+the check name appended to the message as <code>[Code]</code>. Ferrite's own
+<code>MutateImmutable</code> and <code>SyntaxError</code> are filtered out &mdash; the
+server's versions of those replace them. <code>.luard</code> ambient files are not
+linted.</p>
 <p>Silence checks with the same directives the runtime API honors &mdash; the
 editor autocompletes both the directive keywords and the check names after
 <code>--#</code>:</p>
@@ -185,7 +347,8 @@ x = <span class="num">2</span> <span class="com">--#disable-line MutateImmutable
 <span class="com">--#disable all</span>                               <span class="com">-- everything</span></code></pre>
 <p>Editor-only diagnostics are toggleable with the same syntax using these
 extra codes: <code>DuplicateEnumVariant</code>, <code>GenericArity</code>,
-<code>UnknownClass</code>, and <code>RequireCycle</code>.</p>
+<code>UnknownClass</code>, <code>RequireCycle</code>, <code>NotNil</code>, and
+<code>FinalOverride</code>.</p>
 
 <h3>Building the extension</h3>
 <pre><code>cd Luar-LSP

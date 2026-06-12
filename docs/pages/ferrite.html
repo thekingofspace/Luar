@@ -1,7 +1,8 @@
 <h1 id="ferrite">Ferrite checker</h1>
 <p>Ferrite is the static checker. It analyzes a program without running it and
-reports warnings and errors. The editor shows them inline, and the runner prints
-them before executing.</p>
+reports warnings and errors. The editor runs it live on every <code>.luar</code>
+file (see <a href="#lsp">Editor &amp; LSP</a>), and any Rust host can run the same
+checks with one function call.</p>
 
 <h3 id="ferrite-from-rust">Running Ferrite from Rust</h3>
 <p>Ferrite is one function. <code>luar::ferrite::check</code> takes source text and
@@ -24,7 +25,7 @@ yourself, and its <code>Display</code> produces the one-line form shown above.</
 <tr><td><code>severity</code></td><td><code>Severity</code></td><td><code>Severity::Warning</code> or <code>Severity::Error</code>. Only <code>BreakOutsideLoop</code> and <code>SyntaxError</code> are errors; every other check is a warning.</td></tr>
 <tr><td><code>code</code></td><td><code>&amp;'static str</code></td><td>The check name, such as <code>"MutateImmutable"</code> (see the table below).</td></tr>
 <tr><td><code>message</code></td><td><code>String</code></td><td>A human-readable explanation.</td></tr>
-<tr><td><code>line</code></td><td><code>u32</code></td><td>The 1-based source line (<code>0</code> for a whole-file syntax error).</td></tr>
+<tr><td><code>line</code></td><td><code>u32</code></td><td>The 1-based source line. A parse error carries the failing line; <code>0</code> means the lexer itself failed.</td></tr>
 </table>
 <p>Ferrite never decides for you whether to stop &mdash; it only reports. A typical
 runner checks first, prints everything, and refuses to run only if something is an
@@ -47,41 +48,73 @@ and the full list of lint codes is available at run time as
 <code>luar::ferrite::CHECKS</code>.</p>
 
 <h3>Checks</h3>
+<p>Every check is a warning except <code>BreakOutsideLoop</code> and
+<code>SyntaxError</code>, which are errors. Names starting with <code>_</code> are
+exempt from all three unused checks, and <code>pub</code> bindings are never
+flagged unused (they exist for other files). Loop lints point at the
+<code>for</code> line itself.</p>
 <table>
-<tr><th>Code</th><th>Meaning</th></tr>
-<tr><td>UnusedVariable</td><td>A declared variable is never used (prefix with _ to silence).</td></tr>
-<tr><td>UnusedParameter</td><td>A function parameter is never used.</td></tr>
-<tr><td>UnusedLoopVariable</td><td>A loop variable is never used.</td></tr>
-<tr><td>Redeclaration</td><td>A variable is redeclared in the same scope.</td></tr>
-<tr><td>ShadowedVariable</td><td>A variable shadows one from an outer scope.</td></tr>
-<tr><td>UnreachableCode</td><td>Code follows a return or break in the same block.</td></tr>
-<tr><td>EmptyBlock</td><td>An empty do, if, while, case, or default body.</td></tr>
-<tr><td>EmptyClass</td><td>A class with no members.</td></tr>
-<tr><td>SelfAssignment</td><td>A variable is assigned to itself.</td></tr>
-<tr><td>MutateImmutable</td><td>An immutable (const) variable is changed (assigning nil is allowed).</td></tr>
-<tr><td>BreakOutsideLoop</td><td>A break is not inside a loop (error).</td></tr>
-<tr><td>ConstantCondition</td><td>A condition is always true or always false.</td></tr>
-<tr><td>RedundantBoolean</td><td>Comparing with a boolean literal, such as x == true.</td></tr>
-<tr><td>DoubleNegation</td><td>not not x is redundant.</td></tr>
-<tr><td>DuplicateClassMember</td><td>A class member is declared more than once.</td></tr>
-<tr><td>DuplicateTableKey</td><td>A table key is set more than once.</td></tr>
-<tr><td>DuplicateCaseValue</td><td>A switch case value appears more than once.</td></tr>
-<tr><td>SelfComparison</td><td>A variable is compared with itself.</td></tr>
-<tr><td>DivisionByZero</td><td>Division or modulo by a literal zero.</td></tr>
-<tr><td>AbstractMethodWithBody</td><td>An abstract method has a body.</td></tr>
-<tr><td>FinalAndAbstract</td><td>A method is both abstract and final.</td></tr>
-<tr><td>SyntaxError</td><td>The file does not parse (error).</td></tr>
+<tr><th>Code</th><th>Severity</th><th>Fires on</th></tr>
+<tr><td>UnusedVariable</td><td>warning</td><td>A declared variable that is never read: <code>local count = 5</code> and nothing uses <code>count</code>.</td></tr>
+<tr><td>UnusedParameter</td><td>warning</td><td>A function parameter that is never read: <code>function f(extra) return 1 end</code>.</td></tr>
+<tr><td>UnusedLoopVariable</td><td>warning</td><td>A loop variable that is never read: <code>for i = 1, 10 do print("x") end</code>.</td></tr>
+<tr><td>Redeclaration</td><td>warning</td><td>The same name declared twice in one scope: <code>local x = 1</code> then <code>local x = 2</code>.</td></tr>
+<tr><td>ShadowedVariable</td><td>warning</td><td>A declaration hiding an outer variable: <code>local x = 1</code> then <code>do local x = 2 ... end</code>.</td></tr>
+<tr><td>UnreachableCode</td><td>warning</td><td>A statement after <code>return</code> or <code>break</code> in the same block: <code>return 1</code> followed by <code>print(2)</code>.</td></tr>
+<tr><td>EmptyBlock</td><td>warning</td><td>An empty <code>do</code>, <code>if</code>, <code>else</code>, <code>while</code>, <code>case</code>, or <code>default</code> body: <code>do end</code>.</td></tr>
+<tr><td>EmptyClass</td><td>warning</td><td>A class with no members at all: <code>class C {}</code>.</td></tr>
+<tr><td>SelfAssignment</td><td>warning</td><td>Assigning a variable to itself: <code>x = x</code>.</td></tr>
+<tr><td>MutateImmutable</td><td>warning</td><td>Reassigning an immutable (const) variable: <code>const x = 1</code> then <code>x = 2</code>. Assigning <code>nil</code> is allowed &mdash; it frees the binding.</td></tr>
+<tr><td>BreakOutsideLoop</td><td><b>error</b></td><td>A <code>break</code> with no enclosing loop &mdash; function bodies start a fresh loop context, so a <code>break</code> inside a callback in a loop still fires.</td></tr>
+<tr><td>ConstantCondition</td><td>warning</td><td>A literal <code>true</code>/<code>false</code> condition: <code>if true then ... end</code>, <code>while false do ... end</code>.</td></tr>
+<tr><td>RedundantBoolean</td><td>warning</td><td>Comparing with a boolean literal using <code>==</code> or <code>~=</code>: <code>x == true</code>, <code>x ~= false</code>.</td></tr>
+<tr><td>DoubleNegation</td><td>warning</td><td><code>not not x</code> &mdash; redundant.</td></tr>
+<tr><td>DuplicateClassMember</td><td>warning</td><td>A field, method, getter, or setter declared twice in one class: <code>class C { x = 1  x = 2 }</code> (a getter and setter of the same name are fine &mdash; they count separately).</td></tr>
+<tr><td>DuplicateTableKey</td><td>warning</td><td>A literal key set twice in one table constructor: <code>{ a = 1, a = 2 }</code>. Literal string, number, and boolean keys are tracked.</td></tr>
+<tr><td>DuplicateCaseValue</td><td>warning</td><td>Two <code>case</code> patterns with the same literal value in one <code>switch</code>: <code>case 2 ... end</code> twice.</td></tr>
+<tr><td>SelfComparison</td><td>warning</td><td>A variable compared with itself with any comparison operator: <code>x == x</code>, <code>x &lt; x</code>.</td></tr>
+<tr><td>DivisionByZero</td><td>warning</td><td><code>/</code> or <code>%</code> with a literal zero on the right: <code>x / 0</code>, <code>x % 0.0</code>.</td></tr>
+<tr><td>AbstractMethodWithBody</td><td>warning</td><td>An <code>abstract</code> method that has statements in its body: <code>abstract function f() return 1 end</code>.</td></tr>
+<tr><td>FinalAndAbstract</td><td>warning</td><td>A method marked both <code>abstract</code> and <code>final</code> &mdash; it can neither be used nor overridden.</td></tr>
+<tr><td>SyntaxError</td><td><b>error</b></td><td>The file does not tokenize or parse. Returned alone &mdash; no other checks run on a broken file.</td></tr>
+</table>
+
+<h3>Editor-only checks</h3>
+<p>The language server adds its own diagnostics on top of Ferrite (described in
+full on the <a href="#lsp">Editor &amp; LSP</a> page). They honor exactly the same
+directives, so these codes work in <code>--#disable</code> lines too:</p>
+<table>
+<tr><th>Code</th><th>Severity</th><th>Fires on</th></tr>
+<tr><td>MutateImmutable</td><td>error</td><td>The editor's own version of the check above, aware of <code>.luard</code> ambient globals' mutability. It replaces Ferrite's in the editor.</td></tr>
+<tr><td>DuplicateEnumVariant</td><td>error</td><td>The same variant name twice in one <code>enum</code> declaration.</td></tr>
+<tr><td>GenericArity</td><td>error</td><td>A generic type used with the wrong number of arguments: <code>Box</code> where <code>Box&lt;T&gt;</code> is required.</td></tr>
+<tr><td>UnknownClass</td><td>warning</td><td>An <code>extends</code>/<code>mixin</code> target no file declares (names are case-sensitive).</td></tr>
+<tr><td>RequireCycle</td><td>warning</td><td>A <code>require</code> that closes a cycle &mdash; the runtime errors on these.</td></tr>
+<tr><td>NotNil</td><td>error</td><td>Declaring a <code>NotNil&lt;T&gt;</code> binding without a non-nil initializer, assigning literal <code>nil</code> to one, or passing literal <code>nil</code> to a <code>NotNil</code> parameter.</td></tr>
+<tr><td>FinalOverride</td><td>error</td><td>Extending a <code>final</code> class or overriding a <code>final</code> method &mdash; both error at runtime.</td></tr>
 </table>
 
 <h3 id="directives">Directives</h3>
 <p>A directive is a comment beginning with <code>--#</code>. Use it to silence
-checks. Names can be comma or space separated, and <code>all</code> silences
-everything.</p>
-<pre><code><span class="com">--#disable UnusedVariable</span>             <span class="com"># whole file</span>
-<span class="com">--#disable MutateImmutable, UnusedVariable</span>   <span class="com"># several at once</span>
-<span class="com">--#disable all</span>                         <span class="com"># everything</span>
+checks. After the keyword, list check names separated by commas and/or spaces
+&mdash; no braces, no quotes. The special name <code>all</code> silences
+everything. Three forms exist:</p>
+<table>
+<tr><th>Form</th><th>Scope</th></tr>
+<tr><td><code>--#disable Code1, Code2</code></td><td>The whole file, on its own line or anywhere in one.</td></tr>
+<tr><td><code>--#disable-line Code1, Code2</code></td><td>Only the line the directive is on &mdash; written at the end of the offending line.</td></tr>
+<tr><td><code>--#disable-next-line Code1, Code2</code></td><td>Only the line directly below the directive.</td></tr>
+</table>
+<pre><code><span class="com">--#disable UnusedVariable</span>                    <span class="com">-- whole file</span>
+<span class="com">--#disable MutateImmutable, UnusedVariable</span>   <span class="com">-- several at once</span>
+<span class="com">--#disable all</span>                               <span class="com">-- everything</span>
 
-x = <span class="num">2</span>  <span class="com">--#disable-line MutateImmutable</span>   <span class="com"># just this line</span>
+x = <span class="num">2</span>  <span class="com">--#disable-line MutateImmutable</span>       <span class="com">-- just this line</span>
 
-<span class="com">--#disable-next-line MutateImmutable</span>     <span class="com"># the following line</span>
+<span class="com">--#disable-next-line MutateImmutable</span>         <span class="com">-- the following line</span>
 x = <span class="num">3</span></code></pre>
+<p>The directive is found by scanning each line for the <code>--#disable</code>
+text, so it works inside a longer comment too. In the editor, typing
+<code>--#</code> autocompletes the three keywords, and after one of them the full
+list of check names &mdash; Ferrite's and the editor-only codes &mdash; is
+offered.</p>

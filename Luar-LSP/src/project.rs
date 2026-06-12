@@ -40,6 +40,7 @@ pub struct Project {
     pub luard_env: TypeEnv,
     pub luard_classes: HashMap<String, ClassInfo>,
     pub luard_enums: HashMap<String, EnumInfo>,
+    pub auto_imports: Vec<(String, String)>,
     pub pub_globals: Vec<(String, Type, PathBuf)>,
     pub pub_classes: HashMap<String, (ClassInfo, PathBuf)>,
     pub pub_enums: HashMap<String, (EnumInfo, PathBuf)>,
@@ -455,6 +456,13 @@ impl Project {
                 project.add_luard_source(&src);
             }
         }
+        if all_luard.len() > 1 {
+            for path in &all_luard {
+                if let Ok(src) = std::fs::read_to_string(path) {
+                    project.add_luard_source(&src);
+                }
+            }
+        }
 
         let mut sources: Vec<(PathBuf, String)> = Vec::new();
         for path in &luar_paths {
@@ -470,12 +478,20 @@ impl Project {
     }
 
     pub fn add_luard_source(&mut self, src: &str) {
+        let (cleaned, autos) = extract_auto_imports(src);
+        for (key, expr) in autos {
+            if !self.auto_imports.iter().any(|(k, _)| *k == key) {
+                self.auto_imports.push((key, expr));
+            }
+        }
+        let src = cleaned.as_str();
         let Ok(program) = crate::parse_source_safe(src) else {
             return;
         };
         let ann = annotations::scan(src);
         let mut env = TypeEnv::from_program(&program);
         env.apply_annotations(&ann);
+        env.merge_globals(&self.luard_env);
         let opts = InferOptions {
             annotations: Some(&ann),
             env: Some(&env),
@@ -506,7 +522,9 @@ impl Project {
         self.luard_classes.clear();
         self.luard_enums.clear();
         self.luard_env = TypeEnv::default();
+        self.auto_imports.clear();
         let paths = self.luard_files.clone();
+        let mut sources: Vec<String> = Vec::with_capacity(paths.len());
         for path in &paths {
             let src = match overlay.get(path) {
                 Some(s) => s.clone(),
@@ -515,7 +533,15 @@ impl Project {
                     Err(_) => continue,
                 },
             };
-            self.add_luard_source(&src);
+            sources.push(src);
+        }
+        for src in &sources {
+            self.add_luard_source(src);
+        }
+        if sources.len() > 1 {
+            for src in &sources {
+                self.add_luard_source(src);
+            }
         }
     }
 
@@ -743,9 +769,24 @@ impl Project {
         for (line, t) in ann_sites {
             visit_named_segs(t, &mut |seg: &NameSeg| {
                 if let Some(alias) = env.aliases.get(&seg.name) {
-                    let expected = alias.generics.len();
+                    let has_pack = alias.generics.iter().any(|g| g.ends_with("..."));
+                    let fixed = alias
+                        .generics
+                        .iter()
+                        .filter(|g| !g.ends_with("..."))
+                        .count();
                     let got = seg.args.as_ref().map(|a| a.len()).unwrap_or(0);
-                    if expected != got && !directives.silences("GenericArity", line) {
+                    let bad = if has_pack {
+                        got < fixed
+                    } else {
+                        got != fixed
+                    };
+                    if bad && !directives.silences("GenericArity", line) {
+                        let expected = if has_pack {
+                            format!("at least {fixed}")
+                        } else {
+                            fixed.to_string()
+                        };
                         diagnostics.push(crate::Diagnostic {
                             line,
                             col: 1,
@@ -842,6 +883,16 @@ impl Project {
             }
         }
         if path.extension().map(|e| e == "luar").unwrap_or(false) {
+            let (_, autos) = extract_auto_imports(&source);
+            if !autos.is_empty() {
+                let line = find_word_line(&source, "Auto").unwrap_or(1);
+                diagnostics.push(crate::Diagnostic {
+                    line,
+                    col: 1,
+                    message: "Auto blocks only work in .luard ambient files — move this block into a .luard file (or add one via the luari.json \"luard\" key)".into(),
+                    severity: 1,
+                });
+            }
             for d in luar::ferrite::check(&source) {
                 if d.code == "SyntaxError" || d.code == "MutateImmutable" {
                     continue;
@@ -1212,6 +1263,7 @@ fn merge_stale_analysis(current: &mut Analysis, previous: &Analysis) {
 
 fn visit_named_segs<'a>(t: &'a TypeExpr, f: &mut impl FnMut(&'a NameSeg)) {
     match t {
+        TypeExpr::Pack(_) => {}
         TypeExpr::Named(segs) => {
             for seg in segs {
                 f(seg);
@@ -1241,7 +1293,7 @@ fn visit_named_segs<'a>(t: &'a TypeExpr, f: &mut impl FnMut(&'a NameSeg)) {
             TableTypeExpr::Array(elem) => visit_named_segs(elem, f),
             TableTypeExpr::Empty => {}
         },
-        TypeExpr::Function { params, ret } => {
+        TypeExpr::Function { params, ret, .. } => {
             for p in params {
                 match p {
                     Param::Positional { ty, .. } => visit_named_segs(ty, f),
@@ -1253,6 +1305,145 @@ fn visit_named_segs<'a>(t: &'a TypeExpr, f: &mut impl FnMut(&'a NameSeg)) {
         }
         TypeExpr::StringLit(_) | TypeExpr::NumberLit(_) => {}
     }
+}
+
+pub fn extract_auto_imports(src: &str) -> (String, Vec<(String, String)>) {
+    let chars: Vec<char> = src.chars().collect();
+    let n = chars.len();
+    let mut entries: Vec<(String, String)> = Vec::new();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    let word_at = |j: usize| -> Option<(String, usize)> {
+        if j >= n || !(chars[j].is_alphabetic() || chars[j] == '_') {
+            return None;
+        }
+        let mut k = j;
+        while k < n && (chars[k].is_alphanumeric() || chars[k] == '_') {
+            k += 1;
+        }
+        Some((chars[j..k].iter().collect(), k))
+    };
+    let skip_blank = |mut j: usize| -> usize {
+        loop {
+            while j < n && (chars[j].is_whitespace() || chars[j] == ',' || chars[j] == ';') {
+                j += 1;
+            }
+            if j + 1 < n && chars[j] == '-' && chars[j + 1] == '-' {
+                while j < n && chars[j] != '\n' {
+                    j += 1;
+                }
+                continue;
+            }
+            return j;
+        }
+    };
+    let read_string = |j: usize| -> Option<(String, usize)> {
+        if j >= n || chars[j] != '"' {
+            return None;
+        }
+        let mut out = String::new();
+        let mut k = j + 1;
+        while k < n {
+            match chars[k] {
+                '\\' if k + 1 < n => {
+                    out.push(chars[k + 1]);
+                    k += 2;
+                }
+                '"' => return Some((out, k + 1)),
+                c => {
+                    out.push(c);
+                    k += 1;
+                }
+            }
+        }
+        None
+    };
+    while i < n {
+        let c = chars[i];
+        if c == '-' && i + 1 < n && chars[i + 1] == '-' {
+            while i < n && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == '"' || c == '\'' || c == '`' {
+            let quote = c;
+            i += 1;
+            while i < n {
+                if chars[i] == '\\' {
+                    i += 2;
+                    continue;
+                }
+                if chars[i] == quote {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if c.is_alphabetic() || c == '_' {
+            let (word, after) = word_at(i).unwrap();
+            if word == "Auto" {
+                let open = skip_blank(after);
+                if open < n && chars[open] == '{' {
+                    let mut j = skip_blank(open + 1);
+                    let mut block: Vec<(String, String)> = Vec::new();
+                    let mut ok = true;
+                    while j < n && chars[j] != '}' {
+                        let Some((kw, after_kw)) = word_at(j) else {
+                            ok = false;
+                            break;
+                        };
+                        if !kw.eq_ignore_ascii_case("key") {
+                            ok = false;
+                            break;
+                        }
+                        let Some((key, after_key)) = read_string(skip_blank(after_kw)) else {
+                            ok = false;
+                            break;
+                        };
+                        let vstart = skip_blank(after_key);
+                        let Some((vw, after_vw)) = word_at(vstart) else {
+                            ok = false;
+                            break;
+                        };
+                        if !vw.eq_ignore_ascii_case("variable") {
+                            ok = false;
+                            break;
+                        }
+                        let Some((value, after_value)) = read_string(skip_blank(after_vw)) else {
+                            ok = false;
+                            break;
+                        };
+                        block.push((key, value));
+                        j = skip_blank(after_value);
+                    }
+                    if ok && j < n && chars[j] == '}' {
+                        entries.extend(block);
+                        spans.push((i, j + 1));
+                        i = j + 1;
+                        continue;
+                    }
+                }
+            }
+            i = after;
+            continue;
+        }
+        i += 1;
+    }
+    if spans.is_empty() {
+        return (src.to_string(), entries);
+    }
+    let mut cleaned: Vec<char> = chars;
+    for (start, end) in spans {
+        for slot in cleaned.iter_mut().take(end).skip(start) {
+            if *slot != '\n' && *slot != '\r' {
+                *slot = ' ';
+            }
+        }
+    }
+    (cleaned.into_iter().collect(), entries)
 }
 
 fn find_line_containing(source: &str, needle: &str) -> Option<u32> {

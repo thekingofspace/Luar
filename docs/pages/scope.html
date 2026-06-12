@@ -64,8 +64,8 @@ boundaries.</p>
 <h3>Closures capture their scope</h3>
 <p>A function created inside another function remembers the variables that were
 in scope where it was created, even after the outer function has returned. This
-captured environment is what makes a closure. Each call that creates a closure
-gets its own copy of those captured variables.</p>
+captured environment is what makes a closure. Each call to the outer function
+creates fresh locals, so closures made by different calls are independent.</p>
 <pre><code><span class="kw">local function</span> <span class="fn">counter</span>(start)
   <span class="kw">local</span> n = start
   <span class="kw">return</span> <span class="kw">function</span>()
@@ -78,12 +78,42 @@ gets its own copy of those captured variables.</p>
 <span class="kw">local</span> b = <span class="fn">counter</span>(<span class="num">10</span>)
 <span class="fn">print</span>(a(), a(), b())   <span class="com">-- 1  2  11  (a and b have separate copies of n)</span></code></pre>
 
+<h3>Capture is by reference</h3>
+<p>A closure does not copy a variable's value at creation time — it captures the
+variable itself. Two closures created in the same scope see each other's
+updates, and changes made by the enclosing scope are visible inside the
+closures.</p>
+<pre><code><span class="kw">local</span> n = <span class="num">0</span>
+<span class="kw">local function</span> <span class="fn">inc</span>() n += <span class="num">1</span> <span class="kw">end</span>
+<span class="kw">local function</span> <span class="fn">show</span>() <span class="kw">return</span> n <span class="kw">end</span>
+
+<span class="fn">inc</span>()
+<span class="fn">inc</span>()
+<span class="fn">print</span>(<span class="fn">show</span>(), n)   <span class="com">-- 2  2  (inc and show share the same n)</span></code></pre>
+
+<h3>Loops give each iteration its own variables</h3>
+<p>When a loop body creates a function, every iteration gets a fresh copy of the
+loop variable (and of locals declared in the body). Closures made on different
+iterations therefore remember different values instead of all sharing the final
+one.</p>
+<pre><code><span class="kw">local</span> fns = {}
+<span class="kw">for</span> i = <span class="num">1</span>, <span class="num">3</span> <span class="kw">do</span>
+  <span class="typ">table</span>.insert(fns, <span class="kw">function</span>() <span class="kw">return</span> i <span class="kw">end</span>)
+<span class="kw">end</span>
+<span class="fn">print</span>(fns[<span class="num">1</span>](), fns[<span class="num">2</span>](), fns[<span class="num">3</span>]())   <span class="com">-- 1  2  3</span></code></pre>
+<p>(When the body creates no functions, the interpreter quietly reuses one scope
+for the whole loop as an optimization — you cannot tell the difference from
+inside the language.)</p>
+
 <h3>Scope and the garbage collector</h3>
 <p>When a scope ends, its local variables are no longer reachable through that
 scope. If nothing else refers to the value (no closure, no table, no global
 holds it), the garbage collector is free to reclaim it. Assigning
 <code>nil</code> to a binding also drops its reference early. See
 <a href="#gc">Garbage collection</a>.</p>
+<p>One kind of binding deliberately ignores all of these rules:
+a <a href="#buff">buff</a> never goes out of scope and is only released by
+<code>freebuff</code>.</p>
 
 <h3>self and super inside methods</h3>
 <p>Inside a class method, two names are always in scope: <code>self</code>, the

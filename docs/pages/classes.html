@@ -26,6 +26,16 @@ to the constructor.</p>
 <span class="kw">const</span> p = <span class="typ">Point</span>(<span class="num">3</span>, <span class="num">4</span>)   <span class="com">-- make a Point object</span>
 <span class="fn">print</span>(p.x)              <span class="com">-- read a field: 3</span>
 <span class="fn">print</span>(p:length())       <span class="com">-- call a method: 5</span></code></pre>
+<p>The full class header is:</p>
+<pre><code>[<span class="kw">pub</span>] [<span class="kw">final</span>] [<span class="kw">abstract</span>] <span class="kw">class</span> <span class="typ">Name</span> [<span class="kw">extends</span> <span class="typ">Parent</span>] [<span class="kw">mixin</span> <span class="typ">A</span>, <span class="typ">B</span>] [<span class="kw">implements</span> <span class="typ">I</span>, <span class="typ">J</span>] { ... }</code></pre>
+<p>The leading modifiers (<code>pub</code>, <code>final</code>, <code>abstract</code>)
+may appear in <b>any order</b> &mdash; <code>abstract pub class</code> and
+<code>pub abstract class</code> mean the same thing. The clauses after the name,
+however, are positional: <code>extends</code> first, then <code>mixin</code>, then
+<code>implements</code>. A class name may also carry a generic parameter list
+(<code>class Box&lt;T&gt;</code>); the brackets are read and discarded by the
+runtime and used only by the editor (see
+<a href="#type-rules">Type rules</a>).</p>
 
 <h3>self, and the difference between dot and colon</h3>
 <p>Inside a method, <code>self</code> is the object the method was called on. It
@@ -49,13 +59,17 @@ built.</p>
 
 <h3>Access control: public, protected, private</h3>
 <p>Access control limits who is allowed to touch a member. It helps you keep the
-inside of an object separate from the outside.</p>
+inside of an object separate from the outside. The check is made against the
+class whose code is currently running (a method body, a constructor, a field
+default &mdash; see also the closure rule below).</p>
 <table>
 <tr><th>Modifier</th><th>Reachable from</th></tr>
 <tr><td><code>public</code> (default)</td><td>Anywhere.</td></tr>
-<tr><td><code>protected</code></td><td>The declaring class and its subclasses only.</td></tr>
-<tr><td><code>private</code></td><td>The declaring class's own methods only.</td></tr>
+<tr><td><code>protected</code></td><td>Code running in the declaring class or any class that descends from it.</td></tr>
+<tr><td><code>private</code></td><td>Code running in the exact declaring class only &mdash; not even its subclasses.</td></tr>
 </table>
+<p>Access words apply to fields, methods, getters, and setters alike, and an
+inherited member keeps the access level of the class that declared it.</p>
 <pre><code><span class="kw">class</span> <span class="typ">Account</span> {
   <span class="kw">public</span> owner: <span class="typ">string</span> = <span class="str">""</span>
   <span class="kw">private</span> balance: <span class="typ">number</span> = <span class="num">0</span>     <span class="com">-- outsiders cannot read or write this</span>
@@ -64,9 +78,106 @@ inside of an object separate from the outside.</p>
     self.balance = self.balance + amount   <span class="com">-- allowed: same class</span>
   <span class="kw">end</span>
   <span class="kw">function</span> <span class="fn">total</span>() <span class="kw">return</span> self.balance <span class="kw">end</span>
-}</code></pre>
-<p>Reading or writing a member you are not allowed to touch is a run-time error.
-This is enforced while the program runs, not just by the editor.</p>
+}
+
+<span class="kw">const</span> a = <span class="typ">Account</span>()
+a:deposit(<span class="num">50</span>)
+<span class="fn">print</span>(a:total())   <span class="com">-- 50</span>
+<span class="fn">print</span>(a.balance)   <span class="com">-- runtime error: member 'balance' is private to class 'Account'</span></code></pre>
+<p>Reading or writing a member you are not allowed to touch is a run-time error
+of the form <code>member 'balance' is private to class 'Account'</code> (or
+<code>... is protected to class '...'</code>). This is enforced while the
+program runs, not just by the editor.</p>
+
+<h4>Closures keep the access rights of where they were written</h4>
+<p>Access is <b>lexical</b>: any function literal created inside a class body
+&mdash; in a method, a constructor, a getter, or a field default &mdash;
+permanently remembers that class, and runs with that class's access rights every
+time it is called, even long after the method that made it has returned. A
+closure created <em>outside</em> the class never gets those rights, no matter
+which objects it captures.</p>
+<pre><code><span class="kw">class</span> <span class="typ">Tally</span> {
+  <span class="kw">private</span> count: <span class="typ">number</span> = <span class="num">0</span>
+
+  <span class="kw">function</span> <span class="fn">Bumper</span>()
+    <span class="com">-- written inside a method, so it keeps Tally's private access forever</span>
+    <span class="kw">return</span> <span class="kw">function</span>()
+      self.count = self.count + <span class="num">1</span>
+      <span class="kw">return</span> self.count
+    <span class="kw">end</span>
+  <span class="kw">end</span>
+}
+
+<span class="kw">const</span> bump = <span class="typ">Tally</span>():Bumper()
+bump()  bump()
+<span class="fn">print</span>(bump())   <span class="com">-- 3: the closure may touch the private field</span>
+
+<span class="kw">const</span> t = <span class="typ">Tally</span>()
+<span class="kw">const</span> peek = <span class="kw">function</span>() <span class="kw">return</span> t.count <span class="kw">end</span>   <span class="com">-- written outside the class</span>
+peek()   <span class="com">-- runtime error: member 'count' is private to class 'Tally'</span></code></pre>
+<p>This means a class can hand out workers that operate on its own internals
+without opening those internals to everyone. When a closure is invoked <em>as a
+method</em> of some class, the method's own class is used for the check instead.</p>
+
+<h4>The encapsulation pattern: expose an operation, not a field</h4>
+<p>Because <code>private</code> means "the exact declaring class only", one class
+can never reach into another class's private data &mdash; not even a closely
+related one. The right design is for the owning class to expose a small
+<b>public method</b> that performs the operation, so the data structure itself
+stays private. A classic example is a signal whose connections can remove
+themselves:</p>
+<pre><code><span class="kw">class</span> <span class="typ">Connection</span> {
+  <span class="kw">private</span> signal = <span class="kw">nil</span>
+  <span class="kw">private</span> fn = <span class="kw">nil</span>
+  <span class="kw">constructor</span>(signal, fn)
+    self.signal = signal
+    self.fn = fn
+  <span class="kw">end</span>
+  <span class="kw">function</span> <span class="fn">Call</span>(msg) self.fn(msg) <span class="kw">end</span>
+  <span class="kw">function</span> <span class="fn">Disconnect</span>()
+    <span class="com">-- ask the signal to remove us; we cannot touch its private list</span>
+    self.signal:Remove(self)
+  <span class="kw">end</span>
+}
+
+<span class="kw">class</span> <span class="typ">Signal</span> {
+  <span class="kw">private</span> listeners: <span class="typ">table</span> = {}
+
+  <span class="kw">function</span> <span class="fn">Connect</span>(fn)
+    <span class="kw">local</span> c = <span class="typ">Connection</span>(self, fn)
+    <span class="typ">table</span>.insert(self.listeners, c)
+    <span class="kw">return</span> c
+  <span class="kw">end</span>
+
+  <span class="com">-- the public, sanctioned way to mutate the private list</span>
+  <span class="kw">function</span> <span class="fn">Remove</span>(connection)
+    <span class="kw">for</span> i, c <span class="kw">in</span> <span class="fn">ipairs</span>(self.listeners) <span class="kw">do</span>
+      <span class="kw">if</span> c == connection <span class="kw">then</span>
+        <span class="typ">table</span>.remove(self.listeners, i)
+        <span class="kw">return</span>
+      <span class="kw">end</span>
+    <span class="kw">end</span>
+  <span class="kw">end</span>
+
+  <span class="kw">function</span> <span class="fn">Fire</span>(msg)
+    <span class="kw">for</span> _, c <span class="kw">in</span> <span class="fn">ipairs</span>(self.listeners) <span class="kw">do</span>
+      c:Call(msg)
+    <span class="kw">end</span>
+  <span class="kw">end</span>
+}
+
+<span class="kw">const</span> s = <span class="typ">Signal</span>()
+<span class="kw">const</span> conn = s:Connect(<span class="kw">function</span>(msg) <span class="fn">print</span>(<span class="str">`got {msg}`</span>) <span class="kw">end</span>)
+s:Fire(<span class="str">"hello"</span>)     <span class="com">-- got hello</span>
+conn:Disconnect()   <span class="com">-- Connection asks; Signal does the removing</span>
+s:Fire(<span class="str">"again"</span>)     <span class="com">-- nothing: the listener is gone</span></code></pre>
+<p>If <code>Disconnect</code> tried <code>self.signal.listeners</code> directly it
+would fail with <code>member 'listeners' is private to class 'Signal'</code>.
+Exposing <code>Remove(connection)</code> keeps the invariant (only
+<code>Signal</code> edits its list) while still letting other objects request the
+operation. Note the comparison <code>c == connection</code>: instances compare by
+identity, so this finds exactly the connection that was handed out (see
+<a href="#instance-equality">instance equality</a>).</p>
 
 <h3>Static members</h3>
 <p>A <code>static</code> field or method belongs to the class itself rather than
@@ -92,12 +203,18 @@ A class without a constructor can still be built; you just get the defaults.</p>
     <span class="typ">table</span>.insert(self.items, first)
   <span class="kw">end</span>
 }</code></pre>
+<p>Constructors are inherited: if a class declares no constructor of its own, the
+nearest ancestor's constructor runs instead, so a subclass that adds nothing to
+construction does not need to repeat it. A subclass that does declare one can
+run the parent's explicitly with <code>super:constructor(...)</code> (see
+<a href="#super">super</a>).</p>
 
 <h3>The destructor</h3>
 <p>A <code>destructor</code> is the mirror of a constructor: it runs once, automatically,
 the moment an instance is about to be released. Release happens deterministically when
-the last binding that holds the object leaves its scope (for example at the end of a
-<code>do</code> block or when a function returns) and nothing else refers to it. Use it
+the last binding that holds the object disappears &mdash; it leaves its scope (the end
+of a <code>do</code> block, a function return), it is reassigned to a new value, or it
+is set to <code>nil</code> &mdash; and nothing else refers to it. Use it
 for cleanup &mdash; closing a handle, removing a drawn element, releasing a resource.</p>
 <pre><code><span class="kw">class</span> <span class="typ">Handle</span> {
   <span class="kw">public</span> id: <span class="typ">number</span> = <span class="num">0</span>
@@ -119,14 +236,21 @@ destructor declared on its own class.</div>
 
 <h3>Methods and their modifiers</h3>
 <p>A method is a function declared inside the class body. Besides the access
-words, a method can be marked:</p>
+words (<code>public</code>, <code>protected</code>, <code>private</code>), a
+method can be marked:</p>
 <table>
 <tr><th>Modifier</th><th>Meaning</th></tr>
 <tr><td><code>static</code></td><td>Belongs to the class; called on the class name, has no <code>self</code>.</td></tr>
 <tr><td><code>abstract</code></td><td>Has no body; a concrete subclass must provide one. See abstract classes.</td></tr>
 <tr><td><code>final</code></td><td>Cannot be overridden by a subclass.</td></tr>
-<tr><td><code>override</code></td><td>States that this method replaces an inherited one. It is an error if there is nothing to override, which catches typos.</td></tr>
+<tr><td><code>override</code></td><td>States that this method replaces an inherited one. If nothing is actually
+overridden the class fails to load with <code>method 'name' is marked `override` but does not
+override anything</code>, which catches typos.</td></tr>
 </table>
+<p>Member modifiers may be combined and written in <b>any order</b>:
+<code>static public function f()</code> and <code>public static function f()</code>
+are identical, and the same goes for every combination of
+<code>private | protected | public | static | abstract | final | override</code>.</p>
 
 <h3>Getters and setters</h3>
 <p>A getter is a method that runs when you read a property; a setter runs when
@@ -145,7 +269,19 @@ parentheses), but they let you compute a value or validate an assignment.</p>
 
 <span class="kw">const</span> t = <span class="typ">Temperature</span>()
 t.fahrenheit = <span class="num">212</span>      <span class="com">-- runs the setter</span>
-<span class="fn">print</span>(t.fahrenheit)    <span class="com">-- runs the getter: 212</span></code></pre>
+<span class="fn">print</span>(t.fahrenheit)    <span class="com">-- runs the getter: 212</span>
+t.fahrenheit += <span class="num">10</span>      <span class="com">-- compound assignment reads via the getter, writes via the setter</span></code></pre>
+<p>Getters and setters also intercept compound assignment
+(<code>+=</code>, <code>-=</code>, <code>*=</code>, <code>/=</code>, <code>%=</code>,
+<code>..=</code>): the current value is read through the getter, combined, and
+written back through the setter. They take access modifiers like any member, and
+they are inherited by subclasses.</p>
+<div class="note">A getter or setter fires on <b>every</b> access of that name,
+including <code>self.name</code> inside the class itself. Store the real data in
+a differently-named (usually <code>private</code>) field, as
+<code>Temperature</code> stores <code>celsius</code> behind the
+<code>fahrenheit</code> accessors &mdash; a setter that assigns to its own name
+would recurse forever.</div>
 
 <h3>Operator overloading</h3>
 <p>Operator overloading lets your objects work with the normal operators like
@@ -167,26 +303,56 @@ money.</p>
 
 <span class="fn">print</span>(<span class="typ">Vec</span>(<span class="num">1</span>, <span class="num">2</span>) + <span class="typ">Vec</span>(<span class="num">3</span>, <span class="num">4</span>))   <span class="com">-- Vec(4, 6)</span></code></pre>
 <p>The operators you can overload: <code>+</code>, <code>-</code> (binary and
-unary), <code>*</code>, <code>/</code>, <code>%</code>, <code>^</code>,
+unary &mdash; an <code>operator -</code> with <b>zero parameters</b> is unary
+minus), <code>*</code>, <code>/</code>, <code>%</code>, <code>^</code>,
 <code>..</code> (concatenation), <code>==</code>, <code>&lt;</code>,
-<code>&lt;=</code>, <code>#</code> (length), and <code>tostring</code> (used by
-<code>print</code> and <code>tostring</code>).</p>
+<code>&lt;=</code>, <code>#</code> (length), <code>tostring</code> (used by
+<code>print</code> and <code>tostring</code>), and <code>type</code> (used by
+<code>TypeOf</code>, below). Declaring any other symbol fails with
+<code>unsupported operator overload '...'</code>.</p>
+<p>Some comparisons are derived rather than declared:</p>
+<ul>
+<li><code>a ~= b</code> is the negation of your <code>operator ==</code>.</li>
+<li><code>a &gt; b</code> runs <code>operator &lt;</code> with the operands
+swapped, and <code>a &gt;= b</code> swaps <code>operator &lt;=</code> &mdash; so
+defining <code>&lt;</code> and <code>&lt;=</code> gives you all four orderings.</li>
+</ul>
+<p>A binary operator fires when <em>either</em> operand is an instance of a class
+that defines it (the instance side becomes <code>self</code>, the other operand is
+the parameter). There is <b>no call operator</b>: a class instance cannot be made
+callable with <code>obj(...)</code>. The <code>__call</code> metamethod exists only
+for plain tables built with <code>setmetatable</code> (see
+<a href="#metamethods">Metatables</a>).</p>
+
+<h4>The type operator and TypeOf</h4>
+<p><code>operator type</code> gives your class a custom deep type name, returned
+by the built-in <code>TypeOf</code> for both instances and the class value
+itself. It must return a string. The plain <code>type()</code> function is not
+affected &mdash; an instance is still a table.</p>
+<pre><code><span class="kw">class</span> <span class="typ">Vec</span> {
+  <span class="kw">operator</span> <span class="fn">type</span>() <span class="kw">return</span> <span class="str">"Vec"</span> <span class="kw">end</span>
+}
+
+<span class="fn">print</span>(<span class="fn">TypeOf</span>(<span class="typ">Vec</span>()))   <span class="com">-- Vec</span>
+<span class="fn">print</span>(<span class="fn">TypeOf</span>(<span class="typ">Vec</span>))     <span class="com">-- Vec (works on the class value too)</span>
+<span class="fn">print</span>(<span class="fn">type</span>(<span class="typ">Vec</span>()))     <span class="com">-- table (type() ignores the overload)</span></code></pre>
 
 <h4>Inheriting and overriding operators</h4>
 <p>Operators are inherited just like methods: a subclass automatically gets the
-operators of its parent (and of any mixins). A subclass can replace one by declaring
-the same <code>operator</code> again, and it can build on the parent's version through
-<code>super</code>.</p>
+operators of its parent (and of any mixins), and can replace one by declaring
+the same <code>operator</code> again. <code>super</code> only dispatches
+<b>method</b> calls, so a subclass operator cannot invoke the parent's operator
+directly &mdash; when parent and child should share logic, put it in an ordinary
+method and reach that through <code>super</code>:</p>
 <pre><code><span class="kw">class</span> <span class="typ">Money</span> {
   <span class="kw">public</span> cents: <span class="typ">number</span> = <span class="num">0</span>
-  <span class="kw">operator</span> +(o) <span class="kw">return</span> <span class="typ">Money</span>(self.cents + o.cents) <span class="kw">end</span>
+  <span class="kw">constructor</span>(c) self.cents = c <span class="kw">end</span>
+  <span class="kw">function</span> <span class="fn">addCents</span>(o) <span class="kw">return</span> self.cents + o.cents <span class="kw">end</span>
+  <span class="kw">operator</span> +(o) <span class="kw">return</span> <span class="typ">Money</span>(self:addCents(o)) <span class="kw">end</span>
 }
 
 <span class="kw">class</span> <span class="typ">Wallet</span> <span class="kw">extends</span> <span class="typ">Money</span> {
-  <span class="kw">operator</span> +(o)
-    <span class="kw">local</span> sum = <span class="kw">super</span> + o      <span class="com">-- reuse Money's + via super</span>
-    <span class="kw">return</span> sum
-  <span class="kw">end</span>
+  <span class="kw">operator</span> +(o) <span class="kw">return</span> <span class="typ">Wallet</span>(<span class="kw">super</span>:addCents(o)) <span class="kw">end</span>   <span class="com">-- shared logic via a method</span>
 }</code></pre>
 <p>When operators come from more than one place, the lookup order is the same as for
 methods: the class's own operator wins over a mixed-in one, which wins over an
@@ -207,8 +373,12 @@ existing ones. A class extends exactly one parent.</p>
   <span class="kw">public</span> breed: <span class="typ">string</span> = <span class="str">"mutt"</span>
   <span class="kw">override function</span> <span class="fn">speak</span>() <span class="kw">return</span> <span class="str">"woof"</span> <span class="kw">end</span>
 }</code></pre>
+<p>The parent is looked up by name when the <code>class</code> statement runs, so
+it must already be defined. Extending a name that does not exist fails with
+<code>unknown parent class 'X'</code>, and extending something that is not a
+class fails with <code>'X' is not a class</code>.</p>
 
-<h3>super: reaching the parent</h3>
+<h3 id="super">super: reaching the parent</h3>
 <p><code>super</code> lets a subclass call the parent's version of something. The
 two common uses are running the parent constructor and extending an overridden
 method instead of fully replacing it.</p>
@@ -222,6 +392,13 @@ method instead of fully replacing it.</p>
     <span class="kw">return</span> <span class="kw">super</span>:describe() .. <span class="str">" the "</span> .. self.breed   <span class="com">-- add to the parent's result</span>
   <span class="kw">end</span>
 }</code></pre>
+<p>Inside a method or constructor, <code>self</code> and <code>super</code> are
+injected automatically as constants. <code>super</code> is the parent
+<b>class value</b>, and <code>super:method(...)</code> dispatches the parent's
+implementation with the <em>current</em> <code>self</code> &mdash; that is what
+makes "extend instead of replace" work. <code>super</code> supports method calls
+and <code>super:constructor(...)</code> only; there is no <code>super</code>
+form for fields or operators.</p>
 
 <h3>Abstract classes and methods</h3>
 <p>An <code>abstract</code> class is one that is not complete on its own and
@@ -240,13 +417,57 @@ subclass fills in.</p>
 }
 
 <span class="com">-- Shape() is an error: you cannot instantiate an abstract class</span></code></pre>
+<p>The rules, with their exact errors:</p>
+<ul>
+<li>Calling an abstract class fails immediately:
+<code>cannot instantiate abstract class 'Shape'</code>. Its subclasses are the
+things you instantiate.</li>
+<li>An abstract method <b>must have an empty body</b>: just
+<code>abstract function area() end</code>. The body of an abstract method can
+never run, and the linter flags a non-empty one with
+<code>abstract method 'area' must not have a body</code>
+(<code>AbstractMethodWithBody</code>).</li>
+<li>If a concrete subclass forgets to implement an abstract method, the mistake
+surfaces when the method is <em>called</em>:
+<code>abstract method 'area' has no implementation in class 'Shape'</code>. The
+same error fires from <code>self:area()</code> inside an inherited method like
+<code>describe</code> above.</li>
+<li>A method cannot be both <code>final</code> and <code>abstract</code> &mdash;
+the linter reports <code>method 'm' cannot be both `abstract` and `final`</code>
+(<code>FinalAndAbstract</code>).</li>
+</ul>
+<p>An abstract class may freely mix abstract and concrete members; only the
+abstract ones impose obligations on subclasses.</p>
 
 <h3>Final classes and methods</h3>
 <p><code>final</code> locks something down. A <code>final</code> class cannot be
 extended, and a <code>final</code> method cannot be overridden. Use it when a
 type or behavior is not meant to be changed by subclasses.</p>
-<pre><code><span class="kw">final class</span> <span class="typ">Money</span> { }
-<span class="com">-- class Cash extends Money { }   would be an error</span></code></pre>
+<pre><code><span class="kw">final class</span> <span class="typ">Token</span> {
+  <span class="kw">public</span> id: <span class="typ">number</span> = <span class="num">0</span>
+}
+<span class="com">-- class FakeToken extends Token {}   -- error: cannot extend final class 'Token'</span>
+
+<span class="kw">class</span> <span class="typ">Base</span> {
+  <span class="kw">final function</span> <span class="fn">checksum</span>() <span class="kw">return</span> <span class="num">42</span> <span class="kw">end</span>
+}
+<span class="kw">class</span> <span class="typ">Sub</span> <span class="kw">extends</span> <span class="typ">Base</span> {
+  <span class="com">-- function checksum() ... end     -- error: cannot override final method 'checksum'</span>
+}</code></pre>
+<p>Both checks happen at run time, when the offending <code>class</code> statement
+executes:</p>
+<ul>
+<li>Extending a final class fails with
+<code>cannot extend final class 'Token'</code>.</li>
+<li>Declaring a method whose name is <code>final</code> anywhere up the parent
+chain fails with <code>cannot override final method 'checksum'</code> &mdash;
+with or without the <code>override</code> keyword.</li>
+</ul>
+<p>The editor catches both ahead of time with the <code>FinalOverride</code>
+check (an error-severity diagnostic):
+<code>cannot extend final class 'Token' &mdash; this errors at runtime</code> and
+<code>cannot override final method 'checksum' from class 'Base' &mdash; this
+errors at runtime</code>.</p>
 
 <h3>Mixins: reuse without inheritance</h3>
 <p>A mixin lets you pull methods (and operators and fields) from other classes
@@ -267,15 +488,21 @@ classes.</p>
 follows a clear order:</p>
 <ul>
 <li>A member declared in the class itself always wins.</li>
-<li>Otherwise a mixed-in member wins over an inherited (<code>extends</code>) one.</li>
-<li>If two mixins define the same name, the <b>last one in the <code>mixin</code> list</b>
-wins.</li>
-<li>A mixin's field is only added if a field with that name is not already inherited from
-the parent, so the parent's default is kept.</li>
+<li>Otherwise a mixed-in method or operator wins over an inherited
+(<code>extends</code>) one.</li>
+<li>If two mixins define the same <b>method or operator</b>, the <b>last one in
+the <code>mixin</code> list</b> wins.</li>
+<li>Fields work the other way around: a mixin's field is only added when no field
+of that name exists yet, so the parent's default (or an earlier mixin's) is kept.
+A field declared in the class body itself still replaces any inherited or
+mixed-in default.</li>
 </ul>
-<p>The full clause order on a class header is always
-<code>extends Parent mixin A, B implements I, J</code>. A class still has exactly one
-parent; mixins are how you compose behavior from several classes at once.</p>
+<p>Naming a mixin that does not exist fails with
+<code>unknown mixin class 'X'</code>, and mixing in a non-class fails with
+<code>'X' is not a class (mixin)</code>. The full clause order on a class header
+is always <code>extends Parent mixin A, B implements I, J</code>. A class still
+has exactly one parent; mixins are how you compose behavior from several classes
+at once.</p>
 
 <h3>Interfaces</h3>
 <p>An interface is a contract: a list of member names a class must provide. A
@@ -292,8 +519,52 @@ implementations.</p>
   <span class="kw">public</span> name: <span class="typ">string</span> = <span class="str">"tag"</span>
   <span class="kw">function</span> <span class="fn">describe</span>() <span class="kw">return</span> self.name <span class="kw">end</span>
 }</code></pre>
-<p>An interface can build on others with <code>extends</code>, and a class can
-implement several interfaces at once.</p>
+<p>Inside an interface body each line names one required member. For
+readability you may also write the <code>function</code> keyword, a parameter
+list, and a type annotation &mdash; all are accepted and discarded; only the
+names are kept:</p>
+<pre><code><span class="kw">interface</span> <span class="typ">Named</span> {
+  name: <span class="typ">string</span>
+  <span class="kw">function</span> <span class="fn">describe</span>(): <span class="typ">string</span>
+}</code></pre>
+<p>How conformance is checked:</p>
+<ul>
+<li>The check runs once, when the <code>class</code> statement executes. A missing
+member fails with
+<code>class 'Tag' does not implement member 'describe' required by interface 'Named'</code>.</li>
+<li>A member may be satisfied by a method, a field, a getter or setter, or a
+static &mdash; anything with that name, on the class or inherited from a parent.</li>
+<li>An interface can build on others with <code>extends I, J</code>; a class must
+then satisfy the inherited members too.</li>
+<li>A class can implement several interfaces at once:
+<code>implements Named, Serializable</code>. Naming something that is not an
+interface fails with <code>'X' is not an interface</code> (or
+<code>unknown interface 'X'</code> if undefined).</li>
+<li><code>instanceof(value, SomeInterface)</code> returns true when the value's
+class (or any ancestor) implements the interface or one that extends it.</li>
+</ul>
+<p>Interfaces are about shape only &mdash; they carry no code and no defaults. If
+you want to share an implementation, use a <a href="#classes">mixin</a> instead.</p>
+
+<h3 id="instance-equality">Instance equality</h3>
+<p>By default, <code>==</code> on two instances compares <b>identity</b>: it is
+true only when both sides are the very same object. Two instances built from the
+same values are still different objects. This is what makes patterns like the
+Signal's <code>Remove(connection)</code> search reliable.</p>
+<pre><code><span class="kw">class</span> <span class="typ">Point</span> {
+  <span class="kw">public</span> x = <span class="num">0</span>
+  <span class="kw">constructor</span>(x) self.x = x <span class="kw">end</span>
+}
+
+<span class="kw">const</span> a = <span class="typ">Point</span>(<span class="num">1</span>)
+<span class="kw">const</span> b = <span class="typ">Point</span>(<span class="num">1</span>)
+<span class="fn">print</span>(a == b)   <span class="com">-- false: different objects</span>
+<span class="fn">print</span>(a == a)   <span class="com">-- true: same object</span></code></pre>
+<p>Declaring <code>operator ==</code> replaces this with value comparison for
+that class (see <a href="#classes">operator overloading</a> above); the overload
+fires when either operand is an instance of a class that defines it, and
+<code>~=</code> is always its negation. <code>rawequal(a, b)</code> ignores
+overloads and always compares identity.</p>
 
 <h3>Reflection: inspecting classes at run time</h3>
 <p>These built-in functions let a running program ask questions about classes and
@@ -315,13 +586,31 @@ objects.</p>
 <h3>How an object is built, step by step</h3>
 <p>When you call a class to make an object, this is the order of events:</p>
 <ol>
+<li>If the class is abstract, the call fails right here.</li>
 <li>A fresh empty instance is created and linked to its class.</li>
-<li>Inherited field defaults are applied, from the root parent down to this class.</li>
-<li>This class's own field defaults are applied.</li>
-<li>The constructor runs (yours, or the inherited one) with the new object as
-<code>self</code>.</li>
+<li>Field defaults are applied in order: the parent chain's first, then any
+mixins', then this class's own (an own field replaces an inherited default of
+the same name). Defaults are evaluated per instance, with <code>self</code>
+already in scope, so <code>{}</code> gives every instance its own table.</li>
+<li>The constructor runs &mdash; this class's own, or the nearest ancestor's if
+this class declares none &mdash; with the new object as <code>self</code>.</li>
 <li>The finished object is returned.</li>
 </ol>
+
+<h3>Editor checks for classes</h3>
+<p>Beyond the runtime errors described above, the tooling flags common class
+mistakes as you type. Each can be silenced with the
+<code>--#disable</code> directives described on the
+<a href="#ferrite">linting page</a>.</p>
+<table>
+<tr><th>Check</th><th>Fires when</th></tr>
+<tr><td><code>DuplicateClassMember</code></td><td>The same member name is declared twice in one class body: <code>class member 'n' is declared more than once</code>.</td></tr>
+<tr><td><code>AbstractMethodWithBody</code></td><td>An <code>abstract</code> method has statements in its body: <code>abstract method 'm' must not have a body</code>.</td></tr>
+<tr><td><code>FinalAndAbstract</code></td><td>A method is marked both: <code>method 'm' cannot be both `abstract` and `final`</code>.</td></tr>
+<tr><td><code>EmptyClass</code></td><td>A class body has no members: <code>class body is empty</code>.</td></tr>
+<tr><td><code>FinalOverride</code></td><td>Extending a final class or overriding a final method (see final classes above).</td></tr>
+<tr><td><code>UnknownClass</code></td><td>An <code>extends</code> or <code>mixin</code> target the editor cannot find: <code>unknown class 'X' (class names are case-sensitive)</code>.</td></tr>
+</table>
 
 <h3>Documenting a class</h3>
 <p>A comment directly above a class or a member becomes its documentation, shown

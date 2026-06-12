@@ -4,6 +4,28 @@ inject globals, tables, native functions, and classes from Rust, run LUAR code
 against them, and read values back out. This section is a complete guide for
 building those things from the host side.</p>
 
+<h3>Adding the dependency</h3>
+<p>The interpreter lives in the <code>luar</code> crate (the <code>Luar/</code>
+folder of the repository). Point Cargo at it with a path dependency:</p>
+<pre><code><span class="com"># Cargo.toml</span>
+[dependencies]
+luar = { path = <span class="str">"path/to/Luar"</span> }</code></pre>
+<p>A minimal embed parses and runs a script, then reads a global back out.
+Everything you need day to day is re-exported at the crate root.</p>
+<pre><code><span class="kw">use</span> luar::{Interpreter, Value};
+
+<span class="kw">fn</span> main() -&gt; Result&lt;(), luar::Error&gt; {
+    <span class="kw">let mut</span> i = Interpreter::new();
+    i.run_source(<span class="str">r#"
+        pub greeting = "hello from luar"
+        print(greeting)
+    "#</span>)?;
+
+    <span class="kw">let</span> g = i.get_global(<span class="str">"greeting"</span>).unwrap();
+    println!(<span class="str">"rust sees: {g}"</span>);   <span class="com">// Value implements Display</span>
+    Ok(())
+}</code></pre>
+
 <h3>The Interpreter</h3>
 <p>The <code>Interpreter</code> is the entry point. It owns the global scope and
 keeps all state between calls, so you can run several pieces of code and have
@@ -15,7 +37,47 @@ i.run_source(<span class="str">"print(1 + 2)"</span>)?;       <span class="com">
 i.run_source(<span class="str">"print(1 + 2)"</span>)?;       <span class="com">// the next call sees everything the first set up</span></code></pre>
 <p>Convenience free functions for one-shot use:</p>
 <pre><code><span class="kw">let</span> interp = luar::eval_source(<span class="str">"print(\"hi\")"</span>)?;   <span class="com">// parse + run, returns the interpreter</span>
-<span class="kw">let</span> value  = Interpreter::load_module(<span class="str">"return 42"</span>)?;  <span class="com">// run as a module, return its value</span></code></pre>
+<span class="kw">let</span> value  = Interpreter::load_module(<span class="str">"return 42"</span>)?;  <span class="com">// run as a module, return its value</span>
+<span class="kw">let</span> ast    = luar::parse_source(<span class="str">"return 42"</span>)?;     <span class="com">// just lex + parse (no run, no optimize)</span>
+<span class="kw">let</span> tokens = luar::tokenize(<span class="str">"return 42"</span>)?;          <span class="com">// just lex</span></code></pre>
+
+<h3 id="host-errors">Errors: how failures surface</h3>
+<p>Every stage of running code reports through one enum, <code>luar::Error</code>.
+It implements <code>Display</code> and <code>std::error::Error</code>, and all
+five inner types convert into it with <code>From</code>, so <code>?</code> works
+everywhere.</p>
+<table>
+<tr><th>Variant</th><th>Produced by</th></tr>
+<tr><td><code>Error::Lex(LexError)</code></td><td>Tokenizing &mdash; bad escapes, malformed numbers, unterminated strings.</td></tr>
+<tr><td><code>Error::Parse(ParseError)</code></td><td>Parsing &mdash; syntax errors.</td></tr>
+<tr><td><code>Error::Eval(EvalError)</code></td><td>The tree-walking interpreter &mdash; every runtime error, including <code>Err(msg)</code> returned by your native functions.</td></tr>
+<tr><td><code>Error::Compile(CompileError)</code></td><td>Bytecode compilation, and a bad <code>.luarb</code> header ("not a LUAR precompiled file").</td></tr>
+<tr><td><code>Error::Runtime(RuntimeError)</code></td><td>The experimental bytecode VM (<code>run_on_vm</code> / <code>execute</code>).</td></tr>
+</table>
+<p><code>EvalError</code> is a tuple struct wrapping the message string
+(<code>EvalError(pub String)</code>); it displays as
+<code>eval error: &lt;message&gt;</code>. Methods that go straight into the
+interpreter &mdash; <code>call_value</code>, <code>call_method</code>,
+<code>launch</code>, <code>resume_coroutine</code> &mdash; return
+<code>Result&lt;_, EvalError&gt;</code> directly; methods that also parse, such
+as <code>run_source</code>, return <code>Result&lt;_, luar::Error&gt;</code>.</p>
+<pre><code><span class="kw">match</span> i.run_source(<span class="str">"print(1 +"</span>) {
+    Ok(_) =&gt; {}
+    Err(luar::Error::Parse(e)) =&gt; eprintln!(<span class="str">"syntax error: {e}"</span>),
+    Err(e) =&gt; eprintln!(<span class="str">"script failed: {e}"</span>),
+}</code></pre>
+<p>An error raised by a native function travels the same path as
+<code>error("...")</code> raised in a script: it aborts the call unless a
+<code>pcall</code> catches it on the script side, and otherwise comes back to
+the host as <code>Error::Eval</code>.</p>
+<pre><code>i.set_global_fn(<span class="str">"explode"</span>, |_i, _args| Err(<span class="str">"boom"</span>.to_string()));
+
+i.run_source(<span class="str">r#"
+    local ok, msg = pcall(explode)
+    print(ok, msg)        -- false   boom
+"#</span>)?;
+
+<span class="kw">let</span> err = i.run_source(<span class="str">"explode()"</span>).unwrap_err();   <span class="com">// Error::Eval("boom")</span></code></pre>
 
 <h3 id="starting-a-project">Starting a project</h3>
 <p>A real program is more than one string. The usual shape is: build an
@@ -25,6 +87,7 @@ then run an entry file that pulls in the rest with <code>require</code>.</p>
 
 <span class="kw">let mut</span> i = Interpreter::new();
 i.set_module_dir(<span class="str">"./game"</span>);                  <span class="com">// relative require() paths resolve from here</span>
+i.set_source_path(<span class="str">"./game/main.luar"</span>);       <span class="com">// tag the entry script (modules tag themselves)</span>
 i.set_global_const(<span class="str">"VERSION"</span>, Value::str(<span class="str">"1.0"</span>));
 
 <span class="kw">let</span> src = std::fs::read_to_string(<span class="str">"./game/main.luar"</span>)?;
@@ -32,9 +95,13 @@ i.run_source(&amp;src)?;                           <span class="com">// main.lua
 <p><code>set_module_dir</code> sets the base folder that relative
 <code>require("./x")</code> paths resolve against, so the entry file and
 everything it pulls in find each other no matter where the host binary was
-launched from. Each module is parsed and run once, then its result is cached.</p>
+launched from. It is also where <code>@alias</code> names from a
+<code>luari.json</code> file are searched. Each module is parsed and run once,
+then its result is cached. <code>set_source_path</code> records the entry
+script's file path for the source-tracking APIs described
+<a href="#value-sources">below</a>.</p>
 
-<h4>Reloading modules</h4>
+<h4>Reloading and unloading scripts</h4>
 <p>Because modules are cached, requiring the same path twice returns the same
 result. <code>free_module</code> drops a module from the cache and nils the
 values it published, so the next <code>require</code> runs the file fresh from
@@ -42,114 +109,37 @@ disk &mdash; this is how you hot-reload a script while the program keeps running
 It returns <code>true</code> if the module was loaded.</p>
 <pre><code>i.free_module(<span class="str">"./player"</span>);                    <span class="com">// forget the cached ./player module</span>
 i.run_source(<span class="str">"require(\"./player\")"</span>)?;         <span class="com">// re-runs ./player.luar from disk</span></code></pre>
-
-<h4>Garbage collection</h4>
-<p>The interpreter collects garbage on its own as code runs. Call
-<code>collect_garbage</code> to force a collection at a natural pause, for
-instance right after unloading a large module.</p>
-<pre><code>i.collect_garbage();</code></pre>
+<p>Underneath, every function, table, and class remembers the numeric id of the
+script that created it. The id-level API lets a host unload any script, not just
+modules:</p>
+<table>
+<tr><th>Method</th><th>What it does</th></tr>
+<tr><td><code>i.current_script_id()</code></td><td>This interpreter's own script id.</td></tr>
+<tr><td><code>i.script_of_value(&amp;v)</code></td><td>The id of the script that created a function, table, or class (<code>None</code> for other kinds).</td></tr>
+<tr><td><code>i.free_script(id)</code></td><td>Kill every function the script created (nils them out of every scope and table) and nil the script's root variables. Returns <code>true</code> if the script was registered.</td></tr>
+<tr><td><code>i.free_module(name)</code></td><td>Resolve <code>name</code> like <code>require</code> would, evict it from the module cache, and <code>free_script</code> its scope.</td></tr>
+<tr><td><code>i.has_live_functions(id)</code></td><td><code>true</code> while any function created by that script is still reachable.</td></tr>
+<tr><td><code>i.live_function_count(id)</code></td><td>How many of that script's functions are still alive.</td></tr>
+</table>
+<p>Calling a function that belonged to a freed script raises
+<code>attempt to call a function from a freed script</code>, so stale handlers
+fail loudly instead of running dead code.</p>
 
 <h3>Executing code</h3>
 <table>
 <tr><th>Method</th><th>What it does</th></tr>
-<tr><td><code>i.run_source(src)</code></td><td>Parse and run <code>src</code> in this interpreter. Returns any top-level <code>return</code> values.</td></tr>
-<tr><td><code>i.call_value(&amp;callable, args)</code></td><td>Call a LUAR function or native value from Rust and get its results.</td></tr>
+<tr><td><code>i.run_source(src)</code></td><td>Parse, optimize, and run <code>src</code> in this interpreter. Returns any top-level <code>return</code> values.</td></tr>
+<tr><td><code>i.run(&amp;stmts)</code></td><td>Run an already-parsed AST (from <code>parse_source</code>). Does <em>not</em> optimize &mdash; call <code>optimize_program</code> yourself if you want that.</td></tr>
+<tr><td><code>i.run_precompiled(&amp;bytes)</code></td><td>Run a precompiled <code>.luarb</code> program in this interpreter.</td></tr>
+<tr><td><code>i.call_value(&amp;callable, args)</code></td><td>Call a LUAR function, native, class, or callable table from Rust and get its results.</td></tr>
+<tr><td><code>i.call_method(&amp;obj, "name", args)</code></td><td>Call <code>obj:name(args)</code> from Rust.</td></tr>
 <tr><td><code>luar::eval_source(src)</code></td><td>Run in a fresh interpreter and return it.</td></tr>
-<tr><td><code>luar::run_precompiled(&amp;bytes)</code></td><td>Run a precompiled <code>.luarc</code> program.</td></tr>
+<tr><td><code>luar::run_precompiled(&amp;bytes)</code></td><td>Run a precompiled program in a fresh interpreter and return it.</td></tr>
 </table>
 <pre><code><span class="com">// run code, then call a function it defined</span>
 i.run_source(<span class="str">"function double(x) return x * 2 end"</span>)?;
 <span class="kw">let</span> f = i.get_global(<span class="str">"double"</span>).unwrap();
 <span class="kw">let</span> out = i.call_value(&amp;f, <span class="kw">vec!</span>[Value::int(<span class="num">21</span>)])?;   <span class="com">// [Value::Int(42)]</span></code></pre>
-
-<h3>Launching coroutines from Rust</h3>
-<p>The host can launch any LUAR function &mdash; or an object method with
-<code>self</code> bound &mdash; as a coroutine. The launch resumes the coroutine
-immediately: if the body finishes (or yields) within the grace window you get
-the result right away; otherwise it keeps running in the background and the host
-drains it with <code>luar::run_pending()</code>.</p>
-<table>
-<tr><th>Method</th><th>What it does</th></tr>
-<tr><td><code>i.launch(&amp;callable, args)</code></td><td>Create a coroutine from a function, class, or callable table and resume it with <code>args</code>. Returns the coroutine <code>Value</code>.</td></tr>
-<tr><td><code>i.launch_method(&amp;instance, "name", args)</code></td><td>Launch <code>instance:name(args)</code> as a coroutine with <code>self</code> bound. Also works with a class value for static methods.</td></tr>
-<tr><td><code>luar::run_pending()</code></td><td>Block until every backgrounded coroutine has finished.</td></tr>
-</table>
-<pre><code>i.run_source(<span class="str">r#"
-    class Player {
-        public name: string = ""
-        constructor(n) self.name = n end
-        function respawn(delay)
-            wait(delay)
-            print(self.name .. " respawned")
-        end
-    }
-    pub local hero = Player("ana")
-    pub local tick = function(n) print("tick", n) end
-"#</span>)?;
-
-<span class="kw">let</span> tick = i.get_global(<span class="str">"tick"</span>).unwrap();
-<span class="kw">let</span> co = i.launch(&amp;tick, <span class="kw">vec!</span>[Value::int(<span class="num">1</span>)])?;          <span class="com">// plain function</span>
-
-<span class="kw">let</span> hero = i.get_global(<span class="str">"hero"</span>).unwrap();
-i.launch_method(&amp;hero, <span class="str">"respawn"</span>, <span class="kw">vec!</span>[Value::int(<span class="num">2</span>)])?; <span class="com">// method, self bound</span>
-
-luar::run_pending();                                       <span class="com">// drain background work</span></code></pre>
-<p>Errors that happen immediately (a non-callable value, a missing method, or a
-body that fails inside the grace window) come back as the <code>Err</code> of the
-launch call. Launch only from the host thread &mdash; calling it while a coroutine
-is running is an error. The full pattern, including connecting and disconnecting
-script handlers signal-style, is runnable as
-<code>cargo run --example signal</code> in <code>Luar-Runtime</code>.</p>
-
-<h3>Yielding and resuming from Rust</h3>
-<p>A native function runs on the thread of whichever coroutine called it, so it
-can suspend just that coroutine without touching anything else:</p>
-<table>
-<tr><th>Method</th><th>What it does</th></tr>
-<tr><td><code>luar::yield_values(vals)</code></td><td>Inside a native called from a coroutine: yield it with <code>vals</code> (they become the resume results). Returns the values passed to the next <code>resume</code>. Errors on the main thread.</td></tr>
-<tr><td><code>luar::blocking(f)</code></td><td>Inside a native called from a coroutine: run the closure while only THIS coroutine waits — every other coroutine and the main script keep running. Returns the closure's value to the native, which can hand it back to the script.</td></tr>
-<tr><td><code>i.resume_coroutine(&amp;co, args)</code></td><td>Resume a <code>Value::Coroutine</code> from Rust (same results as <code>coroutine.resume</code>).</td></tr>
-<tr><td><code>luar::current_coroutine()</code></td><td><code>(thread, is_main)</code> — the running coroutine, e.g. to validate a thread argument a script passed you.</td></tr>
-</table>
-<pre><code><span class="com">// a wait-style native: parks ONLY the calling coroutine</span>
-fn my_wait(_i: &amp;mut Interpreter, args: Vec&lt;Value&gt;) -&gt; Result&lt;Vec&lt;Value&gt;, String&gt; {
-    <span class="kw">let</span> secs = args.first().and_then(|v| v.as_float()).unwrap_or(<span class="num">0.0</span>);
-    luar::blocking(<span class="kw">move</span> || std::thread::sleep(std::time::Duration::from_secs_f64(secs)))?;
-    Ok(<span class="kw">vec!</span>[])
-}
-
-<span class="com">// a checkpoint native: yields the calling coroutine until the host resumes it</span>
-fn checkpoint(_i: &amp;mut Interpreter, args: Vec&lt;Value&gt;) -&gt; Result&lt;Vec&lt;Value&gt;, String&gt; {
-    <span class="kw">let</span> sent_back = luar::yield_values(args)?;   <span class="com">// returns once the host resumes</span>
-    Ok(sent_back)
-}</code></pre>
-<p><code>blocking</code> is for "wait for something outside the script" (timers, IO,
-channels) &mdash; the host drains finished waiters with <code>run_pending()</code> /
-<code>pump_ready()</code>. <code>yield_values</code> is classic cooperative yielding:
-the coroutine stays suspended until someone resumes it (from the script or via
-<code>resume_coroutine</code>). The closure passed to <code>blocking</code> must not
-touch Luar values.</p>
-
-<h3>Tracking which script a value came from</h3>
-<p>Every require'd module is tagged with its file path automatically, and the
-host can tag the entry script too. Native functions can then ask who called
-them, and any function, table, or class remembers which script created it &mdash;
-useful for per-module registries, permissions, or debugging.</p>
-<table>
-<tr><th>Method</th><th>What it does</th></tr>
-<tr><td><code>i.set_source_path(path)</code></td><td>Tag the entry script with its path (modules are tagged automatically).</td></tr>
-<tr><td><code>i.current_source()</code></td><td>Inside a native function: the path of the script currently running.</td></tr>
-<tr><td><code>i.source_of_value(&amp;v)</code></td><td>The path of the script that created a function, table, or class.</td></tr>
-<tr><td><code>i.script_of_value(&amp;v)</code></td><td>The creating script's id (pairs with <code>free_script</code>).</td></tr>
-<tr><td><code>luar::script_source(id)</code></td><td>Resolve a script id back to its path.</td></tr>
-</table>
-<pre><code>i.set_global_fn(<span class="str">"register"</span>, |i, args| {
-    <span class="kw">let</span> handler = args.into_iter().next().unwrap_or(Value::Nil);
-    <span class="kw">let</span> who = i.source_of_value(&amp;handler)
-        .or_else(|| i.current_source());
-    println!(<span class="str">"handler registered by {:?}"</span>, who);   <span class="com">// e.g. mods/alerts.luar</span>
-    Ok(<span class="kw">vec!</span>[])
-});</code></pre>
 
 <h3>Creating globals</h3>
 <p>Globals are visible to all code you run. Use <code>set_global</code> for a
@@ -196,19 +186,72 @@ it already existed), <code>nil_value</code> sets it to nil and frees what it
 held, and <code>remove_global</code> deletes the binding outright.</p>
 
 <h3>Creating native functions</h3>
-<p>A native function is a Rust function with the signature
-<code>fn(&amp;mut Interpreter, Vec&lt;Value&gt;) -&gt; Result&lt;Vec&lt;Value&gt;, String&gt;</code>.
-It receives the call arguments and returns result values (or an error message).
-Expose one as a global with <code>set_global_fn</code>.</p>
+<p>A native function is a plain Rust function with this exact signature
+(<code>luar::runtime::NativeFn</code>):</p>
+<pre><code><span class="kw">fn</span>(&amp;<span class="kw">mut</span> Interpreter, Vec&lt;Value&gt;) -&gt; Result&lt;Vec&lt;Value&gt;, String&gt;</code></pre>
+<p>It receives every call argument in order in the <code>Vec&lt;Value&gt;</code>
+(check <code>args.first()</code>, <code>args.get(1)</code>, ... yourself &mdash;
+LUAR does not pad or check arity for you) and returns the result values; a
+function that returns nothing returns <code>Ok(vec![])</code>. Returning
+<code>Err(message)</code> raises a runtime error in the calling script, exactly
+like <code>error(message)</code> &mdash; catchable with <code>pcall</code>,
+otherwise fatal to the run. Expose a native as a global with
+<code>set_global_fn</code>.</p>
 <pre><code>i.set_global_fn(<span class="str">"shout"</span>, |_i, args| {
     <span class="kw">let</span> s = args.first().map(|v| v.to_string()).unwrap_or_default();
-    Ok(<span class="kw">vec!</span>[Value::str(&amp;s.to_uppercase())])
+    Ok(<span class="kw">vec!</span>[Value::str(s.to_uppercase())])
 });
 
 i.run_source(<span class="str">"print(shout(\"hi\"))"</span>)?;   <span class="com">// HI</span></code></pre>
+<p>Because <code>NativeFn</code> is a function <em>pointer</em>, the closure you
+pass must not capture variables (Rust only coerces capture-free closures to
+function pointers). To give a native persistent state, stash it in a
+<code>thread_local!</code>, or store it in a LUAR table or global the native
+reads back through the interpreter. The first parameter is the full
+<code>&amp;mut Interpreter</code>, so a native can run more code, call script
+functions, and edit globals while it executes.</p>
+
+<h3 id="values">Working with Value</h3>
+<p><code>Value</code> is the type of every LUAR value on the Rust side. It is
+cheap to clone (reference types are reference-counted) and implements
+<code>Display</code>, which formats exactly like <code>tostring</code> in a
+script. These are all the variants:</p>
+<table>
+<tr><th>Variant</th><th>Script type</th><th>Build it from Rust</th></tr>
+<tr><td><code>Value::Nil</code></td><td><code>nil</code></td><td><code>Value::nil()</code> or <code>Value::Nil</code></td></tr>
+<tr><td><code>Value::Bool(bool)</code></td><td><code>bool</code></td><td><code>Value::boolean(true)</code></td></tr>
+<tr><td><code>Value::Int(i64)</code></td><td><code>number</code></td><td><code>Value::int(42)</code></td></tr>
+<tr><td><code>Value::Float(f64)</code></td><td><code>number</code></td><td><code>Value::float(2.5)</code></td></tr>
+<tr><td><code>Value::Str(Rc&lt;str&gt;)</code></td><td><code>string</code></td><td><code>Value::str("text")</code> (takes <code>&amp;str</code> or <code>String</code>)</td></tr>
+<tr><td><code>Value::Table(..)</code></td><td><code>table</code> / <code>enum</code></td><td><code>Value::table()</code> or <code>i.create_table()</code></td></tr>
+<tr><td><code>Value::Native(..)</code></td><td><code>function</code></td><td><code>Value::native("name", func)</code></td></tr>
+<tr><td><code>Value::Function(..)</code></td><td><code>function</code></td><td>Created by scripts. (<code>Value::function(..)</code> exists for advanced hosts that build one from a parsed body and captured scope.)</td></tr>
+<tr><td><code>Value::Coroutine(..)</code></td><td><code>thread</code></td><td>Returned by <code>launch</code> / <code>coroutine.create</code>.</td></tr>
+<tr><td><code>Value::Class(..)</code></td><td><code>class</code></td><td><code>NativeClassBuilder</code>, or declared by scripts.</td></tr>
+<tr><td><code>Value::Interface(..)</code></td><td><code>interface</code></td><td>Declared by scripts.</td></tr>
+</table>
+<p>Reading helpers:</p>
+<table>
+<tr><th>Helper</th><th>Returns</th></tr>
+<tr><td><code>v.as_int()</code></td><td><code>Option&lt;i64&gt;</code> &mdash; <code>Some</code> only for <code>Int</code> (no float coercion).</td></tr>
+<tr><td><code>v.as_str()</code></td><td><code>Option&lt;&amp;str&gt;</code> &mdash; <code>Some</code> only for <code>Str</code>.</td></tr>
+<tr><td><code>v.is_truthy()</code></td><td><code>bool</code> &mdash; everything except <code>nil</code> and <code>false</code>.</td></tr>
+<tr><td><code>v.type_name()</code></td><td>The script-visible type name: <code>"nil"</code>, <code>"bool"</code>, <code>"number"</code>, <code>"string"</code>, <code>"table"</code>, <code>"enum"</code>, <code>"function"</code>, <code>"thread"</code>, <code>"class"</code>, <code>"interface"</code>.</td></tr>
+<tr><td><code>v.to_string()</code></td><td>The display string (via <code>Display</code>).</td></tr>
+<tr><td><code>luar::runtime::values_equal(&amp;a, &amp;b)</code></td><td>LUAR <code>==</code> semantics: ints and floats cross-compare, strings by content, tables/functions/classes by identity.</td></tr>
+</table>
+<p>There is no <code>as_float</code> helper &mdash; to accept "a number" the way
+scripts mean it, match both numeric variants:</p>
+<pre><code><span class="kw">let</span> n = <span class="kw">match</span> args.first() {
+    Some(Value::Int(i))   =&gt; *i <span class="kw">as</span> f64,
+    Some(Value::Float(f)) =&gt; *f,
+    other =&gt; <span class="kw">return</span> Err(format!(<span class="str">"expected a number, got {}"</span>,
+        other.map(|v| v.type_name()).unwrap_or(<span class="str">"nothing"</span>))),
+};</code></pre>
 
 <h3>Creating tables and native libraries</h3>
-<p>Build a table with <code>create_table</code>, then fill it with
+<p>Build a table with <code>create_table</code> (or <code>Value::table()</code>
+&mdash; both register the table with the garbage collector), then fill it with
 <code>set_field</code> (any value) and <code>set_native</code> (a native
 function). This is how you expose a library table such as your own
 <code>math</code> or <code>net</code>.</p>
@@ -217,19 +260,34 @@ net.set_field(Value::str(<span class="str">"version"</span>), Value::int(<span c
 net.set_native(<span class="str">"get"</span>, |_i, args| {
     <span class="kw">let</span> url = args.first().map(|v| v.to_string()).unwrap_or_default();
     <span class="com">// ... do real work here ...</span>
-    Ok(<span class="kw">vec!</span>[Value::str(&amp;format!(<span class="str">"fetched {url}"</span>))])
+    Ok(<span class="kw">vec!</span>[Value::str(format!(<span class="str">"fetched {url}"</span>))])
 });
 i.set_global_const(<span class="str">"net"</span>, net);
 
 i.run_source(<span class="str">"print(net.get(\"x\"))  print(net.version)"</span>)?;</code></pre>
+<p>The table helpers on <code>Value</code> are raw: <code>set_field(key, v)</code>
+writes without invoking <code>__newindex</code>, and <code>field(&amp;key)</code>
+reads without <code>__index</code> (returning <code>Nil</code> when absent or
+when the value is not a table). Valid keys are integers, strings, booleans, and
+&mdash; by identity &mdash; tables, functions, classes, interfaces, and
+coroutines; whole floats collapse to integer keys, while <code>nil</code> and
+fractional floats are invalid. For bulk access you can also borrow the
+underlying <code>Table</code> directly:</p>
+<pre><code><span class="kw">if let</span> Value::Table(rc) = &amp;v {
+    <span class="kw">let</span> t = rc.borrow();
+    <span class="kw">let</span> n = t.len();                     <span class="com">// array-part length (what # reports)</span>
+    <span class="kw">let</span> first = t.get(&amp;Value::int(<span class="num">1</span>));   <span class="com">// raw read, Nil when absent</span>
+    <span class="kw">for</span> item <span class="kw">in</span> &amp;t.array { println!(<span class="str">"{item}"</span>); }
+}</code></pre>
 <p>You can also drive behavior with native metamethods. Attach
 <code>__index</code>, <code>__newindex</code>, <code>__call</code>, or
 <code>__tostring</code> to a metatable so host code runs when LUAR indexes,
-calls, or stringifies an object.</p>
+calls, or stringifies an object. <code>set_metatable</code> sets it
+(<code>Value::Nil</code> clears it).</p>
 <pre><code><span class="kw">let</span> meta = i.create_table();
 meta.set_native(<span class="str">"__index"</span>, |_i, args| {
     <span class="kw">let</span> key = args.get(<span class="num">1</span>).map(|v| v.to_string()).unwrap_or_default();
-    Ok(<span class="kw">vec!</span>[Value::str(&amp;format!(<span class="str">"dynamic:{key}"</span>))])
+    Ok(<span class="kw">vec!</span>[Value::str(format!(<span class="str">"dynamic:{key}"</span>))])
 });
 <span class="kw">let</span> obj = i.create_table();
 obj.set_metatable(meta)?;
@@ -265,7 +323,7 @@ i.define_class(
         })
         .metamethod(<span class="str">"__tostring"</span>, |_i, args| {        <span class="com">// used by tostring/print</span>
             <span class="kw">let</span> n = args[<span class="num">0</span>].field(&amp;Value::str(<span class="str">"count"</span>));
-            Ok(<span class="kw">vec!</span>[Value::str(&amp;format!(<span class="str">"Counter({n})"</span>))])
+            Ok(<span class="kw">vec!</span>[Value::str(format!(<span class="str">"Counter({n})"</span>))])
         }),
 );
 
@@ -276,19 +334,20 @@ i.run_source(<span class="str">r#"
     print(c.value)    -- 12
     print(c)          -- Counter(12)
 "#</span>)?;</code></pre>
-<p>Builder methods:</p>
+<p>Builder methods (all of them &mdash; each consumes and returns the builder, so
+they chain):</p>
 <table>
 <tr><th>Method</th><th>Adds</th></tr>
 <tr><td><code>.new(name)</code></td><td>Start a class with the given name.</td></tr>
-<tr><td><code>.extends(parent)</code></td><td>Inherit from another class value: its fields carry over, and any member you do not redefine resolves through the parent. A class has exactly one parent.</td></tr>
+<tr><td><code>.extends(parent)</code></td><td>Inherit from another class value: its fields carry over, and any member you do not redefine resolves through the parent. A class has exactly one parent. Ignored unless <code>parent</code> is a <code>Value::Class</code>.</td></tr>
 <tr><td><code>.mixin(other)</code></td><td>Fold in another class's members (methods, getters, setters, operators, fields) without inheritance. Your own definitions win.</td></tr>
-<tr><td><code>.field(name, default)</code></td><td>An instance field with a default value.</td></tr>
+<tr><td><code>.field(name, default)</code></td><td>An instance field with a default value. Only <code>bool</code>, int, float, and string defaults are kept &mdash; any other value becomes "no default" (set those in the constructor instead).</td></tr>
 <tr><td><code>.method(name, fn)</code></td><td>An instance method, called as <code>obj:name(...)</code>.</td></tr>
 <tr><td><code>.getter(name, fn)</code> / <code>.setter(name, fn)</code></td><td>A property getter or setter, used as <code>obj.name</code>.</td></tr>
 <tr><td><code>.metamethod(name, fn)</code></td><td>An operator overload by metamethod name (<code>__add</code>, <code>__eq</code>, <code>__tostring</code>, ...).</td></tr>
 <tr><td><code>.constructor(fn)</code></td><td>A native constructor, run when the class is called.</td></tr>
-<tr><td><code>.make_final()</code> / <code>.make_abstract()</code></td><td>Mark the class final or abstract.</td></tr>
-<tr><td><code>.build()</code></td><td>Produce the class value without registering it (use <code>define_class</code> to register).</td></tr>
+<tr><td><code>.make_final()</code> / <code>.make_abstract()</code></td><td>Mark the class final (cannot be extended) or abstract (cannot be instantiated).</td></tr>
+<tr><td><code>.build()</code></td><td>Produce the class value without registering it (use <code>define_class</code> to build <em>and</em> register the const global in one step).</td></tr>
 </table>
 
 <h4>Inheritance and mixins</h4>
@@ -318,7 +377,8 @@ keyword too, so native and LUAR classes mix freely in one hierarchy.</p>
 <p>Often the host wants to know when script code defines or builds a class that
 descends from a base it provided &mdash; to drive a lifecycle, register the
 object, or wire it into the host. Two hooks deliver exactly that, matched by base
-class name anywhere in the ancestry.</p>
+class name anywhere in the ancestry. Unlike native functions, these callbacks
+are <code>FnMut</code> closures, so they may capture host state.</p>
 <table>
 <tr><th>Hook</th><th>When the callback fires</th></tr>
 <tr><td><code>on_subclass_of(base, |i, class| ...)</code></td><td>Whenever a script declares a class that descends from <code>base</code>. The callback receives the new class value.</td></tr>
@@ -344,11 +404,283 @@ i.run_source(<span class="str">r#"
 language: ship the base from Rust, then decide in host code what happens when
 scripts extend it or construct instances of it.</p>
 
-<h3>Working with Value</h3>
-<p>Construct values with <code>Value::int</code>, <code>Value::str</code>,
-<code>Value::table</code>, and the variants <code>Value::Bool</code>,
-<code>Value::Float</code>, <code>Value::Nil</code>. Read them with helpers such as
-<code>as_int</code>, <code>to_string</code>, <code>type_name</code>,
-<code>field</code>, and <code>set_field</code>. The native function signature is
-<code>fn(&amp;mut Interpreter, Vec&lt;Value&gt;) -&gt; Result&lt;Vec&lt;Value&gt;, String&gt;</code>,
-where the returned vector is the list of result values.</p>
+<h3 id="calling-into-luar">Calling LUAR functions and methods from Rust</h3>
+<p><code>call_value</code> calls anything callable &mdash; a script function, a
+native, a class (which constructs and returns an instance), or a table with a
+<code>__call</code> metamethod &mdash; and returns all of its results.
+<code>call_method</code> performs <code>obj:name(args)</code> dispatch on an
+instance, class (static methods), or table, respecting
+<code>private</code>/<code>protected</code> access and abstract checks just like
+script code. <code>instance_has_method</code> checks whether the receiver's
+class defines or inherits a method before you commit to calling it.</p>
+<pre><code>i.run_source(<span class="str">r#"
+    function double(x) return x * 2 end
+    class Greeter {
+        function hello(name) return "hi " .. name end
+    }
+    pub g = Greeter()
+"#</span>)?;
+
+<span class="kw">let</span> f = i.get_global(<span class="str">"double"</span>).unwrap();
+<span class="kw">let</span> out = i.call_value(&amp;f, <span class="kw">vec!</span>[Value::int(<span class="num">21</span>)])?;            <span class="com">// [Int(42)]</span>
+
+<span class="kw">let</span> g = i.get_global(<span class="str">"g"</span>).unwrap();
+<span class="kw">if</span> i.instance_has_method(&amp;g, <span class="str">"hello"</span>) {
+    <span class="kw">let</span> r = i.call_method(&amp;g, <span class="str">"hello"</span>, <span class="kw">vec!</span>[Value::str(<span class="str">"ana"</span>)])?;  <span class="com">// [Str("hi ana")]</span>
+}</code></pre>
+<p>Both return <code>Result&lt;Vec&lt;Value&gt;, EvalError&gt;</code>: every value
+the callee returned on success, or the runtime error it raised. Calls run to
+completion synchronously; for fire-and-forget calls that may wait, use
+<code>launch</code> below.</p>
+
+<h3 id="async">Async: coroutines, blocking, and the family GIL</h3>
+<p>One paragraph of model first. LUAR coroutines run on real OS threads, but a
+per-interpreter-family lock (the <em>family GIL</em>) guarantees only one of
+them executes LUAR code at any moment, so script state never races. When a
+native function needs to wait on the outside world it calls
+<code>luar::blocking</code>: the calling coroutine detaches, the GIL is released
+while the closure runs, and the coroutine re-attaches when the closure finishes
+&mdash; so a blocking native only blocks <em>its own coroutine</em>, while the
+main script and every other coroutine keep running. The host drives completion:
+<code>luar::run_pending()</code> blocks until every backgrounded coroutine has
+finished (the canonical last line of <code>main</code>), and
+<code>luar::pump_ready()</code> re-attaches whatever is ready right now and
+returns immediately. All the <code>Interpreter</code> convenience methods take
+the family GIL themselves, so they are safe to call between resumes.</p>
+
+<h4>Launching coroutines from Rust</h4>
+<p>The host can launch any LUAR function &mdash; or an object method with
+<code>self</code> bound &mdash; as a coroutine. The launch resumes the coroutine
+immediately: if the body finishes (or yields) within the grace window you get
+the result right away; otherwise it keeps running in the background and the host
+drains it with <code>luar::run_pending()</code>.</p>
+<table>
+<tr><th>Method</th><th>What it does</th></tr>
+<tr><td><code>i.launch(&amp;callable, args)</code></td><td>Create a coroutine from a function, class, or callable table and resume it with <code>args</code>. Returns the coroutine <code>Value</code>.</td></tr>
+<tr><td><code>i.launch_method(&amp;instance, "name", args)</code></td><td>Launch <code>instance:name(args)</code> as a coroutine with <code>self</code> bound. Also works with a class value for static methods.</td></tr>
+<tr><td><code>i.resume_coroutine(&amp;co, args)</code></td><td>Resume a <code>Value::Coroutine</code> from Rust. Results follow the script convention: <code>[true, ...yielded or returned values]</code> on success, <code>[false, message]</code> on failure. Resuming a coroutine that is <em>waiting</em> inside <code>blocking</code> fails.</td></tr>
+<tr><td><code>luar::run_pending()</code></td><td>Block until every backgrounded coroutine has finished. No-op inside a coroutine.</td></tr>
+<tr><td><code>luar::pump_ready()</code></td><td>Re-attach coroutines that are ready right now, then return (non-blocking) &mdash; call it inside a host frame/tick loop.</td></tr>
+</table>
+<pre><code>i.run_source(<span class="str">r#"
+    class Player {
+        public name: string = ""
+        constructor(n) self.name = n end
+        function respawn(delay)
+            wait(delay)
+            print(self.name .. " respawned")
+        end
+    }
+    pub local hero = Player("ana")
+    pub local tick = function(n) print("tick", n) end
+"#</span>)?;
+
+<span class="kw">let</span> tick = i.get_global(<span class="str">"tick"</span>).unwrap();
+<span class="kw">let</span> co = i.launch(&amp;tick, <span class="kw">vec!</span>[Value::int(<span class="num">1</span>)])?;          <span class="com">// plain function</span>
+
+<span class="kw">let</span> hero = i.get_global(<span class="str">"hero"</span>).unwrap();
+i.launch_method(&amp;hero, <span class="str">"respawn"</span>, <span class="kw">vec!</span>[Value::int(<span class="num">2</span>)])?; <span class="com">// method, self bound</span>
+
+luar::run_pending();                                       <span class="com">// drain background work</span></code></pre>
+<p>Errors that happen immediately (a non-callable value, a missing method, or a
+body that fails inside the grace window) come back as the <code>Err</code> of the
+launch call. Launch only from the host thread &mdash; calling it while a coroutine
+is running is an error. The full pattern, including connecting and disconnecting
+script handlers signal-style, is runnable as
+<code>cargo run --example signal</code> in <code>Luar-Runtime</code>.</p>
+
+<h4>Yielding and blocking from native code</h4>
+<p>A native function runs on the thread of whichever coroutine called it, so it
+can suspend just that coroutine without touching anything else:</p>
+<table>
+<tr><th>Function</th><th>What it does</th></tr>
+<tr><td><code>luar::blocking(f)</code></td><td>Inside a native called from a coroutine: run the closure while only THIS coroutine waits &mdash; every other coroutine and the main script keep running. Returns the closure's value to the native, which can hand it back to the script. On the main thread it just runs the closure (releasing the GIL around it and pumping ready coroutines).</td></tr>
+<tr><td><code>luar::yield_values(vals)</code></td><td>Inside a native called from a coroutine: yield it with <code>vals</code> (they become the resume results). Returns the values passed to the next <code>resume</code>. Errors on the main thread.</td></tr>
+<tr><td><code>luar::current_coroutine()</code></td><td><code>(thread, is_main)</code> &mdash; the running coroutine as a <code>Value</code>, e.g. to validate a thread argument a script passed you, plus whether you are on the main thread.</td></tr>
+</table>
+<p>This is the canonical <code>wait</code> native &mdash; the exact recipe from
+the <code>testbed</code> host. It parks ONLY the calling coroutine:</p>
+<pre><code><span class="kw">fn</span> wait(_i: &amp;<span class="kw">mut</span> luar::Interpreter, args: Vec&lt;luar::Value&gt;) -&gt; Result&lt;Vec&lt;luar::Value&gt;, String&gt; {
+    <span class="kw">let</span> secs = <span class="kw">match</span> args.first() {
+        Some(luar::Value::Int(i))   =&gt; *i <span class="kw">as</span> f64,
+        Some(luar::Value::Float(f)) =&gt; *f,
+        _ =&gt; <span class="num">0.0</span>,
+    };
+    luar::blocking(<span class="kw">move</span> || std::thread::sleep(std::time::Duration::from_secs_f64(secs)))?;
+    Ok(<span class="kw">vec!</span>[])
+}
+
+<span class="com">// registration: i.set_global_fn("wait", wait);</span>
+
+<span class="com">// a checkpoint native: yields the calling coroutine until someone resumes it</span>
+<span class="kw">fn</span> checkpoint(_i: &amp;<span class="kw">mut</span> luar::Interpreter, args: Vec&lt;luar::Value&gt;) -&gt; Result&lt;Vec&lt;luar::Value&gt;, String&gt; {
+    <span class="kw">let</span> sent_back = luar::yield_values(args)?;   <span class="com">// returns once the host resumes</span>
+    Ok(sent_back)
+}</code></pre>
+<p><code>blocking</code> is for "wait for something outside the script" (timers, IO,
+channels) &mdash; the host drains finished waiters with <code>run_pending()</code> /
+<code>pump_ready()</code>. <code>yield_values</code> is classic cooperative yielding:
+the coroutine stays suspended until someone resumes it (from the script or via
+<code>resume_coroutine</code>). The closure passed to <code>blocking</code> must not
+touch LUAR values &mdash; it runs while the GIL is released, and <code>Value</code>
+is not <code>Send</code>; compute plain data inside it and convert to values after
+it returns.</p>
+
+<h3 id="value-sources">Tracking which script a value came from</h3>
+<p>Every require'd module is tagged with its file path automatically, and the
+host can tag the entry script too. Native functions can then ask who called
+them, and any function, table, or class remembers which script created it &mdash;
+useful for per-module registries, permissions, or debugging.</p>
+<table>
+<tr><th>Method</th><th>What it does</th></tr>
+<tr><td><code>i.set_source_path(path)</code></td><td>Tag the entry script with its path (modules are tagged automatically).</td></tr>
+<tr><td><code>i.current_source()</code></td><td>Inside a native function: the path of the script currently running.</td></tr>
+<tr><td><code>i.source_of_value(&amp;v)</code></td><td>The path of the script that created a function, table, or class.</td></tr>
+<tr><td><code>i.script_of_value(&amp;v)</code></td><td>The creating script's id (pairs with <code>free_script</code>).</td></tr>
+<tr><td><code>luar::script_source(id)</code></td><td>Resolve a script id back to its path.</td></tr>
+</table>
+<pre><code>i.set_global_fn(<span class="str">"register"</span>, |i, args| {
+    <span class="kw">let</span> handler = args.into_iter().next().unwrap_or(Value::Nil);
+    <span class="kw">let</span> who = i.source_of_value(&amp;handler)
+        .or_else(|| i.current_source());
+    println!(<span class="str">"handler registered by {:?}"</span>, who);   <span class="com">// e.g. mods/alerts.luar</span>
+    Ok(<span class="kw">vec!</span>[])
+});</code></pre>
+<p>The <code>signal</code> example in <code>Luar-Runtime/examples/signal.rs</code>
+uses exactly this: each connected handler stores
+<code>source_of_value(&amp;handler)</code>, so when the host fires the signal it
+can log which script file each handler came from &mdash; and
+<code>free_script</code> / <code>free_module</code> can later disconnect
+everything a given script registered.</p>
+
+<h3 id="precompile">Precompiling scripts</h3>
+<p>LUAR can serialize a parsed, optimized program to a compact binary
+<code>.luarb</code> file and run it later without reparsing &mdash; useful for
+shipping scripts without source, faster startup, and build pipelines. The format
+carries a versioned header; unpacking anything else fails with
+<code>Error::Compile</code> ("not a LUAR precompiled file (bad header)").
+<code>require</code> loads <code>.luarb</code> files transparently (it tries
+<code>name.luar</code> first, then <code>name.luarb</code>).</p>
+<table>
+<tr><th>Function</th><th>What it does</th></tr>
+<tr><td><code>luar::precompile_source(src)</code></td><td>Parse + optimize + pack: returns the <code>.luarb</code> bytes (<code>Vec&lt;u8&gt;</code>).</td></tr>
+<tr><td><code>i.run_precompiled(&amp;bytes)</code></td><td>Run precompiled bytes in this interpreter; returns the top-level return values.</td></tr>
+<tr><td><code>luar::run_precompiled(&amp;bytes)</code></td><td>Run in a fresh interpreter and return it.</td></tr>
+<tr><td><code>luar::run_precompiled_returns(&amp;bytes)</code></td><td>Run in a fresh interpreter and return <code>(Interpreter, Vec&lt;Value&gt;)</code> &mdash; the interpreter plus the script's return values.</td></tr>
+<tr><td><code>luar::load_precompiled_module(&amp;bytes)</code></td><td>Run the bytes and return only the first returned value (or <code>Nil</code>) &mdash; module-style loading.</td></tr>
+<tr><td><code>luar::precompile::pack(&amp;stmts)</code> / <code>unpack(&amp;bytes)</code></td><td>The low-level AST &harr; bytes codec, if you manage parsing yourself.</td></tr>
+</table>
+<pre><code><span class="com">// at build/deploy time: compile a module once</span>
+<span class="kw">let</span> src   = std::fs::read_to_string(<span class="str">"mathx.luar"</span>)?;
+<span class="kw">let</span> bytes = luar::precompile_source(&amp;src)?;
+std::fs::write(<span class="str">"mathx.luarb"</span>, &amp;bytes)?;
+
+<span class="com">// at run time: load it as a module value and hand it to a host interpreter</span>
+<span class="kw">let</span> bytes  = std::fs::read(<span class="str">"mathx.luarb"</span>)?;
+<span class="kw">let</span> module = luar::load_precompiled_module(&amp;bytes)?;   <span class="com">// the module's `return` value</span>
+i.set_global_const(<span class="str">"mathx"</span>, module);
+
+<span class="com">// or just execute a precompiled program in the current interpreter</span>
+i.run_precompiled(&amp;bytes)?;</code></pre>
+
+<h3 id="module-loading">Loading modules from Rust</h3>
+<p><code>Interpreter::load_module</code> is the source-string twin of
+<code>load_precompiled_module</code>: it runs the source in a fresh interpreter
+and gives you the module's first return value, which you can then inject into
+your host interpreter as a global.</p>
+<pre><code><span class="kw">let</span> module = Interpreter::load_module(<span class="str">r#"
+    local M = {}
+    function M.greet(n) return "hi " .. n end
+    return M
+"#</span>)?;
+i.set_global_const(<span class="str">"greetings"</span>, module);
+i.run_source(<span class="str">"print(greetings.greet(\"ana\"))"</span>)?;   <span class="com">// hi ana</span></code></pre>
+<p>For scripts loading each other, <code>require</code> does the work: relative
+paths resolve against <code>set_module_dir</code> (and against the requiring
+module's own folder), <code>@alias</code> names come from a
+<code>luari.json</code> file, resolution tries <code>name.luar</code>,
+<code>name.luarb</code>, then <code>name/init.luar(b)</code>, every module runs
+once and is cached, and circular requires error with the full chain. If your
+modules do not live on disk at all &mdash; embedded resources, a database, a
+network &mdash; you can replace <code>require</code> wholesale, because it is
+just a global:</p>
+<pre><code>i.set_global_fn(<span class="str">"require"</span>, |_i, args| {
+    <span class="kw">let</span> name = args.first().and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    <span class="kw">let</span> source = my_module_source(&amp;name)            <span class="com">// however the host stores scripts</span>
+        .ok_or_else(|| format!(<span class="str">"no module named '{name}'"</span>))?;
+    <span class="kw">let</span> module = Interpreter::load_module(&amp;source).map_err(|e| e.to_string())?;
+    Ok(<span class="kw">vec!</span>[module])
+});</code></pre>
+<p>(The stock <code>require</code> caches per path; a custom one should keep its
+own cache &mdash; for instance in a <code>thread_local!</code> map &mdash; if
+modules must run only once. See <code>Luar/examples/custom_require.rs</code> for
+a complete version.)</p>
+
+<h3 id="gc-control">Garbage collection</h3>
+<p>The interpreter collects garbage on its own: an allocation counter triggers a
+mark/sweep at the next safe point (between top-level statements). The host can
+force, request, and tune collection:</p>
+<table>
+<tr><th>Call</th><th>What it does</th></tr>
+<tr><td><code>i.collect_garbage()</code></td><td>Run a full mark/sweep right now, rooted at the interpreter's environment. Call it at a natural pause, e.g. right after unloading a large module.</td></tr>
+<tr><td><code>luar::runtime::gc::request()</code></td><td>Flag a collection to run at the next safe point (this is all the script-side <code>collectgarbage()</code> does).</td></tr>
+<tr><td><code>luar::runtime::gc::set_threshold(n)</code></td><td>Set how many allocations happen between automatic collections (default 10&nbsp;000; clamped to at least 1). Lower = tighter memory, higher = fewer pauses.</td></tr>
+<tr><td><code>luar::runtime::gc::live_objects()</code></td><td>How many tables + functions are currently alive on this thread's heap &mdash; handy for leak hunting in tests.</td></tr>
+</table>
+<pre><code><span class="kw">use</span> luar::runtime::gc;
+
+gc::set_threshold(<span class="num">50_000</span>);    <span class="com">// collect less often</span>
+i.run_source(<span class="str">"..."</span>)?;
+i.collect_garbage();          <span class="com">// force a sweep at a quiet moment</span>
+println!(<span class="str">"live objects: {}"</span>, gc::live_objects());</code></pre>
+<p>The heap is thread-local: an <code>Interpreter</code> and every
+<code>Value</code> it creates must stay on the thread that created them
+(<code>Value</code> is not <code>Send</code>). Ownership is per-script &mdash;
+each object remembers the script that created it &mdash; which is what powers
+<code>free_script</code> and <code>free_module</code> above.</p>
+
+<h3 id="optimizer">The optimizer</h3>
+<p><code>luar::optimize_program(&amp;mut stmts)</code> rewrites a parsed AST in
+place (for example, unrolling small numeric <code>for</code> loops with constant
+bounds). You almost never call it yourself: it runs automatically inside
+<code>run_source</code>, <code>eval_source</code>,
+<code>precompile_source</code>, <code>compile_source</code>, the
+<code>run_precompiled</code> family, and the <code>require</code> module loader.
+The two paths that stay raw are <code>parse_source</code> (tooling such as the
+LSP depends on the unmodified AST) and <code>Context::spawn</code>. So the only
+time to call it by hand is when you parse and execute manually:</p>
+<pre><code><span class="kw">let mut</span> program = luar::parse_source(src)?;   <span class="com">// raw AST</span>
+luar::optimize_program(&amp;<span class="kw">mut</span> program);          <span class="com">// optional, but what run_source would do</span>
+<span class="kw">let</span> results = i.run(&amp;program)?;                <span class="com">// Interpreter::run never optimizes on its own</span></code></pre>
+
+<h3 id="context">Context: hosting multiple cooperative scripts</h3>
+<p><code>luar::Context</code> wraps one interpreter for hosts that juggle several
+scripts as resumable units &mdash; a game stepping many actor scripts, for
+example. <code>spawn</code> parses a source string into a coroutine that shares
+the context's global scope but does not start it; the host then steps it with
+<code>resume</code> whenever it likes.</p>
+<table>
+<tr><th>Method</th><th>What it does</th></tr>
+<tr><td><code>Context::new()</code></td><td>A fresh context owning one interpreter.</td></tr>
+<tr><td><code>ctx.run(src)</code></td><td>Run source to completion (same as <code>run_source</code>).</td></tr>
+<tr><td><code>ctx.spawn(src)</code></td><td>Parse <code>src</code> into a not-yet-started coroutine sharing the context's globals; returns the coroutine <code>Value</code>.</td></tr>
+<tr><td><code>ctx.resume(&amp;co, args)</code></td><td>Resume it: <code>[true, ...yielded]</code> or <code>[false, message]</code>.</td></tr>
+<tr><td><code>ctx.status(&amp;co)</code></td><td><code>"suspended"</code>, <code>"running"</code>, <code>"waiting"</code>, <code>"dead"</code> &mdash; or <code>"not a thread"</code>.</td></tr>
+<tr><td><code>ctx.set_global(name, v)</code> / <code>ctx.get_global(name)</code></td><td>Shared globals, as on <code>Interpreter</code>.</td></tr>
+<tr><td><code>ctx.interpreter()</code></td><td>The underlying <code>&amp;mut Interpreter</code> for everything else (natives, classes, modules).</td></tr>
+</table>
+<pre><code><span class="kw">use</span> luar::{Context, Value};
+
+<span class="kw">let mut</span> ctx = Context::new();
+ctx.set_global(<span class="str">"hp"</span>, Value::int(<span class="num">100</span>));
+
+<span class="kw">let</span> co = ctx.spawn(<span class="str">r#"
+    while true do
+        hp = hp - 10
+        coroutine.yield(hp)
+    end
+"#</span>)?;
+
+<span class="kw">let</span> step = ctx.resume(&amp;co, <span class="kw">vec!</span>[])?;     <span class="com">// [true, 90]</span>
+<span class="kw">let</span> step = ctx.resume(&amp;co, <span class="kw">vec!</span>[])?;     <span class="com">// [true, 80]</span>
+println!(<span class="str">"{}"</span>, ctx.status(&amp;co));        <span class="com">// suspended</span></code></pre>

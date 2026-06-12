@@ -1,7 +1,7 @@
 
 use crate::ast::*;
 
-const HEADER: &[u8; 7] = b"LUARC\x00\x02";
+const HEADER: &[u8; 7] = b"LUARC\x00\x04";
 
 pub fn pack(stmts: &[Stmt]) -> Vec<u8> {
     let mut w = Writer { buf: HEADER.to_vec() };
@@ -147,7 +147,7 @@ impl Writer {
                 self.str(name);
                 self.ty(ty);
             }
-            Stmt::Class { visibility, is_final, is_abstract, name, parent, mixins, interfaces, members } => {
+            Stmt::Class { visibility, is_final, is_abstract, name, parent, mixins, interfaces, members, line } => {
                 self.u8(10);
                 self.visibility(visibility);
                 self.bool(*is_final);
@@ -157,6 +157,7 @@ impl Writer {
                 self.vec(mixins, |w, m| w.str(m));
                 self.vec(interfaces, |w, i| w.str(i));
                 self.vec(members, Writer::member);
+                self.u32(*line);
             }
             Stmt::Interface { visibility, name, parents, members } => {
                 self.u8(11);
@@ -225,6 +226,7 @@ impl Writer {
         self.vec(&f.params, |w, p| w.str(p));
         self.bool(f.is_vararg);
         self.vec(&f.body, Writer::stmt);
+        self.u32(f.line);
     }
 
     fn member(&mut self, m: &ClassMember) {
@@ -371,12 +373,13 @@ impl Writer {
                 self.expr(callee);
                 self.vec(args, Writer::expr);
             }
-            Expr::Function { name, params, is_vararg, body } => {
+            Expr::Function { name, params, is_vararg, body, line } => {
                 self.u8(9);
                 self.str(name);
                 self.vec(params, |w, p| w.str(p));
                 self.bool(*is_vararg);
                 self.vec(body, Writer::stmt);
+                self.u32(*line);
             }
             Expr::Vararg => self.u8(10),
             Expr::MethodCall { receiver, method, args } => {
@@ -571,6 +574,7 @@ impl<'a> Reader<'a> {
                 mixins: self.vec(Reader::str)?,
                 interfaces: self.vec(Reader::str)?,
                 members: self.vec(Reader::member)?,
+                line: self.u32()?,
             },
             11 => Stmt::Interface {
                 visibility: self.visibility()?,
@@ -625,6 +629,7 @@ impl<'a> Reader<'a> {
             params: self.vec(Reader::str)?,
             is_vararg: self.bool()?,
             body: self.vec(Reader::stmt)?,
+            line: self.u32()?,
         })
     }
 
@@ -696,6 +701,7 @@ impl<'a> Reader<'a> {
                 params: self.vec(Reader::str)?,
                 is_vararg: self.bool()?,
                 body: self.vec(Reader::stmt)?,
+                line: self.u32()?,
             },
             10 => Expr::Vararg,
             11 => Expr::MethodCall {

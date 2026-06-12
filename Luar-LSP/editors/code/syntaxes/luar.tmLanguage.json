@@ -558,7 +558,7 @@
       ]
     },
     "property-access": {
-      "match": "(?<=[\\w)\\]])(\\.)([A-Za-z_]\\w*)(?!\\s*[\\w({\"\\x27`\\[])",
+      "match": "(?<=[\\w)\\]])(\\.)([A-Za-z_]\\w*)(?!\\s*([\\w({\"\\x27`]|\\[[\\[=]))",
       "captures": {
         "1": {
           "name": "punctuation.accessor.luar"

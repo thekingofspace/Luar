@@ -8,32 +8,51 @@
 <span class="kw">else</span>
   <span class="fn">print</span>(<span class="str">"C"</span>)
 <span class="kw">end</span></code></pre>
-<p>Every value is truthy except <code>false</code> and <code>nil</code>.</p>
+<p>Conditions are checked top to bottom and the first truthy one runs. Every
+value is truthy except <code>false</code> and <code>nil</code> — including
+<code>0</code> and the empty string.</p>
 
-<h3>while and for</h3>
+<h3>while</h3>
+<p>The condition is tested before each pass, so a body may run zero times.</p>
 <pre><code><span class="kw">while</span> n &gt; <span class="num">0</span> <span class="kw">do</span>
   n -= <span class="num">1</span>
-<span class="kw">end</span>
+<span class="kw">end</span></code></pre>
 
-<span class="kw">for</span> i = <span class="num">1</span>, <span class="num">10</span> <span class="kw">do</span> <span class="fn">print</span>(i) <span class="kw">end</span>
-<span class="kw">for</span> i = <span class="num">10</span>, <span class="num">1</span>, <span class="num">-1</span> <span class="kw">do</span> <span class="fn">print</span>(i) <span class="kw">end</span>   <span class="com">-- explicit step</span>
+<h3>Numeric for</h3>
+<p><code>for var = start, stop, step</code> counts from <code>start</code> to
+<code>stop</code> <b>inclusive</b>. The step defaults to <code>1</code> and may be
+negative; all three must be numbers, and a step of <code>0</code> is a run-time
+error. The loop variable is scoped to the loop and does not exist after it.</p>
+<pre><code><span class="kw">for</span> i = <span class="num">1</span>, <span class="num">10</span> <span class="kw">do</span> <span class="fn">print</span>(i) <span class="kw">end</span>
+<span class="kw">for</span> i = <span class="num">10</span>, <span class="num">1</span>, <span class="num">-1</span> <span class="kw">do</span> <span class="fn">print</span>(i) <span class="kw">end</span>   <span class="com">-- explicit step</span></code></pre>
+<p>Small numeric <code>for</code> loops with constant integer bounds and step (up
+to 16 iterations) are unrolled automatically when the script loads, removing the
+per-iteration loop overhead. Loops containing <code>break</code> or anything that
+creates a function keep their normal form, so behaviour never changes — only
+speed.</p>
 
-<span class="kw">for</span> index, value <span class="kw">in</span> <span class="fn">ipairs</span>(list) <span class="kw">do</span> <span class="fn">print</span>(index, value) <span class="kw">end</span>
+<h3>Generic for</h3>
+<p><code>for a, b in ...</code> drives an iterator. The expression list after
+<code>in</code> supplies an iterator function, a state value, and an initial
+control value; the iterator is called each pass and the loop stops when its first
+result is <code>nil</code>. In practice you get these triples from
+<code>ipairs</code> (array part, in order) and <code>pairs</code> (every key).</p>
+<pre><code><span class="kw">for</span> index, value <span class="kw">in</span> <span class="fn">ipairs</span>(list) <span class="kw">do</span> <span class="fn">print</span>(index, value) <span class="kw">end</span>
 <span class="kw">for</span> key, value <span class="kw">in</span> <span class="fn">pairs</span>(map) <span class="kw">do</span> <span class="fn">print</span>(key, value) <span class="kw">end</span></code></pre>
-<p>Name an unused loop variable <code>_</code> to silence UnusedLoopVariable.
-<code>break</code> exits the innermost loop.</p>
-<p>Small numeric <code>for</code> loops with constant integer bounds (up to 16
-iterations) are unrolled automatically when the script loads, removing the
-per-iteration loop overhead. Loops containing <code>break</code> or closures
-that capture the loop variable keep their normal form, so behaviour never
-changes — only speed.</p>
+<p>Name an unused loop variable <code>_</code> to silence UnusedLoopVariable.</p>
+
+<h3>break</h3>
+<p><code>break</code> exits the innermost enclosing loop immediately. There is no
+<code>continue</code> statement; skip an iteration with an <code>if</code> around
+the rest of the body. Ferrite reports a <code>break</code> outside any loop as an
+error (BreakOutsideLoop).</p>
 
 <h3>switch</h3>
-<p><code>switch</code> is an expression. The first <code>case</code> whose value
-equals the subject runs, and a <code>return</code> inside it becomes the value of
-the switch. An optional <code>default</code> runs when no case matches. Each case
-has its own <code>end</code>, and the whole switch is closed by a final
-<code>end</code>.</p>
+<p><code>switch</code> is an expression. The subject is written once, in
+parentheses; the first <code>case</code> whose value equals the subject runs, and
+a <code>return</code> inside it becomes the value of the switch. An optional
+<code>default</code> runs when no case matches. Each case has its own
+<code>end</code>, and the whole switch is closed by a final <code>end</code>.</p>
 <pre><code><span class="kw">local</span> label = <span class="kw">switch</span>(state)
   <span class="kw">case</span> <span class="str">"idle"</span>
     <span class="kw">return</span> <span class="str">"waiting"</span>
@@ -45,6 +64,38 @@ has its own <code>end</code>, and the whole switch is closed by a final
     <span class="kw">return</span> <span class="str">"unknown"</span>
   <span class="kw">end</span>
 <span class="kw">end</span></code></pre>
+<p>The rules, in detail:</p>
+<ul>
+<li><b>First match wins, no fallthrough.</b> Cases are independent blocks; once
+one runs, the switch is finished.</li>
+<li><b><code>return</code> yields the switch's value</b> — it does <em>not</em>
+return from the enclosing function. Only the first returned value is kept. A
+case that runs without reaching a <code>return</code> produces
+<code>nil</code>, as does a subject that matches nothing when there is no
+<code>default</code>.</li>
+<li><b>Patterns are expressions.</b> A case pattern can be any expression
+(<code>case 2 + 3</code>, <code>case Color.Red</code>); it is compared to the
+subject with the same semantics as <code>==</code> (numbers compare across
+int/float, strings by content, tables by identity).</li>
+<li><b>Each case body is its own scope</b>, so locals declared in one case are
+invisible to the others.</li>
+<li><b>It works as a statement too</b> — you may use a switch purely for its side
+effects and ignore the value.</li>
+</ul>
+<pre><code><span class="kw">switch</span>(command)        <span class="com">-- statement position: value is discarded</span>
+  <span class="kw">case</span> <span class="str">"save"</span>
+    <span class="fn">save</span>()
+  <span class="kw">end</span>
+  <span class="kw">case</span> <span class="str">"quit"</span>
+    <span class="fn">shutdown</span>()
+  <span class="kw">end</span>
+<span class="kw">end</span></code></pre>
+<p><b>Performance:</b> when every case pattern is a literal (an integer, string,
+boolean, or whole float), the interpreter builds a jump table the first time the
+switch runs and reuses it, so matching is a single hash lookup instead of a
+walk down the cases. Whole-float subjects normalize, so <code>pick(2.0)</code>
+still hits <code>case 2</code>. If any pattern is not a literal, the cases are
+simply evaluated top to bottom until one matches.</p>
 
 <h3 id="switch-vs-elseif">Why switch and case instead of a chain of elseif</h3>
 <p>You could write the same logic as a long <code>if / elseif</code> chain, but a

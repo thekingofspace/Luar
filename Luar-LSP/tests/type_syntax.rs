@@ -78,7 +78,7 @@ fn binding_order_union_intersection_optional() {
 fn arrow_is_loosest() {
     let t = parse_type("A | B -> C").unwrap();
     match t {
-        TypeExpr::Function { params, ret } => {
+        TypeExpr::Function { params, ret, .. } => {
             assert_eq!(params.len(), 1);
             assert_eq!(
                 params[0],
@@ -191,7 +191,7 @@ fn record_of_methods() {
     let t = parse_type("{\n  test: (self: test) -> ()\n}").unwrap();
     match t {
         TypeExpr::Table(TableTypeExpr::Record(fields)) => match &fields[0].ty {
-            TypeExpr::Function { params, ret } => {
+            TypeExpr::Function { params, ret, .. } => {
                 assert_eq!(
                     params[0],
                     Param::Positional {

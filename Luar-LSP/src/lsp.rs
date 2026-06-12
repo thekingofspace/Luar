@@ -634,6 +634,39 @@ impl Server {
                 ("paddingLeft", Json::Bool(false)),
             ]));
         }
+        let mut seen_params: std::collections::HashSet<(u32, String)> =
+            std::collections::HashSet::new();
+        for (line, name, ty) in &info.analysis.param_hints {
+            if *line < start_line + 1 || *line > end_line + 3 {
+                continue;
+            }
+            if !seen_params.insert((*line, name.clone())) {
+                continue;
+            }
+            let Some((row, col)) = find_param_position(&lines, *line, name) else {
+                continue;
+            };
+            let label = format!(": {}", compact_type(ty, 0));
+            let label = if label.chars().count() > 32 {
+                let mut cut: String = label.chars().take(31).collect();
+                cut.push('…');
+                cut
+            } else {
+                label
+            };
+            hints.push(Json::obj(vec![
+                (
+                    "position",
+                    Json::obj(vec![
+                        ("line", Json::int(row as i64)),
+                        ("character", Json::int(col as i64)),
+                    ]),
+                ),
+                ("label", Json::str(label)),
+                ("kind", Json::int(1)),
+                ("paddingLeft", Json::Bool(false)),
+            ]));
+        }
         Some(Json::Array(hints))
     }
 }
@@ -681,6 +714,55 @@ fn capabilities() -> Json {
             ),
         ]),
     )])
+}
+
+fn find_param_position(lines: &[&str], line1: u32, name: &str) -> Option<(usize, usize)> {
+    if line1 == 0 {
+        return None;
+    }
+    let start = line1 as usize - 1;
+    for row in start..(start + 5).min(lines.len()) {
+        let text = lines[row];
+        let Some(end) = find_name_end(text, name) else {
+            continue;
+        };
+        let after: String = text.chars().skip(end).collect();
+        if after.trim_start().starts_with(':') {
+            return None;
+        }
+        return Some((row, end));
+    }
+    None
+}
+
+fn compact_type(ty: &crate::types::Type, depth: usize) -> String {
+    use crate::types::Type;
+    match ty {
+        Type::Table(tt) => {
+            if let Some(n) = &tt.name {
+                return n.clone();
+            }
+            if let Some(elem) = &tt.array {
+                if depth < 2 {
+                    return format!("{{{}}}", compact_type(elem, depth + 1));
+                }
+                return "{…}".into();
+            }
+            if tt.fields.is_empty() {
+                return "{}".into();
+            }
+            "{…}".into()
+        }
+        Type::Function(_) => "function".into(),
+        Type::Union(parts) => {
+            let inner: Vec<String> = parts
+                .iter()
+                .map(|p| compact_type(p, depth + 1))
+                .collect();
+            inner.join(" | ")
+        }
+        other => other.to_string(),
+    }
 }
 
 fn find_name_end(line: &str, name: &str) -> Option<usize> {

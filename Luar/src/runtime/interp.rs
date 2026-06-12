@@ -434,7 +434,7 @@ impl Interpreter {
             Stmt::Enum { visibility, name, variants, .. } => {
                 self.exec_enum(*visibility, name, variants)?;
             }
-            Stmt::Class { visibility, is_final, is_abstract, name, parent, mixins, interfaces, members } => {
+            Stmt::Class { visibility, is_final, is_abstract, name, parent, mixins, interfaces, members, .. } => {
                 let class = self.build_class(name, *is_final, *is_abstract, parent.as_deref(), mixins, interfaces, members)?;
                 self.fire_class_hooks(&class);
                 self.env.declare(name.clone(), Value::Class(class), Mutability::Const, *visibility);
@@ -775,12 +775,13 @@ impl Interpreter {
             Expr::Vararg => {
                 Ok(self.varargs.last().and_then(|v| v.first().cloned()).unwrap_or(Value::Nil))
             }
-            Expr::Function { name, params, is_vararg, body } => Ok(Value::function(
+            Expr::Function { name, params, is_vararg, body, .. } => Ok(Value::function_in(
                 name.clone(),
                 params.clone(),
                 *is_vararg,
                 Rc::new(body.clone()),
                 self.env.capture(),
+                self.class_ctx.last().cloned(),
             )),
             Expr::Switch { subject, cases, default } => {
                 let subj = self.eval(subject)?;
@@ -1056,6 +1057,14 @@ impl Interpreter {
             self.env.declare(super_key, super_v, Mutability::Const, Visibility::Local);
             self.class_ctx.push(class);
         }
+        let lexical_ctx = if is_method {
+            false
+        } else if let Some(class) = &f.defined_in {
+            self.class_ctx.push(class.clone());
+            true
+        } else {
+            false
+        };
 
         for (i, param) in f.params.iter().enumerate() {
             let v = args.get(i).cloned().unwrap_or(Value::Nil);
@@ -1089,7 +1098,7 @@ impl Interpreter {
         if f.is_vararg {
             self.varargs.pop();
         }
-        if is_method {
+        if is_method || lexical_ctx {
             self.class_ctx.pop();
         }
         if error.is_none() {
@@ -2011,6 +2020,7 @@ fn register_builtins(env: &mut Environment) {
         ("pack", tbl_pack),
         ("sort", tbl_sort),
         ("keys", tbl_keys),
+        ("clear", tbl_clear),
     ]);
 
     register_library(env, "bit32", &[
@@ -2427,6 +2437,13 @@ fn tbl_pack(_i: &mut Interpreter, a: Vec<Value>) -> NativeResult {
         let _ = rc.borrow_mut().set(Value::str("n"), Value::Int(a.len() as i64));
     }
     Ok(vec![t])
+}
+fn tbl_clear(_i: &mut Interpreter, a: Vec<Value>) -> NativeResult {
+    let t = arg_tbl(&a, 0, "table.clear")?;
+    let mut tb = t.borrow_mut();
+    tb.array.clear();
+    tb.map.clear();
+    Ok(vec![])
 }
 fn tbl_keys(_i: &mut Interpreter, a: Vec<Value>) -> NativeResult {
     let t = arg_tbl(&a, 0, "table.keys")?;
@@ -5361,6 +5378,21 @@ end"#,
         );
         assert_eq!(interp.env.get("v"), Some(Value::str("self")));
         assert_eq!(interp.env.get("n"), Some(Value::Int(1)));
+    }
+
+    #[test]
+    fn table_clear_empties_array_and_map() {
+        let interp = run(
+            r#"local t = { 1, 2, 3, name = "x" }
+setmetatable(t, { __index = function() return "meta" end })
+table.clear(t)
+pub local len = #t
+pub local name = rawget(t, "name") == nil
+pub local meta_kept = t.anything"#,
+        );
+        assert_eq!(interp.env.get("len"), Some(Value::Int(0)));
+        assert_eq!(interp.env.get("name"), Some(Value::Bool(true)));
+        assert_eq!(interp.env.get("meta_kept"), Some(Value::str("meta")));
     }
 
     #[test]

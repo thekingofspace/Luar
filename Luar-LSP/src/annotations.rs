@@ -14,6 +14,7 @@ pub struct AnnotationSet {
     pub getter_returns: HashMap<(String, String), TypeExpr>,
     pub exported_types: HashSet<String>,
     pub alias_generics: HashMap<String, Vec<String>>,
+    pub alias_bodies: HashMap<String, TypeExpr>,
     pub cast_vars: HashSet<(String, u32)>,
 }
 
@@ -33,6 +34,7 @@ impl AnnotationSet {
             && self.getter_returns.is_empty()
             && self.exported_types.is_empty()
             && self.alias_generics.is_empty()
+            && self.alias_bodies.is_empty()
             && self.cast_vars.is_empty()
     }
 }
@@ -253,12 +255,20 @@ impl<'a> Scanner<'a> {
             self.out.exported_types.insert(name.clone());
         }
         if self.kind(self.i) == TokenKind::Operator && self.text(self.i).starts_with('<') {
-            let mut params = Vec::new();
+            let mut params: Vec<String> = Vec::new();
             let mut balance: i32 = 0;
             while self.i < self.toks.len() {
                 match self.kind(self.i) {
                     TokenKind::Operator => {
-                        for c in self.text(self.i).chars() {
+                        let text = self.text(self.i).to_string();
+                        if balance == 1 && text.contains("...") {
+                            if let Some(last) = params.last_mut() {
+                                if !last.ends_with("...") {
+                                    last.push_str("...");
+                                }
+                            }
+                        }
+                        for c in text.chars() {
                             if c == '<' {
                                 balance += 1;
                             } else if c == '>' {
@@ -281,7 +291,13 @@ impl<'a> Scanner<'a> {
                 }
             }
             if !params.is_empty() {
-                self.out.alias_generics.insert(name, params);
+                self.out.alias_generics.insert(name.clone(), params);
+            }
+        }
+        if self.kind(self.i) == TokenKind::Operator && self.text(self.i) == "=" {
+            self.i += 1;
+            if let Some(body) = self.parse_type_here() {
+                self.out.alias_bodies.insert(name, body);
             }
         }
     }
@@ -467,6 +483,11 @@ impl<'a> Scanner<'a> {
                 } else {
                     None
                 };
+                if !params.is_empty() {
+                    self.out
+                        .fn_params
+                        .insert((String::new(), kw_line), params.clone());
+                }
                 if let Some((name, name_line)) = target {
                     if !params.is_empty() {
                         self.out
@@ -486,13 +507,17 @@ impl<'a> Scanner<'a> {
             }
             return;
         }
-        let name = self.text(self.i).to_string();
-        let name_line = self.line(self.i);
+        let mut name = self.text(self.i).to_string();
+        let mut name_line = self.line(self.i);
         self.i += 1;
-        if self.kind(self.i) == TokenKind::Operator
+        while self.kind(self.i) == TokenKind::Operator
             && (self.text(self.i) == "." || self.text(self.i) == ":")
+            && self.kind(self.i + 1) == TokenKind::Identifier
         {
-            return;
+            self.i += 1;
+            name = self.text(self.i).to_string();
+            name_line = self.line(self.i);
+            self.i += 1;
         }
         let generics = self.collect_generics();
         if !generics.is_empty() && class_ctx.is_none() {

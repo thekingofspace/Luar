@@ -118,7 +118,7 @@ export function countLineBalance(strippedLine: string): number {
                 balance++;
                 break;
             case "function":
-                if (prev !== "abstract") balance++;
+                balance++;
                 break;
             case "get":
             case "set": {
@@ -146,7 +146,46 @@ function hasEarlierLoopWord(line: string, before: number): boolean {
 }
 
 export function countBlockBalance(strippedLines: string[]): number {
-    return strippedLines.reduce((total, line) => total + countLineBalance(line), 0);
+    let total = 0;
+    let interfaceBraces = 0;
+    let pendingInterface = false;
+    for (const line of strippedLines) {
+        if (interfaceBraces > 0 || pendingInterface) {
+            const delta = braceDelta(line);
+            if (pendingInterface && /\{/.test(line)) {
+                pendingInterface = false;
+                interfaceBraces = Math.max(delta, 1);
+            } else {
+                interfaceBraces += delta;
+            }
+            if (interfaceBraces <= 0) {
+                interfaceBraces = 0;
+                pendingInterface = false;
+            }
+            continue;
+        }
+        const idx = line.search(/\binterface\b/);
+        if (idx >= 0) {
+            const delta = braceDelta(line.slice(idx));
+            if (delta > 0) {
+                interfaceBraces = delta;
+            } else if (!/\{[^]*\}/.test(line.slice(idx))) {
+                pendingInterface = true;
+            }
+            continue;
+        }
+        total += countLineBalance(line);
+    }
+    return total;
+}
+
+function braceDelta(line: string): number {
+    let delta = 0;
+    for (const ch of line) {
+        if (ch === "{") delta++;
+        else if (ch === "}") delta--;
+    }
+    return delta;
 }
 
 export function lineOpensBlock(strippedLine: string): boolean {

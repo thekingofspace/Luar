@@ -101,6 +101,7 @@ pub struct Analysis {
     pub interfaces: HashMap<String, Vec<String>>,
     pub aliases: Vec<(String, luar::ast::Type)>,
     pub module_returns: Vec<Type>,
+    pub param_hints: Vec<(u32, String, Type)>,
 }
 
 impl Analysis {
@@ -388,18 +389,20 @@ impl<'a> Inferencer<'a> {
                         params,
                         is_vararg,
                         body,
+                        line: fn_line,
                     } = &inits[0]
                     {
                         let is_pub = *visibility == Visibility::Pub;
                         self.bind(&names[0], Type::Function(None), is_pub);
                         let ptypes = self.fn_param_annotations(&names[0], *line);
-                        let mut sig = self.infer_fn(
+                        let mut sig = self.infer_fn_at(
                             params,
                             *is_vararg,
                             body,
                             None,
                             Some(fname),
                             ptypes.as_ref(),
+                            Some(*fn_line),
                         );
                         if let Some(ann) = self.opts.annotations {
                             let key = (names[0].clone(), *line);
@@ -507,6 +510,7 @@ impl<'a> Inferencer<'a> {
                                         params,
                                         is_vararg,
                                         body,
+                                        ..
                                     }),
                                     Expr::Str(k),
                                 ) = (values.get(i), key.as_ref())
@@ -628,6 +632,7 @@ impl<'a> Inferencer<'a> {
                 mixins,
                 interfaces,
                 members,
+                ..
             } => {
                 self.exec_class(
                     *visibility,
@@ -796,13 +801,14 @@ impl<'a> Inferencer<'a> {
                 } => {
                     let self_class = if *is_static { None } else { Some(name) };
                     let params = self.method_param_annotations(name, mname);
-                    let mut sig = self.infer_fn(
+                    let mut sig = self.infer_fn_at(
                         &func.params,
                         func.is_vararg,
                         &func.body,
                         self_class,
                         None,
                         params.as_ref(),
+                        Some(func.line),
                     );
                     if let Some(ann) = self.opts.annotations {
                         if let Some(ret) =
@@ -941,10 +947,34 @@ impl<'a> Inferencer<'a> {
         fname: &str,
     ) -> Type {
         let ptypes = self.fn_param_annotations(key_name, line);
-        let mut sig = self.infer_fn(params, is_vararg, body, None, Some(fname), ptypes.as_ref());
+        let mut sig =
+            self.infer_fn_at(params, is_vararg, body, None, Some(fname), ptypes.as_ref(), Some(line));
         if let Some(ann) = self.opts.annotations {
-            if let Some(ret) = ann.fn_returns.get(&(key_name.to_string(), line)) {
+            let key = (key_name.to_string(), line);
+            if let Some(ret) = ann.fn_returns.get(&key) {
                 sig.returns = self.annotation_returns(ret);
+                if let Some(generics) = ann.fn_generics.get(&key) {
+                    let param_anns: Vec<Option<TypeExpr>> = params
+                        .iter()
+                        .map(|p| {
+                            ann.fn_params
+                                .get(&key)
+                                .and_then(|m| m.get(p).cloned())
+                        })
+                        .collect();
+                    if let Some(g) = ret.simple_name() {
+                        if generics.iter().any(|x| x == g) {
+                            sig.returns_param = param_anns.iter().position(|t| {
+                                t.as_ref().and_then(|t| t.simple_name()) == Some(g)
+                            });
+                        }
+                    }
+                    sig.generic_sig = Some(Box::new(GenericSig {
+                        generics: generics.clone(),
+                        param_anns,
+                        ret_ann: ret.clone(),
+                    }));
+                }
             }
         }
         Type::Function(Some(Box::new(sig)))
@@ -958,6 +988,20 @@ impl<'a> Inferencer<'a> {
         self_class: Option<&str>,
         self_name: Option<&str>,
         param_types: Option<&HashMap<String, Type>>,
+    ) -> FunctionType {
+        self.infer_fn_at(params, is_vararg, body, self_class, self_name, param_types, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn infer_fn_at(
+        &mut self,
+        params: &[String],
+        is_vararg: bool,
+        body: &[Stmt],
+        self_class: Option<&str>,
+        self_name: Option<&str>,
+        param_types: Option<&HashMap<String, Type>>,
+        hint_line: Option<u32>,
     ) -> FunctionType {
         self.scopes.push(HashMap::new());
         if let Some(class) = self_class {
@@ -983,6 +1027,11 @@ impl<'a> Inferencer<'a> {
                 .and_then(|m| m.get(p).cloned())
                 .unwrap_or(Type::Unknown);
             self.bind(p, ty.clone(), false);
+            if let Some(l) = hint_line {
+                if ty != Type::Unknown && p != "self" {
+                    self.out.param_hints.push((l, p.clone(), ty.clone()));
+                }
+            }
             param_infos.push(ParamInfo {
                 name: p.clone(),
                 ty,
@@ -1085,8 +1134,18 @@ impl<'a> Inferencer<'a> {
                 params,
                 is_vararg,
                 body,
+                line,
             } => {
-                let sig = self.infer_fn(params, *is_vararg, body, None, Some(name), None);
+                let ptypes = self.fn_param_annotations("", *line);
+                let sig = self.infer_fn_at(
+                    params,
+                    *is_vararg,
+                    body,
+                    None,
+                    Some(name),
+                    ptypes.as_ref(),
+                    Some(*line),
+                );
                 Type::Function(Some(Box::new(sig)))
             }
             Expr::Switch {
@@ -1280,17 +1339,25 @@ impl<'a> Inferencer<'a> {
     }
 
     fn eval_call(&mut self, callee: &Expr, args: &[Expr]) -> (Vec<Type>, bool) {
-        let arg_types: Vec<Type> = args.iter().map(|a| self.eval(a)).collect();
         if let Expr::Name(n) = callee {
             match n.as_str() {
                 "require" if !args.is_empty() => {
+                    for a in args {
+                        self.eval(a);
+                    }
                     if let (Some(hook), Expr::Str(path)) = (self.opts.require, &args[0]) {
                         if let Some(ty) = hook(path) {
                             return (vec![ty], false);
                         }
                     }
+                    let cty = self.eval(callee);
+                    if let Type::Function(Some(ft)) = cty {
+                        return (ft.returns.clone(), false);
+                    }
+                    return (vec![], true);
                 }
                 "pcall" if !args.is_empty() => {
+                    let arg_types: Vec<Type> = args.iter().map(|a| self.eval(a)).collect();
                     if let Some(Type::Function(Some(ft))) = arg_types.first() {
                         let mut rets = vec![Type::Boolean];
                         rets.extend(ft.returns.iter().cloned());
@@ -1299,12 +1366,28 @@ impl<'a> Inferencer<'a> {
                     return (vec![Type::Boolean], true);
                 }
                 "assert" if !args.is_empty() => {
-                    return (arg_types.clone(), false);
+                    let arg_types: Vec<Type> = args.iter().map(|a| self.eval(a)).collect();
+                    return (arg_types, false);
                 }
                 _ => {}
             }
         }
         let cty = self.eval(callee);
+        let expected = match &cty {
+            Type::Function(Some(ft)) => Some(ft.clone()),
+            _ => None,
+        };
+        let arg_types: Vec<Type> = args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let hint = expected
+                    .as_ref()
+                    .and_then(|ft| ft.params.get(i))
+                    .map(|p| p.ty.clone());
+                self.eval_arg_with_hint(a, hint.as_ref())
+            })
+            .collect();
         match cty {
             Type::Class(c) => (vec![Type::Instance(c)], false),
             Type::Function(Some(ft)) => {
@@ -1340,6 +1423,16 @@ impl<'a> Inferencer<'a> {
         args: &[Expr],
         arg_types: &[Type],
     ) -> Option<Type> {
+        let fallback = || {
+            (0..args.len().max(arg_types.len()))
+                .find_map(|i| {
+                    match arg_to_texpr(args.get(i), arg_types.get(i)) {
+                        Some(t @ TypeExpr::StringLit(_)) => Some(t),
+                        _ => None,
+                    }
+                })
+                .or_else(|| arg_to_texpr(args.first(), arg_types.first()))
+        };
         let mut bound: Vec<(String, TypeExpr)> = Vec::new();
         for g in &gs.generics {
             let from_param = gs.param_anns.iter().enumerate().find_map(|(i, pann)| {
@@ -1349,8 +1442,12 @@ impl<'a> Inferencer<'a> {
                     None
                 }
             });
-            let value = from_param.or_else(|| arg_to_texpr(args.first(), arg_types.first()))?;
-            bound.push((g.clone(), value));
+            if let Some(value) = from_param.or_else(|| fallback()) {
+                bound.push((g.clone(), value));
+            }
+        }
+        if bound.is_empty() {
+            return None;
         }
         let map: HashMap<&str, &TypeExpr> = bound
             .iter()
@@ -1365,23 +1462,123 @@ impl<'a> Inferencer<'a> {
         }
     }
 
+    fn eval_arg_with_hint(&mut self, arg: &Expr, hint: Option<&Type>) -> Type {
+        if let (
+            Expr::Function {
+                name,
+                params,
+                is_vararg,
+                body,
+                line,
+            },
+            Some(Type::Function(Some(expected))),
+        ) = (arg, hint)
+        {
+            let mut map: HashMap<String, Type> = HashMap::new();
+            for (i, p) in params.iter().enumerate() {
+                if let Some(pi) = expected.params.get(i) {
+                    if pi.ty != Type::Unknown {
+                        map.insert(p.clone(), pi.ty.clone());
+                    }
+                }
+            }
+            if let Some(annotated) = self.fn_param_annotations("", *line) {
+                for (k, v) in annotated {
+                    if v != Type::Unknown {
+                        map.insert(k, v);
+                    }
+                }
+            }
+            if !map.is_empty() {
+                let sig = self.infer_fn_at(
+                    params,
+                    *is_vararg,
+                    body,
+                    None,
+                    Some(name),
+                    Some(&map),
+                    Some(*line),
+                );
+                return Type::Function(Some(Box::new(sig)));
+            }
+        }
+        self.eval(arg)
+    }
+
     fn eval_method_call(
         &mut self,
         receiver: &Expr,
         method: &str,
         args: &[Expr],
     ) -> (Vec<Type>, bool) {
-        for a in args {
-            self.eval(a);
-        }
         let recv = self.eval(receiver);
+        let expected = match &recv {
+            Type::Instance(c) | Type::Class(c) => {
+                self.find_method(c, method).map(|s| Box::new(s.clone()))
+            }
+            Type::Table(tt) => match self.table_field(tt, method) {
+                Some(Type::Function(Some(ft))) => Some(ft),
+                _ => None,
+            },
+            _ => None,
+        };
+        let hint_takes_self = expected
+            .as_ref()
+            .is_some_and(|ft| ft.params.first().is_some_and(|p| p.name == "self"));
+        let arg_types: Vec<Type> = args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let pidx = if hint_takes_self { i + 1 } else { i };
+                let hint = expected
+                    .as_ref()
+                    .and_then(|ft| ft.params.get(pidx))
+                    .map(|p| p.ty.clone());
+                self.eval_arg_with_hint(a, hint.as_ref())
+            })
+            .collect();
         match &recv {
             Type::Instance(c) | Type::Class(c) => match self.find_method(c, method) {
                 Some(sig) => (sig.returns.clone(), false),
                 None => (vec![], true),
             },
             Type::Table(tt) => match self.table_field(tt, method) {
-                Some(Type::Function(Some(ft))) => (ft.returns.clone(), false),
+                Some(Type::Function(Some(ft))) => {
+                    let takes_self = ft
+                        .params
+                        .first()
+                        .is_some_and(|p| p.name == "self");
+                    if let Some(i) = ft.returns_param {
+                        let bound = if takes_self {
+                            if i == 0 {
+                                Some(recv.clone())
+                            } else {
+                                arg_types.get(i - 1).cloned()
+                            }
+                        } else {
+                            arg_types.get(i).cloned()
+                        };
+                        if let Some(t) = bound {
+                            return (vec![t], false);
+                        }
+                    }
+                    if let Some(gs) = &ft.generic_sig {
+                        let ret = if takes_self {
+                            let shifted = GenericSig {
+                                generics: gs.generics.clone(),
+                                param_anns: gs.param_anns.iter().skip(1).cloned().collect(),
+                                ret_ann: gs.ret_ann.clone(),
+                            };
+                            self.instantiate_generic_call(&shifted, args, &arg_types)
+                        } else {
+                            self.instantiate_generic_call(gs, args, &arg_types)
+                        };
+                        if let Some(r) = ret {
+                            return (vec![r], false);
+                        }
+                    }
+                    (ft.returns.clone(), false)
+                }
                 _ => (vec![], true),
             },
             _ => (vec![], true),

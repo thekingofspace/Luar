@@ -8,9 +8,16 @@ predictable lifetime.</p>
 
 <h3>Declaring a buff</h3>
 <p>Write <code>buff</code>, a fixed size, a name, and an initial value. The size is the
-capacity of the buffer (in bytes for string contents).</p>
+capacity of the buffer (in bytes for string contents). It must be a literal integer —
+hex (<code>0x10</code>) and underscore separators (<code>1_000</code>) are fine — and
+the initializer is required. A type annotation may follow the name; like all
+annotations it is erased at run time.</p>
 <pre><code><span class="kw">buff</span> <span class="num">32</span> name = <span class="str">"Player_1"</span>
+<span class="kw">buff</span> <span class="num">0x10</span> raw: <span class="typ">string</span> = <span class="str">"hex size"</span>
 <span class="fn">print</span>(name)            <span class="com">-- Player_1</span></code></pre>
+<p>The size is enforced from the very first assignment: <code>buff 2 tiny = "abc"</code>
+fails at the declaration with <code>buff 'tiny' overflow: 3 bytes exceed its fixed
+size 2</code>.</p>
 
 <h3>Buffs are mutable but fixed-size</h3>
 <p>You can reassign a buff as many times as you like, but a value that does not fit its
@@ -18,28 +25,33 @@ declared size is rejected with a run-time error. This is what "fixed size" means
 string, the size is the number of bytes.</p>
 <pre><code><span class="kw">buff</span> <span class="num">8</span> tag = <span class="str">"ok"</span>
 tag = <span class="str">"changed"</span>     <span class="com">-- fine: 7 bytes fits in 8</span>
-tag = <span class="str">"way too long"</span> <span class="com">-- run-time error: exceeds the fixed size 8</span></code></pre>
+tag = <span class="str">"way too long"</span> <span class="com">-- error: buff 'tag' overflow: 12 bytes exceed its fixed size 8</span></code></pre>
+<p>Only strings and tables are size-checked; a number or boolean always fits.</p>
 
-<h3>Tables, class instances, and native objects</h3>
-<p>When a buff holds a table, a class instance, or a native object, the size is the
-number of entries it may contain, and the limit is enforced on <b>every</b> growth, not
-just on assignment. Adding an element with <code>table.insert</code> or an index, or
-adding a field to an instance, fails once the buffer is full. Overwriting an element or
-field that already exists is always allowed, because it does not grow the buffer.</p>
+<h3>Tables and class instances</h3>
+<p>When a buff holds a table (or a class instance, which is a table underneath), the
+size is the number of entries it may contain — array elements and named keys combined —
+and the limit is enforced on <b>every</b> growth, not just on assignment. Adding an
+element with <code>table.insert</code> or an index, or adding a field to an instance,
+fails once the buffer is full with <code>buff overflow: this value is capped at a fixed
+size of N and cannot grow further</code>. Overwriting an element or field that already
+exists is always allowed, because it does not grow the buffer.</p>
 <pre><code><span class="kw">buff</span> <span class="num">3</span> items = {<span class="num">1</span>, <span class="num">2</span>}
 <span class="typ">table</span>.insert(items, <span class="num">3</span>)   <span class="com">-- fine: now holds 3</span>
-<span class="typ">table</span>.insert(items, <span class="num">4</span>)   <span class="com">-- run-time error: would exceed the fixed size 3</span>
+<span class="typ">table</span>.insert(items, <span class="num">4</span>)   <span class="com">-- run-time error: capped at a fixed size of 3</span>
 items[<span class="num">1</span>] = <span class="num">99</span>            <span class="com">-- fine: overwriting, not growing</span>
 
 <span class="kw">class</span> <span class="typ">Vec</span> { <span class="kw">public</span> x: <span class="typ">number</span> = <span class="num">0</span> }
 <span class="kw">buff</span> <span class="num">2</span> v = <span class="typ">Vec</span>()
 v.y = <span class="num">1</span>                  <span class="com">-- fine: instance now has 2 fields</span>
-v.z = <span class="num">2</span>                  <span class="com">-- run-time error: would exceed the fixed size 2</span></code></pre>
+v.z = <span class="num">2</span>                  <span class="com">-- run-time error: capped at a fixed size of 2</span></code></pre>
+<p>The cap is stamped on the table value itself, so the limit also holds when the table
+is reached through another reference.</p>
 
 <h3>A buff can never be pub</h3>
 <p>Buffs are always private to the file that declares them. Marking one <code>pub</code>
-is a compile error, because a manually managed buffer must not escape to importers.</p>
-<pre><code><span class="kw">pub</span> <span class="kw">buff</span> <span class="num">8</span> x = <span class="str">"a"</span>   <span class="com">-- error: a buff cannot be `pub`</span></code></pre>
+is a syntax error, because a manually managed buffer must not escape to importers.</p>
+<pre><code><span class="kw">pub</span> <span class="kw">buff</span> <span class="num">8</span> x = <span class="str">"a"</span>   <span class="com">-- error: a buff cannot be `pub` (buffs are always local)</span></code></pre>
 
 <h3>nil does not free a buff</h3>
 <p>Assigning <code>nil</code> to an ordinary variable makes its old value eligible for
@@ -74,12 +86,15 @@ memory safe by catching use-after-free instead of handing back garbage.</p>
 <pre><code><span class="kw">buff</span> <span class="num">8</span> p = <span class="str">"x"</span>
 <span class="kw">freebuff</span> p
 <span class="fn">print</span>(p)              <span class="com">-- run-time error: undefined variable 'p'</span></code></pre>
-<p><code>freebuff</code> also rejects names that are not buffs, so you cannot accidentally
-free a normal <code>local</code> or <code>const</code>.</p>
+<p><code>freebuff</code> also rejects names that are not buffs, so you cannot
+accidentally free a normal <code>local</code> or <code>const</code>: freeing an
+ordinary variable raises <code>'x' is not a buff; only buffs can be released with
+freebuff</code>, and freeing an unknown name raises <code>freebuff: no buff named
+'x'</code>.</p>
 
 <h3>Buffs work in precompiled bytecode</h3>
 <p>Buffs and <code>freebuff</code> are preserved by precompilation, so a
-<code>.luarc</code> file that uses them behaves exactly like the source.</p>
+<code>.luarb</code> file that uses them behaves exactly like the source.</p>
 
 <h3>When to use a buff</h3>
 <ul>

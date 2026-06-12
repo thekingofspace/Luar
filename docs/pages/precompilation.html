@@ -4,38 +4,80 @@ directly &mdash; you never have to precompile anything to use any feature. It
 exists for when you want to load or ship a program without its source text, or
 skip parsing at startup. If you only ever run source, you can ignore this page.</p>
 
-<h3>What a .luarc is</h3>
-<p>A <code>.luarc</code> file is a precompiled program. The source has been
-tokenized, parsed, and had its type annotations scrubbed, and the resulting
-syntax tree is packed into a compact binary. It is <b>not</b> machine code and
-<b>not</b> a separate runtime: it is the very same program the parser would hand
-to the interpreter, frozen to bytes. Loading one skips the lexer and parser, and
-from there everything runs on the ordinary interpreter &mdash; classes, enums,
-mixins, operators, and the standard library all behave exactly as they do from
-source.</p>
+<h3>What a .luarb is</h3>
+<p>A <code>.luarb</code> file is a precompiled program. The source has been
+tokenized, parsed, optimized, and had its type annotations scrubbed, and the
+resulting syntax tree is packed into a compact binary. It is <b>not</b> machine
+code and <b>not</b> a separate runtime: it is the very same program the parser
+would hand to the interpreter, frozen to bytes. Loading one skips the lexer and
+parser, and from there everything runs on the ordinary interpreter &mdash;
+classes, enums, mixins, operators, and the standard library all behave exactly
+as they do from source. Line numbers are kept in the binary, so runtime errors
+still point at the right line of the original source.</p>
 
-<h3>From the runner</h3>
-<p>The runner can precompile a file and run the result.</p>
-<pre><code>compile game.luar game.luarc   <span class="com"># produce a .luarc</span>
-run game.luarc                 <span class="com"># run it, just like running the source</span></code></pre>
+<h3>Producing a .luarb</h3>
+<p>Precompiled files are produced through the Rust API &mdash; the runner has no
+compile command. <code>luar::precompile_source</code> parses, optimizes, and
+packs source into bytes; you decide where the bytes live &mdash; a file on disk,
+an asset embedded in your binary, or a payload over the network.</p>
+<pre><code><span class="kw">let</span> src   = std::fs::read_to_string(<span class="str">"game.luar"</span>)?;
+<span class="kw">let</span> bytes = luar::precompile_source(&amp;src)?;     <span class="com">// Vec&lt;u8&gt;, the packed program</span>
+std::fs::write(<span class="str">"game.luarb"</span>, &amp;bytes)?;          <span class="com">// optional: save it somewhere</span></code></pre>
+<p>This is a thin wrapper over <code>precompile::pack</code> (syntax tree to
+bytes); its inverse <code>precompile::unpack</code> (bytes back to a syntax
+tree) is also public, so you can work directly with a parsed program if you
+already hold one.</p>
+
+<h3>Running a .luarb</h3>
+<p>A <code>.luarb</code> runs anywhere source runs.</p>
+<ul>
+<li><b>The runner.</b> <code>luar-runtime game.luarb</code> runs it exactly like
+running the source. The extension may be omitted &mdash; <code>luar-runtime
+game</code> tries <code>game.luar</code> then <code>game.luarb</code> &mdash;
+and pointing the runner at a folder looks for <code>main.luar</code>,
+<code>main.luarb</code>, <code>init.luar</code>, then <code>init.luarb</code>
+inside it.</li>
+<li><b>require.</b> Module resolution falls back from <code>.luar</code> to
+<code>.luarb</code> automatically (including <code>init.luarb</code> for folder
+modules), so a precompiled module is a drop-in replacement for its source
+&mdash; see <a href="#modules">Modules</a>.</li>
+<li><b>From Rust.</b> Load the bytes with the host API, below.</li>
+</ul>
 
 <h3>From Rust</h3>
-<p><code>precompile_source</code> turns source into the packed bytes, and
-<code>run_precompiled</code> loads those bytes and runs them in a fresh
-interpreter. You decide where the bytes live &mdash; a file on disk, an asset
-embedded in your binary, or a payload over the network.</p>
-<pre><code><span class="kw">let</span> bytes = luar::precompile_source(src)?;     <span class="com">// Vec&lt;u8&gt;, the packed program</span>
-std::fs::write(<span class="str">"game.luarc"</span>, &amp;bytes)?;          <span class="com">// optional: save it somewhere</span>
+<p>Several entry points load packed bytes, depending on what you want back:</p>
+<pre><code><span class="kw">let</span> bytes = std::fs::read(<span class="str">"game.luarb"</span>)?;
 
-<span class="kw">let</span> bytes  = std::fs::read(<span class="str">"game.luarc"</span>)?;
-<span class="kw">let</span> interp = luar::run_precompiled(&amp;bytes)?;    <span class="com">// load and run; returns the interpreter</span></code></pre>
-<p>These are thin wrappers over <code>precompile::pack</code> (syntax tree to
-bytes) and <code>precompile::unpack</code> (bytes back to a syntax tree), which
-you can call directly if you already hold a parsed program.</p>
+<span class="kw">let</span> interp = luar::run_precompiled(&amp;bytes)?;            <span class="com">// run in a fresh interpreter</span>
+<span class="kw">let</span> (interp, returned) = luar::run_precompiled_returns(&amp;bytes)?;  <span class="com">// + top-level return values</span>
+<span class="kw">let</span> module = luar::load_precompiled_module(&amp;bytes)?;    <span class="com">// just the first returned value</span>
+
+<span class="kw">let</span> <span class="kw">mut</span> host = luar::Interpreter::new();
+<span class="kw">let</span> results = host.run_precompiled(&amp;bytes)?;            <span class="com">// run on an existing interpreter</span></code></pre>
+<p><code>load_precompiled_module</code> is handy for module-style assets: it
+runs the program and hands you its first returned value (or nil), ready to
+install with <code>set_global</code>.</p>
+
+<h3>The optimizer is baked in</h3>
+<p>The same AST optimizer that the runtime applies to source (constant loop
+unrolling and friends) runs when a program is <b>packed</b>, so a
+<code>.luarb</code> already contains the optimized program &mdash; and it runs
+again when the bytes are <b>loaded</b>, so a file packed by an older LUAR still
+benefits from optimizations added since. There is no flag to turn this on; it is
+part of every load path.</p>
+
+<h3>Format compatibility</h3>
+<p>Every <code>.luarb</code> starts with a magic header that includes a format
+version. A loader only accepts files written with the exact format it
+understands; anything else &mdash; a corrupt file, or a file packed by a LUAR
+with a different format version &mdash; is rejected with
+<code>not a LUAR precompiled file (bad header)</code>. After upgrading LUAR
+across a format bump, re-precompile your <code>.luarb</code> files from source.
+The format is otherwise portable: the same bytes load on any platform.</p>
 
 <h3>When to reach for it</h3>
 <ul>
-<li><b>Ship without source.</b> Hand out <code>.luarc</code> bytes when you would
+<li><b>Ship without source.</b> Hand out <code>.luarb</code> bytes when you would
 rather not distribute the original <code>.luar</code> text.</li>
 <li><b>Faster startup.</b> Large programs skip lexing and parsing on load, which
 adds up when a host boots many scripts at once.</li>
@@ -43,6 +85,5 @@ adds up when a host boots many scripts at once.</li>
 with <code>run_precompiled</code>, no files required.</li>
 </ul>
 <p>Because annotations are scrubbed when the program is packed, a
-<code>.luarc</code> carries no type information; checking happens earlier, on the
-source, with Ferrite. The binary is portable as long as the LUAR that reads it
-understands the format it was written with.</p>
+<code>.luarb</code> carries no type information; checking happens earlier, on
+the source, with Ferrite and the editor.</p>
