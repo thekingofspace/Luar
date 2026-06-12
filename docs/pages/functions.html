@@ -34,6 +34,23 @@
   <span class="kw">return</span> total
 <span class="kw">end</span></code></pre>
 
+<h3>Proper tail calls</h3>
+<p>A <code>return f(args)</code> whose value is exactly one call to a Luar
+function is executed as a tail call: the current frame is discarded before
+<code>f</code> runs, so recursion in tail position uses constant stack no
+matter how deep it goes. All of the called function's return values are
+passed through unchanged.</p>
+<pre><code><span class="kw">local function</span> <span class="fn">count</span>(n, total)
+  <span class="kw">if</span> n == <span class="num">0</span> <span class="kw">then</span> <span class="kw">return</span> total <span class="kw">end</span>
+  <span class="kw">return</span> <span class="fn">count</span>(n - <span class="num">1</span>, total + <span class="num">1</span>)
+<span class="kw">end</span>
+
+<span class="fn">count</span>(<span class="num">10000000</span>, <span class="num">0</span>)  <span class="com">-- runs in constant stack space</span></code></pre>
+<p>Only plain calls qualify: <code>return f(x) + 1</code> and
+<code>return a, f(x)</code> are ordinary returns. Because the calling frame is
+gone before the tail call runs, its scoped destructors fire before
+<code>f</code> executes rather than after it returns.</p>
+
 <h3>Call sugar</h3>
 <p>When a function takes a single string or table literal, the parentheses are
 optional.</p>

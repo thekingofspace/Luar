@@ -34,6 +34,12 @@ enum Flow {
     Normal,
     Break,
     Return(Vec<Value>),
+    TailCall(Rc<Function>, Vec<Value>),
+}
+
+enum FrameResult {
+    Done(Vec<Value>),
+    Tail(Rc<Function>, Vec<Value>),
 }
 
 pub struct Interpreter {
@@ -243,6 +249,7 @@ impl Interpreter {
                 Flow::Normal => {}
                 Flow::Break => break,
                 Flow::Return(values) => return Ok(values),
+                Flow::TailCall(f, args) => return self.invoke(&f, args, None),
             }
             if gc::should_collect() {
                 let roots = self.env.gc_roots();
@@ -381,8 +388,8 @@ impl Interpreter {
                 while self.eval(cond)?.is_truthy() {
                     match self.exec_block(body)? {
                         Flow::Break => break,
-                        Flow::Return(v) => return Ok(Flow::Return(v)),
                         Flow::Normal => {}
+                        other => return Ok(other),
                     }
                 }
             }
@@ -394,6 +401,14 @@ impl Interpreter {
             }
             Stmt::Break { .. } => return Ok(Flow::Break),
             Stmt::Return { values, .. } => {
+                if let [Expr::Call { callee, args }] = values.as_slice() {
+                    let callee_v = self.eval(callee)?;
+                    let arg_vals = self.eval_values(args)?;
+                    if let Value::Function(f) = callee_v {
+                        return Ok(Flow::TailCall(f, arg_vals));
+                    }
+                    return Ok(Flow::Return(self.call(&callee_v, arg_vals)?));
+                }
                 let values = self.eval_values(values)?;
                 return Ok(Flow::Return(values));
             }
@@ -572,8 +587,8 @@ impl Interpreter {
                 self.env.pop_scope();
                 match flow? {
                     Flow::Break => break,
-                    Flow::Return(v) => return Ok(Flow::Return(v)),
                     Flow::Normal => {}
+                    other => return Ok(other),
                 }
                 i += step;
             }
@@ -595,11 +610,11 @@ impl Interpreter {
                 Environment::scope_force_set(&var_scope, var, Value::Int(i));
                 match self.exec_block_reused(body) {
                     Ok(Flow::Break) => break,
-                    Ok(Flow::Return(v)) => {
-                        out = Ok(Flow::Return(v));
+                    Ok(Flow::Normal) => {}
+                    Ok(other) => {
+                        out = Ok(other);
                         break;
                     }
-                    Ok(Flow::Normal) => {}
                     Err(e) => {
                         out = Err(e);
                         break;
@@ -621,11 +636,11 @@ impl Interpreter {
                 Environment::scope_force_set(&var_scope, var, float_to_value(i));
                 match self.exec_block_reused(body) {
                     Ok(Flow::Break) => break,
-                    Ok(Flow::Return(v)) => {
-                        out = Ok(Flow::Return(v));
+                    Ok(Flow::Normal) => {}
+                    Ok(other) => {
+                        out = Ok(other);
                         break;
                     }
-                    Ok(Flow::Normal) => {}
                     Err(e) => {
                         out = Err(e);
                         break;
@@ -680,8 +695,8 @@ impl Interpreter {
             self.env.pop_scope();
             match flow? {
                 Flow::Break => break,
-                Flow::Return(v) => return Ok(Flow::Return(v)),
                 Flow::Normal => {}
+                other => return Ok(other),
             }
         }
         Ok(Flow::Normal)
@@ -849,6 +864,13 @@ impl Interpreter {
                     result = vals.into_iter().next().unwrap_or(Value::Nil);
                     break;
                 }
+                Ok(Flow::TailCall(f, args)) => {
+                    match self.invoke(&f, args, None) {
+                        Ok(vals) => result = vals.into_iter().next().unwrap_or(Value::Nil),
+                        Err(e) => error = Some(e),
+                    }
+                    break;
+                }
                 Ok(Flow::Break) => break,
                 Err(e) => {
                     error = Some(e);
@@ -998,6 +1020,26 @@ impl Interpreter {
         args: Vec<Value>,
         method: Option<(Value, Value, Rc<Class>)>,
     ) -> Result<Vec<Value>> {
+        match self.invoke_frame(f, args, method)? {
+            FrameResult::Done(values) => Ok(values),
+            FrameResult::Tail(mut nf, mut nargs) => loop {
+                match self.invoke_frame(&nf, nargs, None)? {
+                    FrameResult::Done(values) => return Ok(values),
+                    FrameResult::Tail(f2, a2) => {
+                        nf = f2;
+                        nargs = a2;
+                    }
+                }
+            },
+        }
+    }
+
+    fn invoke_frame(
+        &mut self,
+        f: &Rc<Function>,
+        args: Vec<Value>,
+        method: Option<(Value, Value, Rc<Class>)>,
+    ) -> Result<FrameResult> {
         if f.dead.get() {
             return Err(EvalError("attempt to call a function from a freed script".into()));
         }
@@ -1024,13 +1066,17 @@ impl Interpreter {
             self.varargs.push(extra);
         }
 
-        let mut result = Vec::new();
+        let mut result = FrameResult::Done(Vec::new());
         let mut error = None;
         for stmt in f.body.iter() {
             match self.exec(stmt) {
                 Ok(Flow::Normal) | Ok(Flow::Break) => {}
                 Ok(Flow::Return(values)) => {
-                    result = values;
+                    result = FrameResult::Done(values);
+                    break;
+                }
+                Ok(Flow::TailCall(nf, nargs)) => {
+                    result = FrameResult::Tail(nf, nargs);
                     break;
                 }
                 Err(e) => {
@@ -1746,7 +1792,7 @@ fn switch_jump(cases: &[SwitchCase], subj: &Value) -> Option<Option<usize>> {
     })
 }
 
-fn block_creates_functions(stmts: &[Stmt]) -> bool {
+pub(crate) fn block_creates_functions(stmts: &[Stmt]) -> bool {
     stmts.iter().any(stmt_creates_functions)
 }
 
@@ -3198,16 +3244,19 @@ fn resolve_module_file(base: &std::path::Path) -> Option<std::path::PathBuf> {
 }
 
 fn load_module_program(file: &std::path::Path) -> std::result::Result<Vec<crate::ast::Stmt>, String> {
-    if file.extension().map(|e| e == "luarb").unwrap_or(false) {
+    let mut program = if file.extension().map(|e| e == "luarb").unwrap_or(false) {
         let bytes = std::fs::read(file)
             .map_err(|e| format!("require: cannot read '{}': {e}", file.display()))?;
-        return crate::precompile::unpack(&bytes)
-            .map_err(|e| format!("require: cannot load precompiled '{}': {e}", file.display()));
-    }
-    let source = std::fs::read_to_string(file)
-        .map_err(|e| format!("require: cannot read '{}': {e}", file.display()))?;
-    let tokens = crate::lexer::tokenize(&source).map_err(|e| e.to_string())?;
-    crate::parser::parse(tokens).map_err(|e| e.to_string())
+        crate::precompile::unpack(&bytes)
+            .map_err(|e| format!("require: cannot load precompiled '{}': {e}", file.display()))?
+    } else {
+        let source = std::fs::read_to_string(file)
+            .map_err(|e| format!("require: cannot read '{}': {e}", file.display()))?;
+        let tokens = crate::lexer::tokenize(&source).map_err(|e| e.to_string())?;
+        crate::parser::parse(tokens).map_err(|e| e.to_string())?
+    };
+    crate::optimize::optimize_program(&mut program);
+    Ok(program)
 }
 
 fn config_alias(dir: &std::path::Path, alias: &str) -> Option<std::path::PathBuf> {
@@ -3912,6 +3961,32 @@ pub local b = "2.5" * 2"#);
     }
 
     #[test]
+    fn member_modifiers_parse_in_any_order() {
+        let i = run(
+            r#"class A {
+                   final public function locked() return 1 end
+                   public static final function fixed() return 2 end
+               }
+               pub local v = A():locked() + A.fixed()"#,
+        );
+        assert_eq!(i.env.get("v"), Some(Value::Int(3)));
+    }
+
+    #[test]
+    fn final_method_cannot_be_overridden() {
+        let program = parse(
+            tokenize(
+                "class A { final public function f() end }\nclass B extends A { public function f() end }",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut interp = Interpreter::new();
+        let err = interp.run(&program).unwrap_err();
+        assert!(err.0.contains("final method 'f'"), "{}", err.0);
+    }
+
+    #[test]
     fn mixin_composes_methods() {
         let i = run(
             r#"class M { function greet() return "hi" end }
@@ -3919,6 +3994,112 @@ pub local b = "2.5" * 2"#);
                pub local g = C():greet()"#,
         );
         assert_eq!(i.env.get("g"), Some(Value::str("hi")));
+    }
+
+    #[test]
+    fn tail_calls_do_not_grow_the_stack() {
+        let i = run(
+            r#"local function loop(n, acc)
+                   if n == 0 then
+                       return acc
+                   end
+                   return loop(n - 1, acc + n)
+               end
+               pub local v = loop(100000, 0)"#,
+        );
+        assert_eq!(i.env.get("v"), Some(Value::Int(5000050000)));
+    }
+
+    #[test]
+    fn mutual_tail_recursion_does_not_grow_the_stack() {
+        let i = run(
+            r#"local function is_even(n)
+                   if n == 0 then
+                       return true
+                   end
+                   return is_odd(n - 1)
+               end
+               function is_odd(n)
+                   if n == 0 then
+                       return false
+                   end
+                   return is_even(n - 1)
+               end
+               pub local v = is_even(50001)"#,
+        );
+        assert_eq!(i.env.get("v"), Some(Value::Bool(false)));
+    }
+
+    #[test]
+    fn tail_calls_preserve_multiple_returns() {
+        let i = run(
+            r#"local function two()
+                   return 1, 2
+               end
+               local function tail()
+                   return two()
+               end
+               pub local a, b = tail()"#,
+        );
+        assert_eq!(i.env.get("a"), Some(Value::Int(1)));
+        assert_eq!(i.env.get("b"), Some(Value::Int(2)));
+    }
+
+    #[test]
+    fn tail_calls_from_methods_work() {
+        let i = run(
+            r#"local function helper(n)
+                   return n * 2
+               end
+               class C {
+                   function go(n)
+                       return helper(n)
+                   end
+               }
+               pub local v = C():go(21)"#,
+        );
+        assert_eq!(i.env.get("v"), Some(Value::Int(42)));
+    }
+
+    #[test]
+    fn tail_call_inside_switch_case_returns_its_value() {
+        let i = run(
+            r#"local function f()
+                   return "called"
+               end
+               local function pick(x)
+                   return switch(x)
+                       case 1 return f() end
+                       default return "other" end
+                   end
+               end
+               pub local v = pick(1)
+               pub local w = pick(9)"#,
+        );
+        assert_eq!(i.env.get("v"), Some(Value::str("called")));
+        assert_eq!(i.env.get("w"), Some(Value::str("other")));
+    }
+
+    #[test]
+    fn tail_call_to_native_still_returns_values() {
+        let i = run(
+            r#"local function via(s)
+                   return tostring(s)
+               end
+               pub local v = via(7)"#,
+        );
+        assert_eq!(i.env.get("v"), Some(Value::str("7")));
+    }
+
+    #[test]
+    fn top_level_tail_return_completes() {
+        let program = parse(
+            tokenize("local function f()\n    return 5\nend\nreturn f()").unwrap(),
+        )
+        .unwrap();
+        let mut interp = Interpreter::new();
+        let returned = interp.run(&program).unwrap();
+        assert_eq!(returned, vec![Value::Int(5)]);
     }
 
     #[test]

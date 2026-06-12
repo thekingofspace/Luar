@@ -423,18 +423,30 @@ impl Parser {
     }
 
     fn parse_class_member(&mut self) -> PResult<ClassMember> {
-        let access = if self.eat_kw("private") {
-            Access::Private
-        } else if self.eat_kw("protected") {
-            Access::Protected
-        } else {
-            self.eat_kw("public");
-            Access::Public
-        };
-        let is_static = self.eat_kw("static");
-        let is_abstract = self.eat_kw("abstract");
-        let is_final = self.eat_kw("final");
-        let is_override = self.eat_kw("override");
+        let mut access = Access::Public;
+        let mut is_static = false;
+        let mut is_abstract = false;
+        let mut is_final = false;
+        let mut is_override = false;
+        loop {
+            if self.eat_kw("private") {
+                access = Access::Private;
+            } else if self.eat_kw("protected") {
+                access = Access::Protected;
+            } else if self.eat_kw("public") {
+                access = Access::Public;
+            } else if self.eat_kw("static") {
+                is_static = true;
+            } else if self.eat_kw("abstract") {
+                is_abstract = true;
+            } else if self.eat_kw("final") {
+                is_final = true;
+            } else if self.eat_kw("override") {
+                is_override = true;
+            } else {
+                break;
+            }
+        }
 
         if self.eat_kw("constructor") {
             return Ok(ClassMember::Constructor { func: self.parse_fn_body()? });

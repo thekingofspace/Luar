@@ -57,6 +57,7 @@ pub struct FieldInfo {
 pub struct MethodInfo {
     pub name: String,
     pub is_static: bool,
+    pub is_final: bool,
     pub sig: FunctionType,
     pub access: Access,
 }
@@ -788,6 +789,7 @@ impl<'a> Inferencer<'a> {
                 ClassMember::Method {
                     access,
                     is_static,
+                    is_final: method_final,
                     name: mname,
                     func,
                     ..
@@ -813,6 +815,7 @@ impl<'a> Inferencer<'a> {
                         info.methods.push(MethodInfo {
                             name: mname.clone(),
                             is_static: *is_static,
+                            is_final: *method_final,
                             sig,
                             access: *access,
                         });

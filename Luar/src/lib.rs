@@ -4,6 +4,7 @@ pub mod bytecode;
 pub mod compiler;
 pub mod ferrite;
 pub mod lexer;
+pub mod optimize;
 pub mod parser;
 pub mod precompile;
 pub mod runtime;
@@ -12,6 +13,7 @@ pub mod vm;
 pub use ast::{AssignOp, BinOp, Expr, LValue, Stmt, TableEntry, Type, UnaryOp};
 pub use compiler::{compile, CompileError};
 pub use lexer::{LexError, Lexer, Span, Token, TokenKind};
+pub use optimize::optimize_program;
 pub use parser::{parse, ParseError};
 pub use runtime::{
     blocking, pump_ready, run_pending, Context, Environment, EvalError, Interpreter, Mutability,
@@ -82,7 +84,8 @@ pub fn parse_source(source: &str) -> Result<Vec<Stmt>, Error> {
 }
 
 pub fn eval_source(source: &str) -> Result<Interpreter, Error> {
-    let program = parse_source(source)?;
+    let mut program = parse_source(source)?;
+    optimize::optimize_program(&mut program);
     let mut interp = Interpreter::new();
     interp.run(&program)?;
     Ok(interp)
@@ -93,7 +96,8 @@ pub fn execute(program: Program) -> Result<Option<bytecode::Value>, RuntimeError
 }
 
 pub fn precompile_source(source: &str) -> Result<Vec<u8>, Error> {
-    let program = parse_source(source)?;
+    let mut program = parse_source(source)?;
+    optimize::optimize_program(&mut program);
     Ok(precompile::pack(&program))
 }
 
@@ -103,8 +107,9 @@ pub fn run_precompiled(bytes: &[u8]) -> Result<Interpreter, Error> {
 }
 
 pub fn run_precompiled_returns(bytes: &[u8]) -> Result<(Interpreter, Vec<Value>), Error> {
-    let program =
+    let mut program =
         precompile::unpack(bytes).map_err(|e| Error::Compile(CompileError(e)))?;
+    optimize::optimize_program(&mut program);
     let mut interp = Interpreter::new();
     let returned = interp.run(&program)?;
     Ok((interp, returned))
@@ -116,7 +121,9 @@ pub fn load_precompiled_module(bytes: &[u8]) -> Result<Value, Error> {
 }
 
 pub fn compile_source(source: &str) -> Result<Program, Error> {
-    Ok(compiler::compile(&parse_source(source)?)?)
+    let mut program = parse_source(source)?;
+    optimize::optimize_program(&mut program);
+    Ok(compiler::compile(&program)?)
 }
 
 pub fn run_on_vm(source: &str) -> Result<Vm, Error> {
@@ -129,13 +136,15 @@ pub fn run_on_vm(source: &str) -> Result<Vm, Error> {
 impl Interpreter {
 
     pub fn run_source(&mut self, source: &str) -> Result<Vec<Value>, Error> {
-        let program = parse_source(source)?;
+        let mut program = parse_source(source)?;
+        optimize::optimize_program(&mut program);
         Ok(self.run(&program)?)
     }
 
     pub fn run_precompiled(&mut self, bytes: &[u8]) -> Result<Vec<Value>, Error> {
-        let program =
+        let mut program =
             precompile::unpack(bytes).map_err(|e| Error::Compile(CompileError(e)))?;
+        optimize::optimize_program(&mut program);
         Ok(self.run(&program)?)
     }
 

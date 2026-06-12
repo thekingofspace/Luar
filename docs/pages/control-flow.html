@@ -22,6 +22,11 @@
 <span class="kw">for</span> key, value <span class="kw">in</span> <span class="fn">pairs</span>(map) <span class="kw">do</span> <span class="fn">print</span>(key, value) <span class="kw">end</span></code></pre>
 <p>Name an unused loop variable <code>_</code> to silence UnusedLoopVariable.
 <code>break</code> exits the innermost loop.</p>
+<p>Small numeric <code>for</code> loops with constant integer bounds (up to 16
+iterations) are unrolled automatically when the script loads, removing the
+per-iteration loop overhead. Loops containing <code>break</code> or closures
+that capture the loop variable keep their normal form, so behaviour never
+changes — only speed.</p>
 
 <h3>switch</h3>
 <p><code>switch</code> is an expression. The first <code>case</code> whose value

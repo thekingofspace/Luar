@@ -885,6 +885,48 @@ impl Project {
                 });
             }
         }
+        for class in analysis.classes.values() {
+            let Some(parent_name) = &class.parent else {
+                continue;
+            };
+            let class_line = find_word_line(&source, &class.name).unwrap_or(1);
+            if let Some(parent) = self.find_class_info(&analysis, parent_name) {
+                if parent.is_final {
+                    let line = find_nth_word_line(&source, parent_name, 1, class_line)
+                        .unwrap_or(class_line);
+                    if !directives.silences("FinalOverride", line) {
+                        diagnostics.push(crate::Diagnostic {
+                            line,
+                            col: 1,
+                            message: format!(
+                                "cannot extend final class '{parent_name}' — this errors at runtime [FinalOverride]"
+                            ),
+                            severity: 1,
+                        });
+                    }
+                }
+            }
+            for m in &class.methods {
+                let Some(owner) = self.final_method_owner(&analysis, parent_name, &m.name)
+                else {
+                    continue;
+                };
+                let line = find_nth_word_line(&source, &m.name, 1, class_line)
+                    .unwrap_or(class_line);
+                if directives.silences("FinalOverride", line) {
+                    continue;
+                }
+                diagnostics.push(crate::Diagnostic {
+                    line,
+                    col: 1,
+                    message: format!(
+                        "cannot override final method '{}' from class '{owner}' — this errors at runtime [FinalOverride]",
+                        m.name
+                    ),
+                    severity: 1,
+                });
+            }
+        }
         if parsed_src != source || program.is_empty() {
             if let Some(prev) = self.files.get(path) {
                 merge_stale_analysis(&mut analysis, &prev.analysis);
@@ -981,6 +1023,40 @@ impl Project {
                 .files
                 .values()
                 .any(|m| m.analysis.classes.contains_key(name))
+    }
+
+    fn find_class_info<'a>(&'a self, analysis: &'a Analysis, name: &str) -> Option<&'a ClassInfo> {
+        analysis
+            .classes
+            .get(name)
+            .or_else(|| self.luard_classes.get(name))
+            .or_else(|| {
+                self.files
+                    .values()
+                    .find_map(|m| m.analysis.classes.get(name))
+            })
+    }
+
+    fn final_method_owner(
+        &self,
+        analysis: &Analysis,
+        start: &str,
+        method: &str,
+    ) -> Option<String> {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut cur = start.to_string();
+        while seen.insert(cur.clone()) {
+            let info = self.find_class_info(analysis, &cur)?;
+            if info
+                .methods
+                .iter()
+                .any(|m| m.name == method && m.is_final)
+            {
+                return Some(info.name.clone());
+            }
+            cur = info.parent.clone()?;
+        }
+        None
     }
 
     pub fn reload_aliases(&mut self) {

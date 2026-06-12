@@ -330,7 +330,15 @@ impl Ferrite {
                     self.emit(Severity::Error, "BreakOutsideLoop", *line, "`break` is not inside a loop".into());
                 }
             }
-            Stmt::Class { members, .. } => self.walk_class(members),
+            Stmt::Class { parent, mixins, members, .. } => {
+                if let Some(p) = parent {
+                    self.use_name(p);
+                }
+                for m in mixins {
+                    self.use_name(m);
+                }
+                self.walk_class(members);
+            }
             Stmt::Enum { name, variants, line, .. } => {
                 for (_, value) in variants {
                     if let Some(e) = value {

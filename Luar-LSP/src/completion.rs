@@ -787,12 +787,13 @@ fn in_open_string(line: &str, col: usize) -> Option<(char, String)> {
 
 const DIRECTIVE_KEYWORDS: [&str; 3] = ["disable", "disable-line", "disable-next-line"];
 
-const EDITOR_CHECKS: [&str; 6] = [
+const EDITOR_CHECKS: [&str; 7] = [
     "DuplicateEnumVariant",
     "GenericArity",
     "UnknownClass",
     "RequireCycle",
     "NotNil",
+    "FinalOverride",
     "all",
 ];
 
