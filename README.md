@@ -89,4 +89,4 @@ python -m http.server 8000   # or any static server
 
 ## License
 
-See the repository for license details.
+Luar is released under the [MIT License](LICENSE).
