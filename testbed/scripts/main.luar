@@ -1,0 +1,107 @@
+local function Test(Re:NotNil<any>)
+    return Re
+end
+
+local var = Test(true)
+
+print(var)
+
+print("starting expensive work...")
+
+local function fib(n)
+    if n < 2 then
+        return n
+    end
+    return fib(n - 1) + fib(n - 2)
+end
+
+local start = os.clock()
+local f = fib(30)
+print(`fib(30) = {f} in {os.clock() - start}s`)
+
+start = os.clock()
+local total = 0
+for i = 1, 5000000 do
+    total += i % 7
+end
+print(`5M loop total = {total} in {os.clock() - start}s`)
+
+start = os.clock()
+local grid = {}
+for i = 1, 200000 do
+    grid[`cell{i}`] = i * 2
+end
+local sum = 0
+for i = 1, 200000 do
+    sum += grid[`cell{i}`]
+end
+print(`200k table ops sum = {sum} in {os.clock() - start}s`)
+
+local function classify(code)
+    return switch(code)
+        case 1 return "alpha" end
+        case 2 return "bravo" end
+        case 3 return "charlie" end
+        case 4 return "delta" end
+        case 5 return "echo" end
+        case 6 return "foxtrot" end
+        case 7 return "golf" end
+        case 8 return "hotel" end
+        case 9 return "india" end
+        case 10 return "juliet" end
+        case 11 return "kilo" end
+        case 12 return "lima" end
+        case 13 return "mike" end
+        case 14 return "november" end
+        case 15 return "oscar" end
+        case 16 return "papa" end
+        case 17 return "quebec" end
+        case 18 return "romeo" end
+        case 19 return "sierra" end
+        case 20 return "tango" end
+        case 21 return "uniform" end
+        case 22 return "victor" end
+        case 23 return "whiskey" end
+        case 24 return "xray" end
+        case 25 return "yankee" end
+        case 26 return "zulu" end
+        case "ping" return "pong" end
+        case "up" return "down" end
+        case true return "yes" end
+        default return "unknown" end
+    end
+end
+
+start = os.clock()
+local hits = 0
+for i = 1, 2000000 do
+    local word = classify(i % 32)
+    if word ~= "unknown" then
+        hits += 1
+    end
+end
+print(`2M switch dispatches, {hits} in {os.clock() - start}s`)
+
+start = os.clock()
+local acc = 0.0
+for i = 1, 1000000 do
+    local x = i * 0.5
+    acc += math.sqrt(x) + math.abs(-x)
+    acc += math.floor(x / 3) % 11
+    acc += (i % 7) ^ 2
+    acc -= math.max(0, math.min(x, 100)) * 0.001
+end
+print(`1M math ops acc = {math.floor(acc)} in {os.clock() - start}s`)
+
+local function count(n, total)
+    if n == 0 then
+        return total
+    end
+    return count(n - 1, total + 1)
+end
+
+start = os.clock()
+local depth = count(2000000, 0)
+print(`2M-deep tail recursion = {depth} in {os.clock() - start}s`)
+
+print("expensive work done")

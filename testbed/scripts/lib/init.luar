@@ -1,0 +1,8 @@
+-- init.luar represents the lib folder itself.
+-- Inside init, ./ resolves to the parent of the folder.
+local siblings = require("@self")
+
+return {
+    kind = "lib",
+    shapes = siblings.shapes,
+}

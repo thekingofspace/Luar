@@ -1,0 +1,15 @@
+pub class Circle {
+    public r: number = 0
+
+    constructor(r)
+        self.r = r
+    end
+
+    function area(): number
+        return math.pi * self.r * self.r
+    end
+}
+
+local M = {}
+M.Circle = Circle
+return M

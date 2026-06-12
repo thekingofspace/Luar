@@ -35,3 +35,7 @@ npm run package    # runs npx @vscode/vsce package and produces a .vsix
 ```
 
 Place the `luar-lsp` server binary in `server/` first if you want it bundled in the `.vsix`.
+
+## License
+
+This extension and the Luar language are released under the [MIT License](LICENSE).
