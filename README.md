@@ -14,6 +14,7 @@ language server.
 | Folder | What it is |
 | --- | --- |
 | `Luar/` | The language crate: lexer, parser, interpreter, Ferrite, GC, precompiler, embedding API. |
+| `lyre/` | The standalone runtime: runs scripts, scaffolds projects (`lyre init`), and provides the built-in `File`/`Folder` classes. |
 | `test/` | A small runner crate that depends on `Luar` and exposes a CLI (`run` / `compile`). |
 | `luar LSP/` | The VS Code extension: Rust language server (`server/`), TypeScript client (`client/`), grammar, and `package.json`. |
 | `docs/` | The documentation site (plain HTML). |

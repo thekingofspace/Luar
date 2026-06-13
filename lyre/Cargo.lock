@@ -7,7 +7,7 @@ name = "luar"
 version = "0.1.0"
 
 [[package]]
-name = "luar-runtime"
+name = "lyre"
 version = "0.1.0"
 dependencies = [
  "luar",

@@ -1,12 +1,15 @@
-# Luar Runtime
+# lyre
 
-A minimal standalone runtime for Luar. It loads a script, wires up `require` (with
-`luari.json` alias support), runs it, and then drains any waiting coroutines.
+`lyre` is the standalone runtime for the Luar language. It loads a script, wires up
+`require` (with `luari.json` alias support), exposes the built-in `File` and `Folder`
+classes, runs the script, and then drains any waiting coroutines.
 
 ## Usage
 
 ```
-luar-runtime [entry]
+lyre [entry]      run a script (default: main.luar)
+lyre init [dir]   scaffold a new project
+lyre help         show usage
 ```
 
 - `entry` defaults to `main.luar` in the current directory.
@@ -16,6 +19,66 @@ luar-runtime [entry]
 ```
 cargo run -- scripts/main.luar
 ```
+
+## `lyre init`
+
+`lyre init [dir]` scaffolds a project in `dir` (default: the current directory). It
+writes three files, never overwriting anything that already exists:
+
+- `lyre.luard` — declarations for the built-in `File`/`Folder` classes so the editor
+  knows their methods and types.
+- `luari.json` — a config that imports `lyre.luard` (via its `"luard"` key) so the
+  language server picks it up.
+- `main.luar` — a starter script that uses `File` and `Folder`.
+
+## Built-in `File` and `Folder` classes
+
+`lyre` registers two global classes. Use them directly or `extend` them to add your
+own typed helpers. All paths are resolved **relative to the file that is running**:
+
+- `./name` — a sibling of the current file
+- `../name` — one folder up
+- `.../name` — two folders up (each extra leading dot climbs one more)
+
+```luar
+class Save extends File {}
+
+local s = Save()
+s:ClaimFile("./save.json")   -- like opening the file; it is now locked
+if not s:Exists() then
+    s:Create()               -- creates the file (and missing parent folders)
+end
+s:Write("{}")
+print(s:Read())
+s:Unclaim()                  -- release the lock so it can be deleted again
+```
+
+### `File`
+
+| Method | Description |
+| --- | --- |
+| `ClaimFile(path)` | Claim a `./`-relative path. While claimed the file is locked open and cannot be deleted. The same path cannot be claimed twice. |
+| `Unclaim()` | Release the claim. |
+| `Exists()` | True if the claimed file exists on disk. |
+| `Create()` | Create the claimed file (and missing parent folders) if absent. |
+| `Read()` | Read the whole file as a string. |
+| `Write(contents)` | Overwrite the file with `contents`. |
+| `Append(contents)` | Append `contents` to the file. |
+| `Delete()` | Delete the file — fails while it is still claimed. |
+| `Path()` | The resolved absolute path. |
+
+`Read`, `Write`, `Append`, `Exists`, and `Create` require the file to be claimed first.
+
+### `Folder`
+
+| Method | Description |
+| --- | --- |
+| `Open(path)` | Bind a `./`-relative folder path. |
+| `Exists()` | True if the folder exists. |
+| `Create()` | Create the folder (and missing parents) if absent. |
+| `ListFiles()` | Sorted array of file names directly inside the folder. |
+| `ListFolders()` | Sorted array of sub-folder names. |
+| `Path()` | The resolved absolute path. |
 
 ## Require
 
